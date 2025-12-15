@@ -167,6 +167,139 @@ class ViralShortsGenerator:
             top_categories = list(self.broll_dirs.keys())[:3]
 
         return top_categories
+    
+    def create_reddit_video_simple(self, auto_generate_subs=True, subtitle_style="reddit_white", fps=30):
+        """Simplified version for Reddit stories - just loop ONE gameplay video"""
+        
+        import time
+        overall_start = time.time()
+        
+        duration = self.get_audio_duration()
+        print(f"\n{'='*70}")
+        print(f"🎬 CREATING REDDIT STORY VIDEO")
+        print(f"{'='*70}")
+        print(f"⏱️  Duration: {duration:.2f} seconds")
+        
+        # Get the gameplay video (just use the first video found)
+        gameplay_dir = "reddit_gameplay_vids"
+        gameplay_files = self.get_all_files_from_dir(gameplay_dir)
+        
+        if not gameplay_files:
+            raise Exception(f"No gameplay videos found in {gameplay_dir}")
+        
+        gameplay_video = gameplay_files[0]
+        print(f"🎮 Using gameplay: {os.path.basename(gameplay_video)}")
+        
+        # Generate subtitles
+        srt_path = None
+        if auto_generate_subs:
+            if os.path.exists('subtitles.srt'):
+                print(f"✅ Using existing subtitles.srt")
+                srt_path = 'subtitles.srt'
+            else:
+                srt_path = self.generate_subtitles_with_whisper()
+        
+        # Create looped gameplay base
+        print(f"\n🎬 Processing gameplay video...")
+        looped_video = "gameplay_looped.mp4"
+        
+        # Get gameplay duration
+        gameplay_duration_cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            gameplay_video
+        ]
+        result = subprocess.run(gameplay_duration_cmd, capture_output=True, text=True)
+        gameplay_duration = float(result.stdout.strip())
+        
+        # Calculate how many loops needed
+        loops_needed = int(duration / gameplay_duration) + 1
+        
+        # Create looped + cropped gameplay
+        cmd = [
+            'ffmpeg', '-y',
+            '-stream_loop', str(loops_needed),
+            '-i', gameplay_video,
+            '-t', str(duration),
+            '-vf', 'scale=-2:1920:force_original_aspect_ratio=increase,crop=1080:1920,format=yuv420p',
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '23',
+            '-an',  # No audio from gameplay
+            looped_video
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        print(f"✅ Gameplay looped and cropped to 9:16")
+        
+        # Add subtitles + audio
+        print(f"\n🎬 Adding subtitles and audio...")
+        
+        cmd = ['ffmpeg', '-y', '-i', looped_video, '-i', self.audio_path]
+        
+        # Add subtitles
+        if srt_path and os.path.exists(srt_path):
+            sub_path = srt_path.replace('\\', '/').replace(':', '\\:')
+            
+            # Reddit-style subtitle (bold, clear, easy to read)
+            reddit_style = "force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=3,Outline=2,Shadow=0,Bold=1,MarginV=150,Alignment=2'"
+            
+            vf = f"subtitles='{sub_path}':{reddit_style}"
+            cmd.extend(['-vf', vf])
+        
+        cmd.extend([
+            '-map', '0:v',
+            '-map', '1:a',
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-crf', '23',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-ar', '48000',
+            '-shortest',
+            self.output_path
+        ])
+        
+        subprocess.run(cmd, check=True, capture_output=True)
+        
+        # Add CTA overlay
+        print(f"\n🎬 Adding CTA overlay...")
+        cta_output = self.output_path.replace(".mp4", "_cta.mp4")
+        
+        # Reddit-specific CTA
+        filters = []
+        filters.append(
+            f"drawtext=text='Comment 1 or 2 below':fontcolor=white:fontsize=48:font=Arial:"
+            f"borderw=3:bordercolor=black:shadowx=2:shadowy=2:x=(w-text_w)/2:y=h*0.08:enable='lt(t,3)'"
+        )
+        filters.append(
+            f"drawtext=text='Part 2 on the channel':fontcolor=yellow:fontsize=44:font=Arial:"
+            f"borderw=3:bordercolor=black:shadowx=2:shadowy=2:x=(w-text_w)/2:y=h*0.88:enable='gt(t,{duration-3})'"
+        )
+        
+        cmd = ['ffmpeg', '-y', '-i', self.output_path, '-vf', ','.join(filters), '-c:a', 'copy', cta_output]
+        subprocess.run(cmd, check=True, capture_output=True)
+        
+        self.output_path = cta_output
+        
+        # Cleanup
+        if os.path.exists(looped_video):
+            os.remove(looped_video)
+        
+        total_time = time.time() - overall_start
+        file_size = os.path.getsize(self.output_path) / (1024 * 1024)
+        
+        print(f"\n{'='*70}")
+        print(f"✅ REDDIT VIDEO READY!")
+        print(f"{'='*70}")
+        print(f"📁 Output: {self.output_path}")
+        print(f"💾 Size: {file_size:.2f} MB")
+        print(f"⏱️  Duration: {duration:.2f}s")
+        print(f"⚡ Processing Time: {total_time:.1f}s")
+        print(f"🎮 Gameplay: {os.path.basename(gameplay_video)}")
+        print(f"{'='*70}\n")
+        
+        return True
 
 
     def create_segment_plan(self, duration, top_categories):
@@ -676,128 +809,213 @@ def root():
     }
 
 @app.post("/generate")
-async def generate_video_api(background_tasks: BackgroundTasks):
+async def generate_video_api(background_tasks: BackgroundTasks, niche: str = "love"):
+    """
+    Generate video for specified niche
+    Query parameter: niche (default: "love")
+    Options: "love", "reddit", "fitness", "business", etc.
+    """
     global current_job
     
     if current_job["status"] == "processing":
-        return {"message": "Already processing", "status": "processing"}
+        return {
+            "message": "Already processing", 
+            "status": "processing",
+            "current_niche": current_job.get("niche", "unknown")
+        }
     
     current_job = {
         "status": "processing",
         "progress": 0,
         "output": None,
         "error": None,
-        "started_at": datetime.now().isoformat()
+        "started_at": datetime.now().isoformat(),
+        "niche": niche
     }
     
-    background_tasks.add_task(process_video)
+    background_tasks.add_task(process_video, niche)
     
     return {
-        "message": "Video generation started",
-        "status": "processing"
+        "message": f"Video generation started for {niche} niche",
+        "status": "processing",
+        "niche": niche
     }
 
-def process_video():
+def process_video(niche="love"):
+    """Process video generation for specified niche"""
     global current_job
     
     try:
         current_job["progress"] = 10
         
-        # Download latest audio from GitHub
-        print("📥 Downloading audio from GitHub...")
-        url = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/new_love.mp3"
-        response = requests.get(url)
+        # Configure based on niche
+        if niche == "reddit":
+            print("📥 Downloading Reddit audio from GitHub...")
+            audio_url = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/reddit_audio.mp3"
+            audio_file = "Audio_Voice/reddit_audio.mp3"
+            output_file = "reddit_story.mp4"
+            transcription_file = "Audio_Voice/reddit_audio_transcription.json"
+        else:
+            # Default to love niche
+            print("📥 Downloading love audio from GitHub...")
+            audio_url = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/new_love.mp3"
+            audio_file = "Audio_Voice/new_love.mp3"
+            output_file = "new_love.mp4"
+            transcription_file = "Audio_Voice/new_love_transcription.json"
+        
+        # Download audio
+        response = requests.get(audio_url)
+        if response.status_code != 200:
+            raise Exception(f"Failed to download audio: HTTP {response.status_code}")
         
         # Ensure directory exists
         os.makedirs("Audio_Voice", exist_ok=True)
         
-        with open("Audio_Voice/new_love.mp3", "wb") as f:
+        with open(audio_file, "wb") as f:
             f.write(response.content)
+        
+        print(f"✅ Audio downloaded: {audio_file}")
         
         current_job["progress"] = 20
         
         # Clean up old files
-        for old_file in ["new_love.mp4", "new_love_cta.mp4", "subtitles.srt", "Audio_Voice/new_love_transcription.json"]:
+        old_files = [
+            output_file,
+            output_file.replace(".mp4", "_cta.mp4"),
+            "subtitles.srt",
+            transcription_file,
+            "gameplay_looped.mp4"  # Reddit temp file
+        ]
+        
+        for old_file in old_files:
             if os.path.exists(old_file):
                 os.remove(old_file)
+                print(f"🗑 Deleted old file: {old_file}")
         
         current_job["progress"] = 30
         
-        # Generate video using the existing main() logic
-        NICHE = 'love'
-        main_image = "main_images/Dating_.jpg"
-        audio = "Audio_Voice/new_love.mp3"
-        output = "new_love.mp4"
-        bg_music = "bg_musics/For_Dating.mp3"
+        # Generate video based on niche
+        if niche == "reddit":
+            print(f"\n🎯 Generating REDDIT story video")
+            
+            if not os.path.exists(audio_file):
+                raise Exception(f"Audio file not found: {audio_file}")
+            
+            # Create Reddit video generator (no main image needed)
+            gen = ViralShortsGenerator(
+                main_image="",  # Not used for Reddit
+                audio_path=audio_file,
+                output_path=output_file
+            )
+            
+            success = gen.create_reddit_video_simple(
+                auto_generate_subs=True,
+                subtitle_style="reddit_white",
+                fps=30
+            )
+            
+            final_output = output_file.replace(".mp4", "_cta.mp4")
+            
+        else:
+            # Love niche (or other template niches)
+            print(f"\n🎯 Using '{niche.upper()}' niche template")
+            
+            main_image = "main_images/Dating_.jpg"
+            bg_music = "bg_musics/For_Dating.mp3"
+            
+            if not os.path.exists(main_image):
+                raise Exception(f"Main image not found: {main_image}")
+            
+            if not os.path.exists(audio_file):
+                raise Exception(f"Audio file not found: {audio_file}")
+            
+            # Get niche config (default to love if not found)
+            niche_config = NICHE_TEMPLATES.get(niche, NICHE_TEMPLATES['love'])
+            
+            gen = ViralShortsGenerator(
+                main_image=main_image,
+                audio_path=audio_file,
+                output_path=output_file,
+                niche_config=niche_config
+            )
+            
+            success = gen.create_viral_video(
+                auto_generate_subs=True,
+                subtitle_style="cursive_pink_soft",
+                bg_music=bg_music if bg_music and os.path.exists(bg_music) else None,
+                bg_volume=0.25,
+                fps=30
+            )
+            
+            final_output = output_file.replace(".mp4", "_cta.mp4")
         
-        if not os.path.exists(main_image):
-            raise Exception(f"Main image not found: {main_image}")
-        
-        if not os.path.exists(audio):
-            raise Exception(f"Audio file not found: {audio}")
-        
-        niche_config = NICHE_TEMPLATES.get(NICHE)
-        
-        print(f"\n🎯 Using '{NICHE.upper()}' niche template")
-        
-        gen = ViralShortsGenerator(main_image, audio, output, niche_config=niche_config)
-        
-        success = gen.create_viral_video(
-            auto_generate_subs=True,
-            subtitle_style="cursive_pink_soft",
-            bg_music=bg_music if bg_music and os.path.exists(bg_music) else None,
-            bg_volume=0.25,
-            fps=30
-        )
+        current_job["progress"] = 90
         
         # Clean up temp files
-        subtitle_file = "subtitles.srt" 
-        new_love_transcription_file = "Audio_Voice/new_love_transcription.json"
+        subtitle_file = "subtitles.srt"
         
         if success and os.path.exists(subtitle_file):
             try:
                 os.remove(subtitle_file)
-                if os.path.exists(new_love_transcription_file):
-                    os.remove(new_love_transcription_file)
-                print(f"🗑 Deleted temporary files")
+                print(f"🗑 Deleted {subtitle_file}")
+                if os.path.exists(transcription_file):
+                    os.remove(transcription_file)
+                    print(f"🗑 Deleted {transcription_file}")
             except Exception as e:
                 print(f"⚠ Failed to delete temp files: {e}")
         
-        if success and os.path.exists("new_love_cta.mp4"):
+        # Check if video was created successfully
+        if success and os.path.exists(final_output):
             current_job["status"] = "completed"
             current_job["progress"] = 100
-            current_job["output"] = "new_love_cta.mp4"
-            print("✅ Video ready!")
+            current_job["output"] = final_output
+            print(f"✅ {niche.upper()} video ready: {final_output}")
         else:
-            raise Exception("Video generation failed")
+            raise Exception(f"{niche} video generation failed - output file not found")
         
     except Exception as e:
         current_job["status"] = "error"
         current_job["error"] = str(e)
-        print(f"❌ Error: {e}")
+        current_job["progress"] = 0
+        print(f"❌ Error generating {niche} video: {e}")
+        import traceback
+        traceback.print_exc()
 
 @app.get("/status")
 def check_status():
+    """Check current job status"""
     return {
         "status": current_job["status"],
         "progress": current_job["progress"],
         "error": current_job["error"],
         "started_at": current_job["started_at"],
-        "ready": current_job["status"] == "completed"
+        "niche": current_job.get("niche", "unknown"),
+        "ready": current_job["status"] == "completed",
+        "output_file": current_job.get("output", None)
     }
 
 @app.get("/download")
 def download_video():
+    """Download the generated video"""
     if current_job["status"] != "completed":
-        raise HTTPException(400, f"Not ready. Status: {current_job['status']}")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Video not ready. Current status: {current_job['status']}"
+        )
     
     if not current_job["output"] or not os.path.exists(current_job["output"]):
-        raise HTTPException(404, "Video file not found")
+        raise HTTPException(
+            status_code=404, 
+            detail="Video file not found"
+        )
+    
+    niche = current_job.get("niche", "video")
+    filename = f"{niche}_viral_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
     
     return FileResponse(
         current_job["output"],
         media_type="video/mp4",
-        filename=f"viral_video.mp4"
+        filename=filename
     )
 
 if __name__ == "__main__":
