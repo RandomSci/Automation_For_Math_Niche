@@ -852,9 +852,9 @@ def process_video(niche="love"):
         if niche == "reddit":
             print("📥 Downloading Reddit audio from GitHub...")
             audio_url = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/new_love.mp3"
-            audio_file = "Audio_Voice/reddit_audio.mp3"
-            output_file = "reddit_story.mp4"
-            transcription_file = "Audio_Voice/reddit_audio_transcription.json"
+            audio_file = "Audio_Voice/new_love.mp3"
+            output_file = "new_love.mp4"
+            transcription_file = "Audio_Voice/new_love_transcription.json"
         else:
             # Default to love niche
             print("📥 Downloading love audio from GitHub...")
