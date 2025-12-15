@@ -664,7 +664,7 @@ class ViralShortsGenerator:
             total_time = time.time() - overall_start
             file_size = os.path.getsize(self.output_path) / (1024 * 1024)
             
-            if file_size < 5.0:
+            if file_size < 2.0:
                 print(f"\n⚠️  WARNING: Output file is suspiciously small ({file_size:.2f} MB)")
                 return False
             
