@@ -168,6 +168,36 @@ class ViralShortsGenerator:
 
         return top_categories
     
+    def ensure_gameplay_video(self):
+        """Download gameplay video if it doesn't exist"""
+        gameplay_dir = "reddit_gameplay_vids"
+        gameplay_file = os.path.join(gameplay_dir, "videoplayback.mp4")
+        
+        if os.path.exists(gameplay_file):
+            print(f"✅ Gameplay video already exists")
+            return gameplay_file
+        
+        print("📥 Downloading Reddit gameplay video from GitHub...")
+        os.makedirs(gameplay_dir, exist_ok=True)
+        
+        url = "https://github.com/RandomSci/Automation_For_Love_Niche/releases/download/v1.0/videoplayback.mp4"
+        
+        response = requests.get(url, stream=True)
+        total_size = int(response.headers.get('content-length', 0))
+        
+        with open(gameplay_file, 'wb') as f:
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        print(f"  Progress: {percent:.1f}% ({downloaded/1024/1024:.1f}/{total_size/1024/1024:.1f} MB)", end='\r')
+        
+        print(f"\n✅ Gameplay video downloaded: {gameplay_file}")
+        return gameplay_file
+    
     def create_reddit_video_simple(self, auto_generate_subs=True, subtitle_style="reddit_white", fps=30):
         """Simplified version for Reddit stories - just loop ONE gameplay video"""
         
@@ -180,14 +210,8 @@ class ViralShortsGenerator:
         print(f"{'='*70}")
         print(f"⏱️  Duration: {duration:.2f} seconds")
         
-        # Get the gameplay video (just use the first video found)
-        gameplay_dir = "reddit_gameplay_vids"
-        gameplay_files = self.get_all_files_from_dir(gameplay_dir)
-        
-        if not gameplay_files:
-            raise Exception(f"No gameplay videos found in {gameplay_dir}")
-        
-        gameplay_video = gameplay_files[0]
+        # Download gameplay video if needed (replaces directory search)
+        gameplay_video = self.ensure_gameplay_video()
         print(f"🎮 Using gameplay: {os.path.basename(gameplay_video)}")
         
         # Generate subtitles
@@ -300,7 +324,6 @@ class ViralShortsGenerator:
         print(f"{'='*70}\n")
         
         return True
-
 
     def create_segment_plan(self, duration, top_categories):
         """Create a plan for video segments - VIDEOS ONLY, NO IMAGES"""
