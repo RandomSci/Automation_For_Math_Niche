@@ -161,7 +161,7 @@ class ViralShortsGenerator:
             folder = keyword_to_folder.get(d)
             if folder and folder in self.broll_dirs:
                 top_categories.append(folder)
- 
+  
         # fallback: if nothing valid, take first 3 available folders
         if not top_categories:
             top_categories = list(self.broll_dirs.keys())[:3]
