@@ -174,29 +174,83 @@ class ViralShortsGenerator:
         gameplay_file = os.path.join(gameplay_dir, "videoplayback.mp4")
         
         if os.path.exists(gameplay_file):
-            print(f"✅ Gameplay video already exists")
-            return gameplay_file
+            try:
+                cmd = [
+                    'ffprobe', '-v', 'error',
+                    '-show_entries', 'format=duration',
+                    '-of', 'default=noprint_wrappers=1:nokey=1',
+                    gameplay_file
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.stdout.strip() and float(result.stdout.strip()) > 0:
+                    print(f"✅ Gameplay video already exists and is valid")
+                    return gameplay_file
+                else:
+                    print(f"⚠️  Existing video is corrupted, re-downloading...")
+                    os.remove(gameplay_file)
+            except:
+                print(f"⚠️  Existing video is invalid, re-downloading...")
+                if os.path.exists(gameplay_file):
+                    os.remove(gameplay_file)
         
         print("📥 Downloading Reddit gameplay video from GitHub...")
         os.makedirs(gameplay_dir, exist_ok=True)
         
         url = "https://github.com/RandomSci/Automation_For_Love_Niche/releases/download/v1.0/videoplayback.mp4"
         
-        response = requests.get(url, stream=True)
-        total_size = int(response.headers.get('content-length', 0))
-        
-        with open(gameplay_file, 'wb') as f:
-            downloaded = 0
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        percent = (downloaded / total_size) * 100
-                        print(f"  Progress: {percent:.1f}% ({downloaded/1024/1024:.1f}/{total_size/1024/1024:.1f} MB)", end='\r')
-        
-        print(f"\n✅ Gameplay video downloaded: {gameplay_file}")
-        return gameplay_file
+        try:
+            # Download with timeout and proper error handling
+            response = requests.get(url, stream=True, timeout=300)  # 5 min timeout
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            
+            if total_size == 0:
+                raise Exception("GitHub returned 0 bytes - file might not be accessible")
+            
+            print(f"  Downloading {total_size/1024/1024:.1f} MB...")
+            
+            with open(gameplay_file, 'wb') as f:
+                downloaded = 0
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            print(f"  Progress: {percent:.1f}% ({downloaded/1024/1024:.1f}/{total_size/1024/1024:.1f} MB)", end='\r')
+            
+            print(f"\n✅ Download complete!")
+            
+            # Verify the downloaded file
+            if os.path.getsize(gameplay_file) < 1000000:  # Less than 1MB is sus
+                raise Exception(f"Downloaded file too small ({os.path.getsize(gameplay_file)} bytes)")
+            
+            # Verify it's a valid video
+            cmd = [
+                'ffprobe', '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                gameplay_file
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            
+            if not result.stdout.strip():
+                raise Exception("Downloaded file is not a valid video (ffprobe failed)")
+            
+            duration = float(result.stdout.strip())
+            print(f"✅ Video verified: {duration:.1f} seconds")
+            
+            return gameplay_file
+            
+        except requests.exceptions.RequestException as e:
+            if os.path.exists(gameplay_file):
+                os.remove(gameplay_file)
+            raise Exception(f"Failed to download gameplay video: {e}")
+        except Exception as e:
+            if os.path.exists(gameplay_file):
+                os.remove(gameplay_file)
+            raise Exception(f"Error with gameplay video: {e}")
     
     def create_reddit_video_simple(self, auto_generate_subs=True, subtitle_style="reddit_white", fps=30):
         """Simplified version for Reddit stories - just loop ONE gameplay video"""
