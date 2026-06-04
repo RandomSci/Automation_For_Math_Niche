@@ -328,8 +328,11 @@ def render_text_overlay(video_path: str, segments: list, word_timestamps: list, 
                     wclip = wclip.set_position((x0, y0))
                     yclip = yclip.set_position((x0 + ww + 16, y0))
 
-                text_clips.extend([wclip, yclip])
-                matched += 1
+                if wclip.size[0] > 0 and yclip.size[0] > 0:
+                    text_clips.extend([wclip, yclip])
+                else:
+                    print(f"  ⚠ [{seg_idx}] Zero-width clip skipped")
+                    matched -= 1
                 continue
 
             # Single text clip
