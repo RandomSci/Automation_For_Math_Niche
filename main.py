@@ -2,7 +2,6 @@ import subprocess
 import os
 import json
 import random
-import tempfile
 import requests
 from datetime import datetime
 
@@ -10,7 +9,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Viral Shorts Generator")
+app = FastAPI(title="Vaults of History Generator")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,67 +26,35 @@ current_job = {
     "started_at": None
 }
 
-class ViralShortsGenerator:
-    def __init__(self, main_image, audio_path, output_path="output.mp4", niche_config=None):
-        self.main_image = main_image
-        self.audio_path = audio_path
+OUTPUT_WIDTH  = 1920
+OUTPUT_HEIGHT = 1080
+
+
+class VaultsGenerator:
+    def __init__(self, audio_path, output_path="output.mp4", niche_config=None):
+        self.audio_path  = audio_path
         self.output_path = output_path
-        
+
         if niche_config:
-            self.broll_dirs = niche_config.get('broll_dirs', {})
+            self.broll_dirs  = niche_config.get('broll_dirs', {})
             self.keyword_map = niche_config.get('keyword_map', {})
         else:
             self.broll_dirs = {
-                'castle': 'medieval_castle_imgs',
-                'chess': 'chess_strategy_imgs',
-                'book': 'old_book_pages_turning_vids',
-                'candle': 'candle_flame_vids',
-                'ink': 'ink_writing_vids',
-                'storm': 'storm_clouds_time_lapse_vids'
+                'space':   'space_vids',
+                'ancient': 'ancient_ruins_vids',
+                'cosmic':  'cosmic_vids',
+                'sky':     'dark_sky_vids',
+                'temple':  'temple_vids',
             }
-            
             self.keyword_map = {
-                'castle': ['power', 'prince', 'war', 'kingdom', 'ruler', 'conquer', 'throne', 'empire'],
-                'chess': ['strategy', 'wise', 'think', 'plan', 'move', 'game', 'cunning', 'clever'],
-                'book': ['write', 'book', 'knowledge', 'teach', 'learn', 'wisdom', 'read'],
-                'ink': ['write', 'author', 'pen', 'letter', 'word', 'text', 'document'],
-                'storm': ['chaos', 'turbulent', 'conflict', 'danger', 'dark', 'fear', 'storm'],
-                'candle': ['light', 'truth', 'reveal', 'illuminate', 'see', 'darkness', 'flame']
+                'space':   ['universe', 'galaxy', 'black hole', 'star', 'planet', 'cosmos', 'light year', 'nasa', 'orbit'],
+                'ancient': ['ancient', 'civilization', 'pyramid', 'ruins', 'lost', 'buried', 'forgotten', 'artifact', 'archaeology'],
+                'cosmic':  ['time', 'reality', 'dimension', 'quantum', 'existence', 'consciousness', 'infinity', 'parallel'],
+                'sky':     ['sky', 'atmosphere', 'cloud', 'above', 'beyond', 'vast', 'endless', 'horizon', 'void'],
+                'temple':  ['religion', 'god', 'sacred', 'ritual', 'belief', 'worship', 'divine', 'spiritual', 'ancient'],
             }
-            
-    def _add_cta_overlay(self, video_input, output_path, duration, niche="love"):
-        filters = []
-        
-        if niche == "love":
-            start_text = random.choice([
-                "Double tap if you felt this ❤",
-                "This hit deep... double tap ♡",
-                "Tag someone who needs this ❤",
-                "Save this for later ♡"
-            ])
-            end_text = "Follow for more love ♡"
-        elif niche == "philosophy":
-            start_text = "Pause if this made you think"
-            end_text = "Follow for daily wisdom"
-        else:
-            start_text = "Double tap if this hit home"
-            end_text = "Follow for more"
-            
-        filters.append(
-            f"drawtext=text='{start_text}':fontcolor=#FFB6FF:fontsize=52:font=Dancing Script:"
-            f"borderw=3:bordercolor=#80000000:shadowx=3:shadowy=3:x=(w-text_w)/2:y=h*0.68:enable='lt(t,5)'"
-        )
-        filters.append(
-            f"drawtext=text='{end_text}':fontcolor=white:fontsize=48:font=Dancing Script:"
-            f"borderw=3:bordercolor=black:shadowx=2:shadowy=2:x=(w-text_w)/2:y=h*0.75:enable='gt(t,{duration-3})'"
-        )
-        
-        cmd = ['ffmpeg', '-y', '-i', video_input, '-vf', ','.join(filters), '-c:a', 'copy', output_path]
-        subprocess.run(cmd, check=True, capture_output=True)
-        print(f"✨ {niche.upper()} CTA added!")       
-        
+
     def get_audio_duration(self):
-        """Get audio duration in seconds"""
         cmd = [
             'ffprobe', '-v', 'error',
             '-show_entries', 'format=duration',
@@ -96,9 +63,8 @@ class ViralShortsGenerator:
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         return float(result.stdout.strip())
-    
+
     def get_video_info(self, filepath):
-        """Get video/image dimensions and type"""
         cmd = [
             'ffprobe', '-v', 'error',
             '-select_streams', 'v:0',
@@ -108,395 +74,233 @@ class ViralShortsGenerator:
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         try:
-            data = json.loads(result.stdout)
-            width = data['streams'][0]['width']
+            data   = json.loads(result.stdout)
+            width  = data['streams'][0]['width']
             height = data['streams'][0]['height']
-            aspect_ratio = width / height
-            return width, height, aspect_ratio
+            return width, height, width / height
         except:
             return None, None, None
-    
+
     def get_all_files_from_dir(self, directory):
-        """Get all VIDEO files from a directory (no images)"""
         if not os.path.exists(directory):
             return []
-        
-        valid_extensions = ('.mp4', '.mov', '.avi')
-        files = [os.path.join(directory, f) for f in os.listdir(directory) 
-                if f.lower().endswith(valid_extensions)]
-        return files
-    
-    def analyze_subtitles_for_keywords(self, srt_path):
-        """Analyze subtitles and create timeline with matched categories"""
-        if not os.path.exists(srt_path):
-            return list(self.broll_dirs.keys())[:3]
+        valid = ('.mp4', '.mov', '.avi')
+        return [os.path.join(directory, f)
+                for f in os.listdir(directory)
+                if f.lower().endswith(valid)]
 
-        with open(srt_path, 'r', encoding='utf-8') as f:
-            content = f.read().lower()
-
-        category_scores = {}
-        for category, keywords in self.keyword_map.items():
-            score = sum(content.count(keyword) for keyword in keywords)
-            category_scores[category] = score
-
-        sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
-        detected = [cat for cat, score in sorted_cats if score > 0]
-
-        keyword_to_folder = {
-            'hands': 'holding_hands_imgs',
-            'candle': 'romantic_candle_vids',
-            'couple': 'couple_romantic_vids',
-            'sunset': 'sunset_romantic_vids',
-            'flowers': 'romantic_flowers_vids',
-            'city': 'date_night_city_vids',
-            'book': 'old_book_pages_turning_vids',
-            'ink': 'ink_writing_vids',
-            'castle': 'medieval_castle_imgs',
-            'chess': 'chess_strategy_imgs',
-            'storm': 'storm_clouds_time_lapse_vids',
-        }
-
-        top_categories = []
-        for d in detected:
-            folder = keyword_to_folder.get(d)
-            if folder and folder in self.broll_dirs:
-                top_categories.append(folder)
-  
-        # fallback: if nothing valid, take first 3 available folders
-        if not top_categories:
-            top_categories = list(self.broll_dirs.keys())[:3]
-
-        return top_categories
-    
-    def create_reddit_video_simple(self, auto_generate_subs=True, subtitle_style="reddit_white", fps=30):
-        """Simplified version for Reddit stories - just loop ONE gameplay video"""
-        
-        import time
-        overall_start = time.time()
-        
-        duration = self.get_audio_duration()
-        print(f"\n{'='*70}")
-        print(f"🎬 CREATING REDDIT STORY VIDEO")
-        print(f"{'='*70}")
-        print(f"⏱️  Duration: {duration:.2f} seconds")
-        
-        # Get the gameplay video (just use the first video found)
-        gameplay_dir = "reddit_gameplay_vids"
-        gameplay_files = self.get_all_files_from_dir(gameplay_dir)
-        
-        if not gameplay_files:
-            raise Exception(f"No gameplay videos found in {gameplay_dir}")
-        
-        gameplay_video = gameplay_files[0]
-        print(f"🎮 Using gameplay: {os.path.basename(gameplay_video)}")
-        
-        # Generate subtitles
-        srt_path = None
-        if auto_generate_subs:
-            if os.path.exists('subtitles.srt'):
-                print(f"✅ Using existing subtitles.srt")
-                srt_path = 'subtitles.srt'
-            else:
-                srt_path = self.generate_subtitles_with_whisper()
-        
-        # Create looped gameplay base
-        print(f"\n🎬 Processing gameplay video...")
-        looped_video = "gameplay_looped.mp4"
-        
-        # Get gameplay duration
-        gameplay_duration_cmd = [
-            'ffprobe', '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            gameplay_video
-        ]
-        result = subprocess.run(gameplay_duration_cmd, capture_output=True, text=True)
-        gameplay_duration = float(result.stdout.strip())
-        
-        # Calculate how many loops needed
-        loops_needed = int(duration / gameplay_duration) + 1
-        
-        # Create looped + cropped gameplay
-        cmd = [
-            'ffmpeg', '-y',
-            '-stream_loop', str(loops_needed),
-            '-i', gameplay_video,
-            '-t', str(duration),
-            '-vf', 'scale=-2:1920:force_original_aspect_ratio=increase,crop=1080:1920,format=yuv420p',
-            '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '23',
-            '-an',  # No audio from gameplay
-            looped_video
-        ]
-        subprocess.run(cmd, check=True, capture_output=True)
-        print(f"✅ Gameplay looped and cropped to 9:16")
-        
-        # Add subtitles + audio
-        print(f"\n🎬 Adding subtitles and audio...")
-        
-        cmd = ['ffmpeg', '-y', '-i', looped_video, '-i', self.audio_path]
-        
-        # Add subtitles
-        if srt_path and os.path.exists(srt_path):
-            sub_path = srt_path.replace('\\', '/').replace(':', '\\:')
-            
-            # Reddit-style subtitle (bold, clear, easy to read)
-            reddit_style = "force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=3,Outline=2,Shadow=0,Bold=1,MarginV=150,Alignment=2'"
-            
-            vf = f"subtitles='{sub_path}':{reddit_style}"
-            cmd.extend(['-vf', vf])
-        
-        cmd.extend([
-            '-map', '0:v',
-            '-map', '1:a',
-            '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '23',
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-ar', '48000',
-            '-shortest',
-            self.output_path
-        ])
-        
-        subprocess.run(cmd, check=True, capture_output=True)
-        
-        # Add CTA overlay
-        print(f"\n🎬 Adding CTA overlay...")
-        cta_output = self.output_path.replace(".mp4", "_cta.mp4")
-        
-        # Reddit-specific CTA
-        filters = []
-        filters.append(
-            f"drawtext=text='Comment 1 or 2 below':fontcolor=white:fontsize=48:font=Arial:"
-            f"borderw=3:bordercolor=black:shadowx=2:shadowy=2:x=(w-text_w)/2:y=h*0.08:enable='lt(t,3)'"
-        )
-        filters.append(
-            f"drawtext=text='Part 2 on the channel':fontcolor=yellow:fontsize=44:font=Arial:"
-            f"borderw=3:bordercolor=black:shadowx=2:shadowy=2:x=(w-text_w)/2:y=h*0.88:enable='gt(t,{duration-3})'"
-        )
-        
-        cmd = ['ffmpeg', '-y', '-i', self.output_path, '-vf', ','.join(filters), '-c:a', 'copy', cta_output]
-        subprocess.run(cmd, check=True, capture_output=True)
-        
-        self.output_path = cta_output
-        
-        # Cleanup
-        if os.path.exists(looped_video):
-            os.remove(looped_video)
-        
-        total_time = time.time() - overall_start
-        file_size = os.path.getsize(self.output_path) / (1024 * 1024)
-        
-        print(f"\n{'='*70}")
-        print(f"✅ REDDIT VIDEO READY!")
-        print(f"{'='*70}")
-        print(f"📁 Output: {self.output_path}")
-        print(f"💾 Size: {file_size:.2f} MB")
-        print(f"⏱️  Duration: {duration:.2f}s")
-        print(f"⚡ Processing Time: {total_time:.1f}s")
-        print(f"🎮 Gameplay: {os.path.basename(gameplay_video)}")
-        print(f"{'='*70}\n")
-        
-        return True
-
-    def create_segment_plan(self, duration, top_categories):
-        """Create a plan for video segments - VIDEOS ONLY, NO IMAGES"""
-        segments = []
-        remaining_time = duration
-        base_segment_duration = 5.0
-        num_segments = int(remaining_time / base_segment_duration)
-        
-        used_files = set()  # Track used files to prevent reuse
-
-        for i in range(num_segments):
-            category = top_categories[i % len(top_categories)]
-            files = self.get_all_files_from_dir(self.broll_dirs.get(category, [])) 
-            
-            if files:
-                # Filter out already used files
-                available_files = [f for f in files if f not in used_files]
-                
-                # If all files in this category have been used, reset and allow reuse
-                if not available_files:
-                    print(f"  ⚠️  All files in '{category}' used, allowing reuse...")
-                    available_files = files
-                    used_files.clear()
-                
-                segment_duration = base_segment_duration + random.uniform(-1.5, 1.5)
-                selected_file = random.choice(available_files)
-                used_files.add(selected_file)  # Mark this file as used
-                
-                if self.is_video(selected_file):
-                    segments.append({
-                        'type': 'broll',
-                        'category': category,
-                        'file': selected_file,
-                        'duration': segment_duration
-                    })
-
-        total_duration = sum(s['duration'] for s in segments)
-        if segments and total_duration < duration:
-            segments[-1]['duration'] += (duration - total_duration)
-
-        return segments
-    
     def is_video(self, filepath):
-        """Check if file is a video"""
         return filepath.lower().endswith(('.mp4', '.mov', '.avi'))
-    
-    def process_segment_to_file(self, segment, output_file, fps=30, progress_callback=None):
-        """Process a single segment - VIDEOS ONLY"""
-        duration = segment['duration']
-        width, height, aspect = self.get_video_info(segment['file'])
-        
-        cmd = ['ffmpeg', '-y', '-progress', 'pipe:1', '-nostats']
-        cmd.extend(['-i', segment['file'], '-t', str(duration)])
-        
-        filters = []
-        
-        if aspect and aspect < 0.7:  
-            filters.append("scale=1080:1920:force_original_aspect_ratio=decrease")
-            filters.append("pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black")
-        else:  
-            filters.append("scale=-2:1920:force_original_aspect_ratio=increase")
-            filters.append("crop=1080:1920")
-        
-        #filters.append(f"fade=t=in:st=0:d=0.3")
-        #filters.append(f"fade=t=out:st={duration-0.3}:d=0.3")
-        
-        filters.append("format=yuv420p")
-        
-        cmd.extend(['-vf', ','.join(filters)])
-        cmd.extend([
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',  
-            '-crf', '23',
-            '-pix_fmt', 'yuv420p',
-            '-an',  
-            output_file
-        ])
-        
-        if progress_callback:
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, bufsize=1)
-            total_frames = int(duration * fps)
-            last_frame = 0
-            
-            for line in process.stderr:
-                if 'frame=' in line:
-                    try:
-                        for part in line.split():
-                            if part.startswith('frame='):
-                                frame_str = part.split('=')[1]
-                                current_frame = int(frame_str)
-                                if current_frame > last_frame:
-                                    last_frame = current_frame
-                                    progress_callback(current_frame, total_frames)
-                                break
-                    except:
-                        pass
-            
-            process.wait()
-            if last_frame > 0:
-                progress_callback(total_frames, total_frames)
-            
-            if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, cmd)
-        else:
-            subprocess.run(cmd, check=True, capture_output=True)
-        
-        return output_file
-    
+
+    def _format_srt_time(self, seconds):
+        h  = int(seconds // 3600)
+        m  = int((seconds % 3600) // 60)
+        s  = int(seconds % 60)
+        ms = int((seconds % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
     def generate_subtitles_with_whisper(self, model="base"):
-        """Generate subtitles using Whisper with caching"""
         cache_file = f"{os.path.splitext(self.audio_path)[0]}_transcription.json"
-        
+
         if os.path.exists(cache_file):
-            print(f"✅ Using cached transcription from {cache_file}")
+            print(f"✅ Using cached transcription")
             with open(cache_file, 'r', encoding='utf-8') as f:
                 result = json.load(f)
         else:
             try:
                 import whisper
-                print(f"🎤 Transcribing audio with Whisper ({model} model)...")
-                
+                print(f"🎤 Transcribing with Whisper ({model})...")
                 if not hasattr(whisper, 'load_model'):
-                    raise ImportError("Wrong whisper package installed")
-                
-                model_whisper = whisper.load_model(model)
-                result = model_whisper.transcribe(
-                    self.audio_path,
-                    word_timestamps=True,
-                    language="en"
-                )
-                
+                    raise ImportError("Wrong whisper package")
+                wm     = whisper.load_model(model)
+                result = wm.transcribe(self.audio_path, word_timestamps=True, language="en")
                 with open(cache_file, 'w', encoding='utf-8') as f:
                     json.dump(result, f, indent=2)
-                print(f"💾 Cached transcription to {cache_file}")
-                
-            except (ImportError, AttributeError) as e:
-                print(f"\n❌ Whisper Error: {e}")
-                print("\n" + "="*70)
-                print("🔧 WHISPER INSTALLATION ISSUE")
-                print("="*70)
-                print("\n⚠️  You have the WRONG 'whisper' package!")
-                print("\n📝 Fix with:")
-                print("  pip uninstall whisper -y")
-                print("  pip install openai-whisper")
-                print("="*70 + "\n")
-                return None
+                print(f"💾 Cached transcription")
             except Exception as e:
-                print(f"\n❌ Error during transcription: {e}")
+                print(f"❌ Whisper error: {e}")
                 return None
-        
+
         srt_path = "subtitles.srt"
         with open(srt_path, 'w', encoding='utf-8') as f:
-            counter = 1
+            counter    = 1
+            chunk_size = 2
             for segment in result['segments']:
                 words = segment.get('words', [])
                 if not words:
                     continue
-                
-                chunk_size = 3
                 for i in range(0, len(words), chunk_size):
-                    chunk = words[i:i+chunk_size]
+                    chunk = words[i:i + chunk_size]
                     if not chunk:
                         continue
-                    
                     start = chunk[0]['start']
-                    end = chunk[-1]['end']
-                    text = ' '.join([w['word'].strip() for w in chunk])
-                    
+                    end   = chunk[-1]['end']
+                    text  = ' '.join([w['word'].strip() for w in chunk])
                     f.write(f"{counter}\n")
                     f.write(f"{self._format_srt_time(start)} --> {self._format_srt_time(end)}\n")
                     f.write(f"{text.upper()}\n\n")
                     counter += 1
-        
-        print(f"✅ Subtitles saved to {srt_path}")
+
+        print(f"✅ Subtitles saved")
         return srt_path
-    
-    def _format_srt_time(self, seconds):
-        """Format seconds to SRT timestamp"""
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
-        millis = int((seconds % 1) * 1000)
-        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
-    
-    def create_viral_video(self, auto_generate_subs=True, subtitle_style="cinematic",
-                       bg_music=None, bg_volume=0.15, fps=30):
-        
+
+    def analyze_subtitles_for_keywords(self, srt_path):
+        if not srt_path or not os.path.exists(srt_path):
+            return list(self.broll_dirs.values())[:3]
+
+        with open(srt_path, 'r', encoding='utf-8') as f:
+            content = f.read().lower()
+
+        scores = {}
+        for cat, kws in self.keyword_map.items():
+            scores[cat] = sum(content.count(k) for k in kws)
+
+        sorted_cats = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        detected    = [c for c, s in sorted_cats if s > 0]
+
+        folder_map = {
+            'space':   'space_vids',
+            'ancient': 'ancient_ruins_vids',
+            'cosmic':  'cosmic_vids',
+            'sky':     'dark_sky_vids',
+            'temple':  'temple_vids',
+        }
+
+        top = []
+        for d in detected:
+            folder = folder_map.get(d)
+            if folder and folder in self.broll_dirs.values():
+                top.append(folder)
+
+        if not top:
+            top = list(self.broll_dirs.values())[:3]
+
+        return top
+
+    def create_segment_plan(self, duration, top_categories):
+        segments              = []
+        base_segment_duration = 4.0
+        num_segments          = int(duration / base_segment_duration)
+        used_files            = set()
+
+        for i in range(num_segments):
+            category = top_categories[i % len(top_categories)]
+            files    = self.get_all_files_from_dir(category)
+
+            if files:
+                available = [f for f in files if f not in used_files]
+                if not available:
+                    available = files
+                    used_files.clear()
+
+                seg_dur       = base_segment_duration + random.uniform(-1.0, 1.0)
+                selected_file = random.choice(available)
+                used_files.add(selected_file)
+
+                if self.is_video(selected_file):
+                    segments.append({
+                        'type':     'broll',
+                        'category': category,
+                        'file':     selected_file,
+                        'duration': seg_dur,
+                    })
+
+        total = sum(s['duration'] for s in segments)
+        if segments and total < duration:
+            segments[-1]['duration'] += (duration - total)
+
+        return segments
+
+    def process_segment_to_file(self, segment, output_file, fps=30, progress_callback=None):
+        duration = segment['duration']
+        width, height, aspect = self.get_video_info(segment['file'])
+
+        cmd = ['ffmpeg', '-y', '-progress', 'pipe:1', '-nostats']
+        cmd.extend(['-i', segment['file'], '-t', str(duration)])
+
+        vf_filters = []
+
+        if aspect and aspect < (OUTPUT_WIDTH / OUTPUT_HEIGHT):
+            vf_filters.append(f"scale={OUTPUT_WIDTH}:-2:force_original_aspect_ratio=decrease")
+            vf_filters.append(f"pad={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black")
+        else:
+            vf_filters.append(f"scale=-2:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase")
+            vf_filters.append(f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}")
+
+        vf_filters.append(f"zoompan=z='min(zoom+0.0008,1.05)':d={int(duration*fps)}:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:fps={fps}")
+        vf_filters.append("format=yuv420p")
+
+        cmd.extend(['-vf', ','.join(vf_filters)])
+        cmd.extend([
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-crf', '23',
+            '-pix_fmt', 'yuv420p',
+            '-an',
+            output_file
+        ])
+
+        if progress_callback:
+            process      = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                            universal_newlines=True, bufsize=1)
+            total_frames = int(duration * fps)
+            last_frame   = 0
+            for line in process.stderr:
+                if 'frame=' in line:
+                    try:
+                        for part in line.split():
+                            if part.startswith('frame='):
+                                cf = int(part.split('=')[1])
+                                if cf > last_frame:
+                                    last_frame = cf
+                                    progress_callback(cf, total_frames)
+                                break
+                    except:
+                        pass
+            process.wait()
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(process.returncode, cmd)
+        else:
+            subprocess.run(cmd, check=True, capture_output=True)
+
+        return output_file
+
+    def _add_cta_overlay(self, video_input, output_path, duration):
+        start_texts = [
+            "Follow if this broke your brain",
+            "Save this and watch again later",
+            "Share if you never knew this",
+            "Comment what shocked you most",
+        ]
+        start_text = random.choice(start_texts)
+        end_text   = "Vaults of History"
+        end_time   = round(duration - 4, 3)
+
+        vf = (
+            f"drawtext=text='{start_text}'"
+            f":fontcolor=white:fontsize=38:font=Arial"
+            f":borderw=3:bordercolor=black:shadowx=2:shadowy=2"
+            f":x=(w-text_w)/2:y=h*0.06:enable='lt(t\\,4)',"
+            f"drawtext=text='{end_text}'"
+            f":fontcolor=yellow:fontsize=42:font=Arial"
+            f":borderw=3:bordercolor=black:shadowx=2:shadowy=2"
+            f":x=(w-text_w)/2:y=h*0.91:enable='gt(t\\,{end_time})'"
+        )
+
+        cmd = ['ffmpeg', '-y', '-i', video_input, '-vf', vf, '-c:a', 'copy', output_path]
+        subprocess.run(cmd, check=True, capture_output=True)
+        print(f"✨ CTA overlay added!")
+
+    def create_vaults_video(self, auto_generate_subs=True, bg_music=None, bg_volume=0.12, fps=30):
         import time
         overall_start = time.time()
-        
+
         duration = self.get_audio_duration()
         print(f"\n{'='*70}")
-        print(f"🎬 CREATING VIRAL VIDEO (FAST MODE)")
+        print(f"🏛  CREATING VAULTS OF HISTORY VIDEO  (16:9)")
         print(f"{'='*70}")
-        print(f"⏱️  Total Duration: {duration:.2f} seconds")
-        print(f"⚡ Optimized for SPEED with subtle motion effects")
-        
+        print(f"⏱  Duration: {duration:.2f}s")
+
         srt_path = None
         if auto_generate_subs:
             if os.path.exists('subtitles.srt'):
@@ -505,140 +309,106 @@ class ViralShortsGenerator:
             else:
                 srt_path = self.generate_subtitles_with_whisper()
                 if not srt_path:
-                    print(f"⚠️  Continuing without subtitles...")
-        
-        print(f"\n🧠 Analyzing content for smart B-roll matching...")
-        top_categories = self.analyze_subtitles_for_keywords(srt_path) if srt_path else list(self.broll_dirs.keys())[:3]
-        print(f"📊 Top themes detected: {', '.join(top_categories)}")
-        
+                    print(f"⚠  Continuing without subtitles...")
+
+        print(f"\n🧠 Analyzing for keyword matched B-roll...")
+        top_categories = self.analyze_subtitles_for_keywords(srt_path)
+        print(f"📊 Matched themes: {', '.join(top_categories)}")
+
         segments = self.create_segment_plan(duration, top_categories)
-        
-        print(f"\n📋 VIDEO SEGMENTS PLAN:")
-        print(f"{'='*70}")
+
+        print(f"\n📋 SEGMENT PLAN ({len(segments)} clips):")
         for i, seg in enumerate(segments):
-            w, h, aspect = self.get_video_info(seg['file'])
-            ratio = f"{w}x{h}" if w else "unknown"
-            print(f"  {i+1}. B-roll ({seg['duration']:.1f}s) - {seg['category']} - {os.path.basename(seg['file'])} [{ratio}]")
-        
-        print(f"\n🎬 PASS 1: Processing {len(segments)} segments (FAST)...")
-        temp_files = []
-        concat_list = "concat_list.txt"
+            print(f"  {i+1}. {seg['duration']:.1f}s  {seg['category']}  {os.path.basename(seg['file'])}")
+
+        print(f"\n🎬 PASS 1: Processing segments...")
+        temp_files    = []
+        concat_list   = "concat_list.txt"
         concat_output = "concatenated_video.mp4"
-        
+
         try:
             try:
                 from tqdm import tqdm
                 use_tqdm = True
             except ImportError:
                 use_tqdm = False
-            
+
             for i, seg in enumerate(segments):
                 temp_file = f"temp_segment_{i:02d}.mp4"
-                start_time = time.time()
-                
+                t0        = time.time()
+
                 if use_tqdm:
                     total_frames = int(seg['duration'] * fps)
-                    pbar = tqdm(total=total_frames, 
-                            desc=f"  Segment {i+1}/{len(segments)}: {os.path.basename(seg['file'])[:30]}", 
-                            unit='frame',
-                            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
-                    
-                    def update_progress(current, total):
-                        pbar.n = min(current, total)
-                        pbar.refresh()
-                    
+                    pbar = tqdm(total=total_frames,
+                                desc=f"  Seg {i+1}/{len(segments)}: {os.path.basename(seg['file'])[:30]}",
+                                unit='frame')
+                    def upd(cur, tot, pb=pbar):
+                        pb.n = min(cur, tot)
+                        pb.refresh()
                     try:
-                        self.process_segment_to_file(seg, temp_file, fps, progress_callback=update_progress)
+                        self.process_segment_to_file(seg, temp_file, fps, progress_callback=upd)
                     finally:
-                        pbar.n = pbar.total 
+                        pbar.n = pbar.total
                         pbar.refresh()
                         pbar.close()
-                        elapsed = time.time() - start_time
-                        print(f"    ✓ Done in {elapsed:.1f}s")
+                        print(f"    ✓ {time.time()-t0:.1f}s")
                 else:
-                    print(f"  Processing segment {i+1}/{len(segments)}: {os.path.basename(seg['file'])}", end='', flush=True)
+                    print(f"  Seg {i+1}/{len(segments)}: {os.path.basename(seg['file'])}", end='', flush=True)
                     self.process_segment_to_file(seg, temp_file, fps)
-                    elapsed = time.time() - start_time
-                    print(f" ✓ ({elapsed:.1f}s)")
-                
+                    print(f" ✓ ({time.time()-t0:.1f}s)")
+
                 temp_files.append(temp_file)
-            
-            print(f"\n🎬 PASS 2: Concatenating {len(temp_files)} segments...")
-            concat_start = time.time()
-            
+
+            print(f"\n🎬 PASS 2: Concatenating...")
             with open(concat_list, 'w') as f:
                 for tf in temp_files:
                     f.write(f"file '{tf}'\n")
-            
-            if use_tqdm:
-                print("  Merging segments...", end='', flush=True)
-            
-            cmd = [
-                'ffmpeg', '-y',
-                '-f', 'concat',
-                '-safe', '0',
-                '-i', concat_list,
-                '-c', 'copy',
-                concat_output
-            ]
-            subprocess.run(cmd, check=True, capture_output=True)
-            concat_elapsed = time.time() - concat_start
-            
-            if use_tqdm:
-                print(f" ✓ ({concat_elapsed:.1f}s)")
-            else:
-                print(f"  ✓ Concatenation complete ({concat_elapsed:.1f}s)")
-            
-            # PASS 3: Add subtitles + audio
-            print(f"\n🎬 PASS 3: Adding subtitles, audio, and music...")
-            final_start = time.time()
-            
+            subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+                            '-i', concat_list, '-c', 'copy', concat_output],
+                           check=True, capture_output=True)
+            print(f"  ✓ Done")
+
+            print(f"\n🎬 PASS 3: Adding subtitles, audio, music...")
+
             cmd = ['ffmpeg', '-y', '-i', concat_output, '-i', self.audio_path]
             if bg_music and os.path.exists(bg_music):
                 cmd.extend(['-i', bg_music])
-                print(f"  🎵 Including background music")
-            
-            # Subtitles
+                print(f"  🎵 Background music: {bg_music}")
+
+            vaults_style = (
+                "force_style='FontName=Arial,"
+                "FontSize=24,"
+                "PrimaryColour=&H00FFFFFF,"
+                "OutlineColour=&H00000000,"
+                "BorderStyle=1,"
+                "Outline=3,"
+                "Shadow=1,"
+                "Bold=1,"
+                "MarginV=60,"
+                "Alignment=2'"
+            )
+
             if srt_path and os.path.exists(srt_path):
-                print(f"  📝 Adding {subtitle_style} style subtitles")
                 sub_path = srt_path.replace('\\', '/').replace(':', '\\:')
-                subtitle_styles = {
-                    'love_pink': "force_style='FontName=Comic Sans MS,FontSize=16,PrimaryColour=&H00FFB6FF,OutlineColour=&H00FFFFFF,BorderStyle=1,Outline=2,Shadow=3,MarginV=130,Alignment=2,Bold=0'",
-                    'cursive_elegant': "force_style='FontName=Great Vibes,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BackColour=&H40000000,BorderStyle=3,Outline=1,Shadow=1,Blur=1.5,MarginV=130,Alignment=2,Bold=0'",
-                    'cursive_pink_soft': "force_style='FontName=Dancing Script,FontSize=17,PrimaryColour=&H00FFB6FF,OutlineColour=&H80000000,Outline=1,Shadow=0,Blur=2,MarginV=210,Alignment=2,Bold=0'",
-                    'cursive_pink_blur': "force_style='FontName=Dancing Script,FontSize=17,PrimaryColour=&H00FFB6FF,OutlineColour=&H80000000,BackColour=&H25FF5588,BorderStyle=3,Outline=0.8,Shadow=0,Blur=2.5,MarginV=125,Alignment=2,Bold=0'",
-                    'cursive_red_glow': "force_style='FontName=Dancing Script,FontSize=17,PrimaryColour=&H00FF8888,OutlineColour=&H00FFFFFF,BackColour=&H00000000,BorderStyle=1,Outline=0,Shadow=0,Blur=3.5,MarginV=125,Alignment=2,Bold=0'",
-                    'cursive_white_softpink': "force_style='FontName=Dancing Script,FontSize=17,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BackColour=&H30FF99BB,BorderStyle=3,Outline=1,Shadow=0,Blur=2,MarginV=125,Alignment=2,Bold=0'",
-                    'cursive_luxury': "force_style='FontName=Alex Brush,FontSize=18,PrimaryColour=&H00FFDDAA,OutlineColour=&H80000000,BackColour=&H35000000,BorderStyle=3,Outline=1,Shadow=1,Blur=1.5,MarginV=130,Alignment=2,Bold=0'",
-                    'handwriting_white': "force_style='FontName=Reenie Beanie,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BackColour=&H30000000,BorderStyle=3,Outline=1,Shadow=1,Blur=1,MarginV=125,Alignment=2,Bold=0'",
-                    'romantic_gold': "force_style='FontName=Great Vibes,FontSize=18,PrimaryColour=&H00C19A6B,OutlineColour=&H80000000,BackColour=&H40000000,BorderStyle=3,Outline=1,Shadow=1,Blur=2,MarginV=130,Alignment=2,Bold=0'",
-                    'brush_script': "force_style='FontName=Brush Script MT Italic,FontSize=17,PrimaryColour=&H00FFD700,OutlineColour=&H80000000,BackColour=&H35000000,BorderStyle=3,Outline=1,Shadow=1,Blur=1.5,MarginV=125,Alignment=2,Bold=0'",
-                }
-                sub_style = subtitle_styles.get(subtitle_style, subtitle_styles['love_pink'])
-                vf = f"subtitles='{sub_path}':{sub_style}"
+                vf       = f"subtitles='{sub_path}':{vaults_style}"
                 cmd.extend(['-vf', vf])
+                print(f"  📝 Vaults subtitle style applied")
             else:
-                print(f"  ⚠️  Skipping subtitles (not available)")
-            
+                print(f"  ⚠  No subtitles")
+
             if bg_music and os.path.exists(bg_music):
                 filter_complex = (
                     f'[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=1.0[voice];'
                     f'[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume={bg_volume},aloop=loop=-1:size=2e+09[bg];'
                     f'[voice][bg]amix=inputs=2:duration=first:dropout_transition=2,aresample=48000[aout]'
                 )
-                cmd.extend([
-                    '-filter_complex', filter_complex,
-                    '-map', '0:v',
-                    '-map', '[aout]'
-                ])
+                cmd.extend(['-filter_complex', filter_complex,
+                             '-map', '0:v', '-map', '[aout]'])
             else:
-                cmd.extend([
-                    '-map', '0:v',
-                    '-af', 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo',
-                    '-map', '1:a'
-                ])
-            
-            # Final encoding
+                cmd.extend(['-map', '0:v',
+                             '-af', 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo',
+                             '-map', '1:a'])
+
             cmd.extend([
                 '-c:v', 'libx264',
                 '-preset', 'fast',
@@ -651,371 +421,208 @@ class ViralShortsGenerator:
                 '-shortest',
                 self.output_path
             ])
-            
+
             subprocess.run(cmd, check=True, capture_output=True)
-            final_elapsed = time.time() - final_start
-            print(f"  ✓ Final video complete ({final_elapsed:.1f}s)")
-            
+            print(f"  ✓ Video assembled")
+
             cta_output = self.output_path.replace(".mp4", "_cta.mp4")
-            self._add_cta_overlay(self.output_path, cta_output, duration, niche=top_categories[0])
+            self._add_cta_overlay(self.output_path, cta_output, duration)
             self.output_path = cta_output
-        
+
             total_time = time.time() - overall_start
-            file_size = os.path.getsize(self.output_path) / (1024 * 1024)
-            
+            file_size  = os.path.getsize(self.output_path) / (1024 * 1024)
+
             if file_size < 2.0:
-                print(f"\n⚠️  WARNING: Output file is suspiciously small ({file_size:.2f} MB)")
+                print(f"\n⚠  WARNING: Output suspiciously small ({file_size:.2f} MB)")
                 return False
-            
+
             print(f"\n{'='*70}")
-            print(f"✅ VIRAL VIDEO READY WITH CTA!")
+            print(f"✅ VAULTS OF HISTORY VIDEO READY!")
             print(f"{'='*70}")
-            print(f"📁 Output: {self.output_path}")
-            print(f"💾 Size: {file_size:.2f} MB")
-            print(f"⏱️  Duration: {duration:.2f}s")
-            print(f"⚡ Processing Time: {total_time:.1f}s ({total_time/60:.1f} min)")
-            print(f"🎨 Segments: {len(segments)} clips with subtle motion")
-            print(f"🎯 Themes: {', '.join(top_categories)}")
-            if not srt_path:
-                print(f"⚠️  Note: Video created WITHOUT subtitles")
-            print(f"\n🚀 Ready to GO VIRAL on TikTok/Shorts/Reels!")
+            print(f"📁 Output  : {self.output_path}")
+            print(f"💾 Size    : {file_size:.2f} MB")
+            print(f"⏱  Duration: {duration:.2f}s")
+            print(f"⚡ Time    : {total_time:.1f}s ({total_time/60:.1f} min)")
+            print(f"📐 Format  : {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} 16:9")
             print(f"{'='*70}\n")
             return True
-        
+
         except subprocess.CalledProcessError as e:
-            print(f"\n❌ Error creating video: {e}")
+            print(f"\n❌ FFmpeg error: {e}")
             if e.stderr:
-                print(f"Error details:\n{e.stderr.decode()[-1000:]}")
+                print(e.stderr.decode()[-1000:])
             return False
-        
+
         finally:
-            print(f"\n🧹 Cleaning up temporary files...")
+            print(f"\n🧹 Cleaning up...")
             for tf in temp_files:
                 if os.path.exists(tf):
                     os.remove(tf)
-            if os.path.exists(concat_list):
-                os.remove(concat_list)
-            if os.path.exists(concat_output):
-                os.remove(concat_output)
+            for f in [concat_list, concat_output]:
+                if os.path.exists(f):
+                    os.remove(f)
 
 
 NICHE_TEMPLATES = {
-    'philosophy': {
+    'vaults': {
         'broll_dirs': {
-            'castle': 'medieval_castle_imgs',
-            'chess': 'chess_strategy_imgs',
-            'book': 'old_book_pages_turning_vids',
-            'candle': 'candle_flame_vids',
-            'ink': 'ink_writing_vids',
-            'storm': 'storm_clouds_time_lapse_vids'
+            'space':   'space_vids',
+            'ancient': 'ancient_ruins_vids',
+            'cosmic':  'cosmic_vids',
+            'sky':     'dark_sky_vids',
+            'temple':  'temple_vids',
         },
         'keyword_map': {
-            'castle': ['power', 'prince', 'war', 'kingdom', 'ruler', 'conquer', 'throne', 'empire'],
-            'chess': ['strategy', 'wise', 'think', 'plan', 'move', 'game', 'cunning', 'clever'],
-            'book': ['write', 'book', 'knowledge', 'teach', 'learn', 'wisdom', 'read'],
-            'ink': ['write', 'author', 'pen', 'letter', 'word', 'text', 'document'],
-            'storm': ['chaos', 'turbulent', 'conflict', 'danger', 'dark', 'fear', 'storm'],
-            'candle': ['light', 'truth', 'reveal', 'illuminate', 'see', 'darkness', 'flame']
+            'space':   ['universe', 'galaxy', 'black hole', 'star', 'planet', 'cosmos', 'light year', 'nasa', 'orbit'],
+            'ancient': ['ancient', 'civilization', 'pyramid', 'ruins', 'lost', 'buried', 'forgotten', 'artifact'],
+            'cosmic':  ['time', 'reality', 'dimension', 'quantum', 'existence', 'consciousness', 'infinity'],
+            'sky':     ['sky', 'atmosphere', 'cloud', 'above', 'beyond', 'vast', 'endless', 'horizon', 'void'],
+            'temple':  ['religion', 'god', 'sacred', 'ritual', 'belief', 'worship', 'divine', 'spiritual'],
         }
     },
     'love': {
         'broll_dirs': {
-            'couple': 'couple_romantic_vids',
-            'candle': 'romantic_candle_vids',
+            'couple':  'couple_romantic_vids',
+            'candle':  'romantic_candle_vids',
             'flowers': 'romantic_flowers_vids',
-            'book': 'old_book_pages_turning_vids',
-
         },
         'keyword_map': {
-            'book': ['write', 'book', 'knowledge', 'teach', 'learn', 'wisdom', 'read'],
-            'couple': ['love', 'together', 'relationship', 'partner', 'couple', 'romance', 'us', 'we'],
-            'hands': ['hold', 'touch', 'feel', 'hand', 'embrace', 'close', 'connect', 'comfort'],
-            'sunset': ['beautiful', 'moment', 'sunset', 'golden', 'magic', 'special', 'forever', 'dream'],
-            'candle': ['intimate', 'warm', 'cozy', 'soft', 'gentle', 'candlelight', 'romantic', 'tender'],
-            'flowers': ['beauty', 'gift', 'surprise', 'flowers', 'bloom', 'garden', 'rose', 'bouquet'],
-            'city': ['date', 'night', 'city', 'dinner', 'walk', 'adventure', 'explore', 'lights']
+            'couple':  ['love', 'together', 'relationship', 'partner', 'couple', 'romance'],
+            'candle':  ['intimate', 'warm', 'cozy', 'soft', 'gentle', 'candlelight'],
+            'flowers': ['beauty', 'gift', 'surprise', 'flowers', 'bloom', 'garden'],
         }
     },
-    'fitness': {
-        'broll_dirs': {
-            'gym': 'gym_workout_vids',
-            'running': 'running_outdoor_vids',
-            'weights': 'weightlifting_vids',
-            'protein': 'healthy_food_vids',
-            'motivation': 'motivation_quotes_imgs',
-            'transformation': 'body_transformation_vids'
-        },
-        'keyword_map': {
-            'gym': ['workout', 'train', 'exercise', 'gym', 'fitness', 'lift', 'muscle'],
-            'running': ['run', 'cardio', 'endurance', 'sprint', 'marathon', 'distance'],
-            'weights': ['strength', 'power', 'lift', 'weight', 'barbell', 'dumbbell', 'squat'],
-            'protein': ['nutrition', 'diet', 'eat', 'protein', 'meal', 'food', 'healthy'],
-            'motivation': ['mindset', 'discipline', 'goals', 'push', 'grind', 'hustle', 'motivation'],
-            'transformation': ['progress', 'change', 'transform', 'before', 'after', 'results', 'journey']
-        }
-    },
-    'business': {
-        'broll_dirs': {
-            'office': 'modern_office_vids',
-            'money': 'money_cash_vids',
-            'charts': 'business_charts_vids',
-            'handshake': 'business_handshake_imgs',
-            'city': 'city_skyline_vids',
-            'laptop': 'working_laptop_vids'
-        },
-        'keyword_map': {
-            'office': ['work', 'business', 'company', 'corporate', 'professional', 'career'],
-            'money': ['money', 'profit', 'revenue', 'income', 'earn', 'wealth', 'rich'],
-            'charts': ['growth', 'data', 'analytics', 'metrics', 'performance', 'results'],
-            'handshake': ['deal', 'partnership', 'agreement', 'negotiate', 'contract', 'client'],
-            'city': ['success', 'ambition', 'empire', 'scale', 'expand', 'global'],
-            'laptop': ['digital', 'online', 'remote', 'technology', 'startup', 'entrepreneur']
-        }
-    },
-    'nature': {
-        'broll_dirs': {
-            'ocean': 'ocean_waves_vids',
-            'mountain': 'mountain_landscape_vids',
-            'forest': 'forest_trees_vids',
-            'sunset': 'sunset_timelapse_vids',
-            'wildlife': 'wildlife_animals_vids',
-            'flowers': 'flowers_nature_vids'
-        },
-        'keyword_map': {
-            'ocean': ['sea', 'ocean', 'water', 'wave', 'beach', 'coast', 'marine'],
-            'mountain': ['mountain', 'peak', 'climb', 'summit', 'altitude', 'high', 'ridge'],
-            'forest': ['forest', 'tree', 'wood', 'nature', 'green', 'wilderness'],
-            'sunset': ['sun', 'light', 'dawn', 'dusk', 'sky', 'golden', 'beautiful'],
-            'wildlife': ['animal', 'wild', 'creature', 'species', 'habitat', 'natural'],
-            'flowers': ['flower', 'bloom', 'garden', 'beauty', 'color', 'petals', 'plant']
-        }
-    }
 }
 
-
-# =============== FASTAPI ENDPOINTS ===============
 
 @app.get("/")
 def root():
     return {
-        "service": "Viral Shorts Generator",
-        "status": "running",
+        "service": "Vaults of History Generator",
+        "status":  "running",
         "endpoints": {
-            "POST /generate": "Generate video from GitHub audio",
-            "GET /status": "Check status",
-            "GET /download": "Download video"
+            "POST /generate": "Generate video (query: niche=vaults)",
+            "GET /status":    "Check status",
+            "GET /download":  "Download video",
         }
     }
+
 
 @app.post("/generate")
-async def generate_video_api(background_tasks: BackgroundTasks, niche: str = "love"):
-    """
-    Generate video for specified niche
-    Query parameter: niche (default: "love")
-    Options: "love", "reddit", "fitness", "business", etc.
-    """
+async def generate_video_api(background_tasks: BackgroundTasks, niche: str = "vaults"):
     global current_job
-    
+
     if current_job["status"] == "processing":
-        return {
-            "message": "Already processing", 
-            "status": "processing",
-            "current_niche": current_job.get("niche", "unknown")
-        }
-    
+        return {"message": "Already processing", "status": "processing"}
+
     current_job = {
-        "status": "processing",
-        "progress": 0,
-        "output": None,
-        "error": None,
+        "status":     "processing",
+        "progress":   0,
+        "output":     None,
+        "error":      None,
         "started_at": datetime.now().isoformat(),
-        "niche": niche
-    }
-    
-    background_tasks.add_task(process_video, niche)
-    
-    return {
-        "message": f"Video generation started for {niche} niche",
-        "status": "processing",
-        "niche": niche
+        "niche":      niche,
     }
 
-def process_video(niche="love"):
-    """Process video generation for specified niche"""
+    background_tasks.add_task(process_video, niche)
+    return {"message": f"Started for niche: {niche}", "status": "processing"}
+
+
+def process_video(niche="vaults"):
     global current_job
-    
+
     try:
         current_job["progress"] = 10
-        
-        # Configure based on niche
-        if niche == "reddit":
-            print("📥 Downloading Reddit audio from GitHub...")
-            audio_url = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/new_love.mp3"
-            audio_file = "Audio_Voice/new_love.mp3"
-            output_file = "new_love.mp4"
-            transcription_file = "Audio_Voice/new_love_transcription.json"
-        else:
-            # Default to love niche
-            print("📥 Downloading love audio from GitHub...")
-            audio_url = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/new_love.mp3"
-            audio_file = "Audio_Voice/new_love.mp3"
-            output_file = "new_love.mp4"
-            transcription_file = "Audio_Voice/new_love_transcription.json"
-        
-        # Download audio
+
+        audio_url          = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/new_love.mp3"
+        audio_file         = "Audio_Voice/vaults_narration.mp3"
+        output_file        = "vaults_output.mp4"
+        transcription_file = "Audio_Voice/vaults_narration_transcription.json"
+        bg_music           = "bg_musics/vaults_ambient.mp3"
+
+        print(f"📥 Downloading audio...")
+        os.makedirs("Audio_Voice", exist_ok=True)
         response = requests.get(audio_url)
         if response.status_code != 200:
-            raise Exception(f"Failed to download audio: HTTP {response.status_code}")
-        
-        # Ensure directory exists
-        os.makedirs("Audio_Voice", exist_ok=True)
-        
+            raise Exception(f"Audio download failed: HTTP {response.status_code}")
         with open(audio_file, "wb") as f:
             f.write(response.content)
-        
-        print(f"✅ Audio downloaded: {audio_file}")
-        
+        print(f"✅ Audio ready")
+
         current_job["progress"] = 20
-        
-        # Clean up old files
-        old_files = [
-            output_file,
-            output_file.replace(".mp4", "_cta.mp4"),
-            "subtitles.srt",
-            transcription_file,
-            "gameplay_looped.mp4"  # Reddit temp file
-        ]
-        
-        for old_file in old_files:
-            if os.path.exists(old_file):
-                os.remove(old_file)
-                print(f"🗑 Deleted old file: {old_file}")
-        
+
+        for old in [output_file, output_file.replace(".mp4", "_cta.mp4"),
+                    "subtitles.srt", transcription_file]:
+            if os.path.exists(old):
+                os.remove(old)
+                print(f"🗑 Removed {old}")
+
         current_job["progress"] = 30
-        
-        # Generate video based on niche
-        if niche == "reddit":
-            print(f"\n🎯 Generating REDDIT story video")
-            
-            if not os.path.exists(audio_file):
-                raise Exception(f"Audio file not found: {audio_file}")
-            
-            # Create Reddit video generator (no main image needed)
-            gen = ViralShortsGenerator(
-                main_image="",  # Not used for Reddit
-                audio_path=audio_file,
-                output_path=output_file
-            )
-            
-            success = gen.create_reddit_video_simple(
-                auto_generate_subs=True,
-                subtitle_style="reddit_white",
-                fps=30
-            )
-            
-            final_output = output_file.replace(".mp4", "_cta.mp4")
-            
-        else:
-            # Love niche (or other template niches)
-            print(f"\n🎯 Using '{niche.upper()}' niche template")
-            
-            main_image = "main_images/Dating_.jpg"
-            bg_music = "bg_musics/For_Dating.mp3"
-            
-            if not os.path.exists(main_image):
-                raise Exception(f"Main image not found: {main_image}")
-            
-            if not os.path.exists(audio_file):
-                raise Exception(f"Audio file not found: {audio_file}")
-            
-            # Get niche config (default to love if not found)
-            niche_config = NICHE_TEMPLATES.get(niche, NICHE_TEMPLATES['love'])
-            
-            gen = ViralShortsGenerator(
-                main_image=main_image,
-                audio_path=audio_file,
-                output_path=output_file,
-                niche_config=niche_config
-            )
-            
-            success = gen.create_viral_video(
-                auto_generate_subs=True,
-                subtitle_style="cursive_pink_soft",
-                bg_music=bg_music if bg_music and os.path.exists(bg_music) else None,
-                bg_volume=0.25,
-                fps=30
-            )
-            
-            final_output = output_file.replace(".mp4", "_cta.mp4")
-        
+
+        niche_config = NICHE_TEMPLATES.get(niche, NICHE_TEMPLATES['vaults'])
+
+        gen = VaultsGenerator(
+            audio_path   = audio_file,
+            output_path  = output_file,
+            niche_config = niche_config,
+        )
+
+        success = gen.create_vaults_video(
+            auto_generate_subs = True,
+            bg_music           = bg_music if os.path.exists(bg_music) else None,
+            bg_volume          = 0.12,
+            fps                = 30,
+        )
+
         current_job["progress"] = 90
-        
-        # Clean up temp files
-        subtitle_file = "subtitles.srt"
-        
-        if success and os.path.exists(subtitle_file):
-            try:
-                os.remove(subtitle_file)
-                print(f"🗑 Deleted {subtitle_file}")
-                if os.path.exists(transcription_file):
-                    os.remove(transcription_file)
-                    print(f"🗑 Deleted {transcription_file}")
-            except Exception as e:
-                print(f"⚠ Failed to delete temp files: {e}")
-        
-        # Check if video was created successfully
+
+        final_output = output_file.replace(".mp4", "_cta.mp4")
+
+        for tmp in ["subtitles.srt", transcription_file]:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
         if success and os.path.exists(final_output):
-            current_job["status"] = "completed"
+            current_job["status"]   = "completed"
             current_job["progress"] = 100
-            current_job["output"] = final_output
-            print(f"✅ {niche.upper()} video ready: {final_output}")
+            current_job["output"]   = final_output
+            print(f"✅ Done: {final_output}")
         else:
-            raise Exception(f"{niche} video generation failed - output file not found")
-        
+            raise Exception("Video generation failed — output not found")
+
     except Exception as e:
-        current_job["status"] = "error"
-        current_job["error"] = str(e)
+        current_job["status"]   = "error"
+        current_job["error"]    = str(e)
         current_job["progress"] = 0
-        print(f"❌ Error generating {niche} video: {e}")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
 
+
 @app.get("/status")
 def check_status():
-    """Check current job status"""
     return {
-        "status": current_job["status"],
-        "progress": current_job["progress"],
-        "error": current_job["error"],
-        "started_at": current_job["started_at"],
-        "niche": current_job.get("niche", "unknown"),
-        "ready": current_job["status"] == "completed",
-        "output_file": current_job.get("output", None)
+        "status":      current_job["status"],
+        "progress":    current_job["progress"],
+        "error":       current_job["error"],
+        "started_at":  current_job["started_at"],
+        "niche":       current_job.get("niche", "unknown"),
+        "ready":       current_job["status"] == "completed",
+        "output_file": current_job.get("output"),
     }
+
 
 @app.get("/download")
 def download_video():
-    """Download the generated video"""
     if current_job["status"] != "completed":
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Video not ready. Current status: {current_job['status']}"
-        )
-    
+        raise HTTPException(status_code=400,
+                            detail=f"Not ready. Status: {current_job['status']}")
     if not current_job["output"] or not os.path.exists(current_job["output"]):
-        raise HTTPException(
-            status_code=404, 
-            detail="Video file not found"
-        )
-    
-    niche = current_job.get("niche", "video")
-    filename = f"{niche}_viral_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-    
-    return FileResponse(
-        current_job["output"],
-        media_type="video/mp4",
-        filename=filename
-    )
+        raise HTTPException(status_code=404, detail="File not found")
+
+    filename = f"vaults_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+    return FileResponse(current_job["output"], media_type="video/mp4", filename=filename)
+
 
 if __name__ == "__main__":
     import uvicorn
