@@ -92,6 +92,13 @@ class VaultsGenerator:
     def is_video(self, filepath):
         return filepath.lower().endswith(('.mp4', '.mov', '.avi'))
 
+    def _format_ass_time(self, seconds):
+        h  = int(seconds // 3600)
+        m  = int((seconds % 3600) // 60)
+        s  = int(seconds % 60)
+        cs = int((seconds % 1) * 100)
+        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
     def _format_srt_time(self, seconds):
         h  = int(seconds // 3600)
         m  = int((seconds % 3600) // 60)
@@ -99,6 +106,11 @@ class VaultsGenerator:
         ms = int((seconds % 1) * 1000)
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
+    # ----------------------------------------------------------
+    # GENERATE ASS SUBTITLES
+    # Full sentence shown at once. Last word highlighted yellow.
+    # Matches sackfeels style exactly.
+    # ----------------------------------------------------------
     def generate_subtitles_with_whisper(self, model="base"):
         cache_file = f"{os.path.splitext(self.audio_path)[0]}_transcription.json"
 
@@ -121,29 +133,72 @@ class VaultsGenerator:
                 print(f"❌ Whisper error: {e}")
                 return None
 
-        srt_path = "subtitles.srt"
-        with open(srt_path, 'w', encoding='utf-8') as f:
-            counter    = 1
-            chunk_size = 2
-            for segment in result['segments']:
-                words = segment.get('words', [])
-                if not words:
-                    continue
-                for i in range(0, len(words), chunk_size):
-                    chunk = words[i:i + chunk_size]
-                    if not chunk:
-                        continue
-                    start = chunk[0]['start']
-                    end   = chunk[-1]['end']
-                    text  = ' '.join([w['word'].strip() for w in chunk])
-                    f.write(f"{counter}\n")
-                    f.write(f"{self._format_srt_time(start)} --> {self._format_srt_time(end)}\n")
-                    f.write(f"{text.upper()}\n\n")
-                    counter += 1
+        # Build word list with timestamps
+        all_words = []
+        for segment in result['segments']:
+            words = segment.get('words', [])
+            for w in words:
+                all_words.append({
+                    'word':  w['word'].strip(),
+                    'start': w['start'],
+                    'end':   w['end'],
+                })
 
-        print(f"✅ Subtitles saved")
-        return srt_path
+        if not all_words:
+            return None
 
+        # Group into chunks of 4-5 words per line (full sentence style)
+        chunk_size = 4
+        chunks = []
+        for i in range(0, len(all_words), chunk_size):
+            chunk = all_words[i:i + chunk_size]
+            if chunk:
+                chunks.append(chunk)
+
+        # Generate ASS file
+        # White text for all words, last word in yellow
+        ass_path = "subtitles.ass"
+        ass_header = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+Collisions: Normal
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,80,80,120,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+        with open(ass_path, 'w', encoding='utf-8') as f:
+            f.write(ass_header)
+            for chunk in chunks:
+                start = chunk[0]['start']
+                end   = chunk[-1]['end']
+
+                words_text = [w['word'].upper() for w in chunk]
+
+                # Last word in yellow, rest in white
+                if len(words_text) > 1:
+                    white_part  = ' '.join(words_text[:-1])
+                    yellow_word = words_text[-1]
+                    line_text   = f"{white_part} {{\\c&H00FFFF&}}{yellow_word}{{\\c&H00FFFFFF&}}"
+                else:
+                    line_text = f"{{\\c&H00FFFF&}}{words_text[0]}{{\\c&H00FFFFFF&}}"
+
+                f.write(
+                    f"Dialogue: 0,{self._format_ass_time(start)},{self._format_ass_time(end)},"
+                    f"Default,,0,0,0,,{line_text}\n"
+                )
+
+        print(f"✅ ASS subtitles saved (sackfeels style)")
+        return ass_path
+
+    # ----------------------------------------------------------
+    # KEYWORD MATCHING
+    # ----------------------------------------------------------
     def analyze_subtitles_for_keywords(self, srt_path):
         if not srt_path or not os.path.exists(srt_path):
             return list(self.broll_dirs.values())[:3]
@@ -177,6 +232,9 @@ class VaultsGenerator:
 
         return top
 
+    # ----------------------------------------------------------
+    # SEGMENT PLAN
+    # ----------------------------------------------------------
     def create_segment_plan(self, duration, top_categories):
         segments              = []
         base_segment_duration = 4.0
@@ -211,6 +269,11 @@ class VaultsGenerator:
 
         return segments
 
+    # ----------------------------------------------------------
+    # PROCESS ONE SEGMENT
+    # NO zoompan -- keep videos moving naturally
+    # Just scale and crop to 16:9, add slight brightness boost
+    # ----------------------------------------------------------
     def process_segment_to_file(self, segment, output_file, fps=30, progress_callback=None):
         duration = segment['duration']
         width, height, aspect = self.get_video_info(segment['file'])
@@ -227,7 +290,8 @@ class VaultsGenerator:
             vf_filters.append(f"scale=-2:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase")
             vf_filters.append(f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}")
 
-        vf_filters.append(f"zoompan=z='min(zoom+0.0008,1.05)':d={int(duration*fps)}:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:fps={fps}")
+        # Slight brightness/contrast boost for cinematic look
+        vf_filters.append("eq=brightness=0.02:contrast=1.05:saturation=1.1")
         vf_filters.append("format=yuv420p")
 
         cmd.extend(['-vf', ','.join(vf_filters)])
@@ -265,6 +329,9 @@ class VaultsGenerator:
 
         return output_file
 
+    # ----------------------------------------------------------
+    # CTA OVERLAY
+    # ----------------------------------------------------------
     def _add_cta_overlay(self, video_input, output_path, duration):
         start_texts = [
             "Follow if this broke your brain",
@@ -279,11 +346,11 @@ class VaultsGenerator:
         vf = (
             f"drawtext=text='{start_text}'"
             f":fontcolor=white:fontsize=38:font=Arial"
-            f":borderw=3:bordercolor=black:shadowx=2:shadowy=2"
-            f":x=(w-text_w)/2:y=h*0.06:enable='lt(t\\,4)',"
+            f":borderw=2:bordercolor=black:shadowx=2:shadowy=2"
+            f":x=(w-text_w)/2:y=h*0.05:enable='lt(t\\,4)',"
             f"drawtext=text='{end_text}'"
             f":fontcolor=yellow:fontsize=42:font=Arial"
-            f":borderw=3:bordercolor=black:shadowx=2:shadowy=2"
+            f":borderw=2:bordercolor=black:shadowx=2:shadowy=2"
             f":x=(w-text_w)/2:y=h*0.91:enable='gt(t\\,{end_time})'"
         )
 
@@ -291,6 +358,9 @@ class VaultsGenerator:
         subprocess.run(cmd, check=True, capture_output=True)
         print(f"✨ CTA overlay added!")
 
+    # ----------------------------------------------------------
+    # MAIN VIDEO CREATION
+    # ----------------------------------------------------------
     def create_vaults_video(self, auto_generate_subs=True, bg_music=None, bg_volume=0.12, fps=30):
         import time
         overall_start = time.time()
@@ -303,9 +373,9 @@ class VaultsGenerator:
 
         srt_path = None
         if auto_generate_subs:
-            if os.path.exists('subtitles.srt'):
-                print(f"✅ Using existing subtitles.srt")
-                srt_path = 'subtitles.srt'
+            if os.path.exists('subtitles.ass'):
+                print(f"✅ Using existing subtitles.ass")
+                srt_path = 'subtitles.ass'
             else:
                 srt_path = self.generate_subtitles_with_whisper()
                 if not srt_path:
@@ -375,39 +445,35 @@ class VaultsGenerator:
                 cmd.extend(['-i', bg_music])
                 print(f"  🎵 Background music: {bg_music}")
 
-            vaults_style = (
-                "force_style='FontName=Arial,"
-                "FontSize=24,"
-                "PrimaryColour=&H00FFFFFF,"
-                "OutlineColour=&H00000000,"
-                "BorderStyle=1,"
-                "Outline=3,"
-                "Shadow=1,"
-                "Bold=1,"
-                "MarginV=60,"
-                "Alignment=2'"
-            )
-
+            # ASS subtitle style - sackfeels style bottom third
             if srt_path and os.path.exists(srt_path):
                 sub_path = srt_path.replace('\\', '/').replace(':', '\\:')
-                vf       = f"subtitles='{sub_path}':{vaults_style}"
+                vf       = f"ass='{sub_path}'"
                 cmd.extend(['-vf', vf])
-                print(f"  📝 Vaults subtitle style applied")
+                print(f"  📝 ASS subtitles applied (sackfeels style)")
             else:
                 print(f"  ⚠  No subtitles")
 
+            # Audio: voice + reverb effect + background music
             if bg_music and os.path.exists(bg_music):
                 filter_complex = (
-                    f'[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=1.0[voice];'
-                    f'[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume={bg_volume},aloop=loop=-1:size=2e+09[bg];'
+                    f'[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                    f'aecho=0.8:0.88:60:0.4,volume=1.0[voice];'
+                    f'[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                    f'volume={bg_volume},aloop=loop=-1:size=2e+09[bg];'
                     f'[voice][bg]amix=inputs=2:duration=first:dropout_transition=2,aresample=48000[aout]'
                 )
                 cmd.extend(['-filter_complex', filter_complex,
                              '-map', '0:v', '-map', '[aout]'])
             else:
-                cmd.extend(['-map', '0:v',
-                             '-af', 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo',
-                             '-map', '1:a'])
+                # Still apply reverb even without bg music
+                filter_complex = (
+                    f'[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                    f'aecho=0.8:0.88:60:0.4,volume=1.0[voice];'
+                    f'[voice]aresample=48000[aout]'
+                )
+                cmd.extend(['-filter_complex', filter_complex,
+                             '-map', '0:v', '-map', '[aout]'])
 
             cmd.extend([
                 '-c:v', 'libx264',
@@ -552,7 +618,7 @@ def process_video(niche="vaults"):
         current_job["progress"] = 20
 
         for old in [output_file, output_file.replace(".mp4", "_cta.mp4"),
-                    "subtitles.srt", transcription_file]:
+                    "subtitles.ass", "subtitles.srt", transcription_file]:
             if os.path.exists(old):
                 os.remove(old)
                 print(f"🗑 Removed {old}")
@@ -578,7 +644,7 @@ def process_video(niche="vaults"):
 
         final_output = output_file.replace(".mp4", "_cta.mp4")
 
-        for tmp in ["subtitles.srt", transcription_file]:
+        for tmp in ["subtitles.ass", "subtitles.srt", transcription_file]:
             if os.path.exists(tmp):
                 os.remove(tmp)
 
