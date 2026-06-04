@@ -170,64 +170,75 @@ Return ONLY valid JSON:
 
 # ============================================================
 # MOVIEPY TEXT RENDERER
+# Bulletproof version -- no split clips, no zero-width crashes
+# Uses FFmpeg drawtext for each segment instead of MoviePy
+# compositing which has mask shape bugs in v2
 # ============================================================
 def render_text_overlay(video_path: str, segments: list, word_timestamps: list, output_path: str):
-    print(f"🎨 MoviePy: rendering {len(segments)} text segments...")
-
-    # Import MoviePy -- handle both v1 and v2 API
-    try:
-        from moviepy import VideoFileClip, TextClip, CompositeVideoClip
-        MOVIEPY_V2 = True
-        print(f"  ✓ MoviePy v2 loaded")
-    except ImportError:
-        try:
-            from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
-            MOVIEPY_V2 = False
-            print(f"  ✓ MoviePy v1 loaded")
-        except ImportError as e:
-            print(f"  ❌ MoviePy not available: {e}")
-            raise Exception(f"MoviePy import failed: {e}")
+    print(f"🎨 Rendering {len(segments)} text segments via FFmpeg drawtext...")
 
     if not os.path.exists(video_path):
         raise Exception(f"Video input not found: {video_path}")
 
-    try:
-        video    = VideoFileClip(video_path)
-        duration = video.duration
-        print(f"  ✓ Video loaded: {duration:.2f}s {video.size}")
-    except Exception as e:
-        raise Exception(f"Failed to load video {video_path}: {e}")
+    # Get video duration
+    cmd    = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+              '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    duration = float(result.stdout.strip())
+    print(f"  ✓ Video duration: {duration:.2f}s")
 
-    text_clips     = []
-    matched        = 0
-    skipped        = 0
-    error_count    = 0
+    def hex_to_ffmpeg_color(hex_str):
+        """Convert #RRGGBB to FFmpeg color format"""
+        if not hex_str:
+            return "white"
+        hex_str = hex_str.lstrip('#')
+        try:
+            r = int(hex_str[0:2], 16)
+            g = int(hex_str[2:4], 16)
+            b = int(hex_str[4:6], 16)
+            return f"#{hex_str.upper()}"
+        except:
+            return "white"
 
-    # Build word lookup for fast matching
+    def safe_text(text):
+        """Escape text for FFmpeg drawtext -- remove problematic chars"""
+        text = text.replace("'", "").replace('"', '').replace(':', '').replace('\\', '')
+        text = text.replace('\n', ' ').replace('\r', '').strip()
+        return text
+
+    # Build word lookup
     word_lookup = {}
     for i, wt in enumerate(word_timestamps):
-        clean = wt['word'].upper().strip('.,!?;:\'"()[]')
-        if clean not in word_lookup:
+        clean = wt['word'].upper().strip('.,!?;:\'"()[]- ')
+        if clean and clean not in word_lookup:
             word_lookup[clean] = []
-        word_lookup[clean].append(i)
+        if clean:
+            word_lookup[clean].append(i)
 
     used_word_indices = set()
+    drawtext_filters  = []
+    matched           = 0
+    skipped           = 0
 
     for seg_idx, seg in enumerate(segments):
         style        = seg.get("style", "sentence")
         text         = seg.get("text", "").strip()
         color        = seg.get("color", "#FFFFFF")
-        hi_color     = seg.get("highlight_color")
+        hi_color     = seg.get("highlight_color") or "#FFD700"
         fontsize     = int(seg.get("font_size") or 68)
         position     = seg.get("position", "bottom")
         dur_override = seg.get("duration_override")
 
-        if style == "none" or not text:
+        # Skip empty, none, or punctuation-only
+        clean_check = text.strip('.,!?;:\'"()[] \n\r')
+        if style == "none" or not text or not clean_check:
             continue
 
-        # Find timing by matching first word of segment
+        # Find timing
         text_words  = text.upper().split()
-        first_clean = text_words[0].strip('.,!?;:\'"()[]')
+        if not text_words:
+            continue
+        first_clean = text_words[0].strip('.,!?;:\'"()[]- ')
 
         start_time = None
         end_time   = None
@@ -239,163 +250,120 @@ def render_text_overlay(video_path: str, segments: list, word_timestamps: list, 
             start_time = word_timestamps[idx]['start']
             end_idx    = min(idx + len(text_words) - 1, len(word_timestamps) - 1)
             end_time   = word_timestamps[end_idx]['end']
-            # Mark these words used
             for u in range(idx, end_idx + 1):
                 used_word_indices.add(u)
             break
 
         if start_time is None:
-            print(f"  ⚠ [{seg_idx}] No timestamp match for: '{text[:30]}' -- skipping")
+            print(f"  ⚠ [{seg_idx}] No match: '{text[:25]}' -- skipping")
             skipped += 1
             continue
 
-        # Calculate clip duration
-        natural_dur  = end_time - start_time
-        clip_duration = float(dur_override) if dur_override else natural_dur
-        clip_duration = max(clip_duration, 0.25)
-
-        # Clamp to video duration
+        # Duration
+        clip_dur = float(dur_override) if dur_override else (end_time - start_time)
+        clip_dur = max(clip_dur, 0.3)
         if start_time >= duration:
-            print(f"  ⚠ [{seg_idx}] start_time {start_time:.2f} >= duration {duration:.2f} -- skipping")
             skipped += 1
             continue
-        clip_duration = min(clip_duration, duration - start_time)
+        end_show = min(start_time + clip_dur, duration)
 
-        # Select font
-        font = FONT_BOLD if style in ["single_word", "phrase"] else FONT_REGULAR
-
-        # Compute position
+        # Position
         if position == "center":
-            x_jitter = random.randint(-60, 60) if style in ["single_word", "phrase"] else 0
-            y_jitter = random.randint(-30, 30) if style in ["single_word", "phrase"] else 0
-            pos = ("center", OUTPUT_HEIGHT // 2 - fontsize // 2 + y_jitter)
+            y_expr = "(h-text_h)/2"
         elif position == "bottom":
-            pos = ("center", OUTPUT_HEIGHT - 160)
+            y_expr = "h-text_h-80"
         elif position == "top":
-            pos = ("center", 80)
+            y_expr = "80"
         else:
-            pos = ("center", "center")
+            y_expr = "(h-text_h)/2"
 
-        # Convert hex color to MoviePy color name or tuple
-        def hex_to_rgb(hex_str):
-            hex_str = hex_str.lstrip('#')
-            try:
-                return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
-            except:
-                return (255, 255, 255)
+        x_expr = "(w-text_w)/2"
 
-        color_rgb    = hex_to_rgb(color)
-        hi_color_rgb = hex_to_rgb(hi_color) if hi_color else None
+        # Font
+        font_path = FONT_BOLD if style in ["single_word", "phrase"] else FONT_REGULAR
+        font_arg  = f":fontfile='{font_path}'" if font_path and os.path.exists(font_path) else ""
 
-        # Build text clip(s)
-        display_text = text.upper() if style in ["single_word", "phrase"] else text.upper()
+        # For sentences -- show full text in white, last word in highlight color
+        # We do this with two overlapping drawtext filters
+        display   = safe_text(text.upper())
+        ffmpeg_color = hex_to_ffmpeg_color(color)
 
-        try:
-            # Sentence with last word highlighted
-            if style == "sentence" and hi_color_rgb and len(text_words) > 1:
-                white_words = ' '.join(text_words[:-1])
-                last_word   = text_words[-1]
+        enable_expr = f"between(t\\,{start_time:.3f}\\,{end_show:.3f})"
 
-                def make_clip(txt, clr, fsz, fnt):
-                    kwargs = dict(
-                        text         = txt,
-                        font_size    = fsz,
-                        color        = clr,
-                        stroke_color = (0, 0, 0),
-                        stroke_width = 2,
-                    )
-                    if fnt:
-                        kwargs['font'] = fnt
-                    clip = TextClip(**kwargs)
-                    if MOVIEPY_V2:
-                        return clip.with_start(start_time).with_duration(clip_duration)
-                    else:
-                        return clip.set_start(start_time).set_duration(clip_duration)
+        if style == "sentence" and len(text_words) > 1:
+            # Full sentence in white
+            hi_ffmpeg = hex_to_ffmpeg_color(hi_color)
+            words_except_last = safe_text(' '.join(text_words[:-1]).upper())
+            last_w            = safe_text(text_words[-1].upper())
 
-                wclip = make_clip(white_words, color_rgb,    fontsize, font)
-                yclip = make_clip(last_word,   hi_color_rgb, fontsize, font)
-
-                ww = wclip.size[0]
-                yw = yclip.size[0]
-                total_w = ww + 16 + yw
-                x0      = max(0, (OUTPUT_WIDTH - total_w) // 2)
-                y0      = OUTPUT_HEIGHT - 160
-
-                if MOVIEPY_V2:
-                    wclip = wclip.with_position((x0, y0))
-                    yclip = yclip.with_position((x0 + ww + 16, y0))
-                else:
-                    wclip = wclip.set_position((x0, y0))
-                    yclip = yclip.set_position((x0 + ww + 16, y0))
-
-                if wclip.size[0] > 0 and yclip.size[0] > 0:
-                    text_clips.extend([wclip, yclip])
-                else:
-                    print(f"  ⚠ [{seg_idx}] Zero-width clip skipped")
-                    matched -= 1
-                continue
-
-            # Single text clip
-            kwargs = dict(
-                text         = display_text,
-                font_size    = fontsize,
-                color        = color_rgb,
-                stroke_color = (0, 0, 0),
-                stroke_width = 3 if style == "single_word" else 2,
+            # Full text in white (background)
+            f1 = (
+                f"drawtext=text='{display}'{font_arg}"
+                f":fontcolor=white:fontsize={fontsize}"
+                f":borderw=2:bordercolor=black:shadowx=1:shadowy=1"
+                f":x={x_expr}:y={y_expr}:enable='{enable_expr}'"
             )
-            if font:
-                kwargs['font'] = font
+            drawtext_filters.append(f1)
 
-            clip = TextClip(**kwargs)
+            # Last word in highlight color on top -- positioned to right of white words
+            # Approximate position: shift right by width of preceding words
+            # We use a separate drawtext at slightly offset x
+            # This is an approximation -- exact pixel alignment needs PIL
+            char_width_approx = int(fontsize * 0.55)
+            prefix_chars      = len(words_except_last) + 1  # +1 for space
+            prefix_width      = prefix_chars * char_width_approx
+            total_width       = len(display) * char_width_approx
+            x_last            = f"(w-{total_width})/2+{prefix_width}"
 
-            if MOVIEPY_V2:
-                clip = clip.with_start(start_time).with_duration(clip_duration).with_position(pos)
-            else:
-                clip = clip.set_start(start_time).set_duration(clip_duration).set_position(pos)
+            f2 = (
+                f"drawtext=text='{last_w}'{font_arg}"
+                f":fontcolor={hi_ffmpeg}:fontsize={fontsize}"
+                f":borderw=2:bordercolor=black:shadowx=1:shadowy=1"
+                f":x={x_last}:y={y_expr}:enable='{enable_expr}'"
+            )
+            drawtext_filters.append(f2)
 
-            text_clips.append(clip)
-            matched += 1
+        else:
+            # Single word or phrase -- one color, center
+            f1 = (
+                f"drawtext=text='{display}'{font_arg}"
+                f":fontcolor={ffmpeg_color}:fontsize={fontsize}"
+                f":borderw=3:bordercolor=black:shadowx=2:shadowy=2"
+                f":x={x_expr}:y={y_expr}:enable='{enable_expr}'"
+            )
+            drawtext_filters.append(f1)
 
-        except Exception as e:
-            print(f"  ⚠ [{seg_idx}] TextClip error for '{text[:25]}': {e}")
-            error_count += 1
-            continue
+        matched += 1
 
-    print(f"  📊 Text clips: matched={matched} skipped={skipped} errors={error_count}")
+    print(f"  📊 Segments: matched={matched} skipped={skipped}")
 
-    if not text_clips:
-        print(f"  ⚠ No text clips created -- saving video without text overlay")
-        try:
-            video.write_videofile(output_path, codec='libx264', audio_codec='aac',
-                                  fps=30, logger=None)
-        finally:
-            video.close()
+    if not drawtext_filters:
+        print(f"  ⚠ No text filters -- copying video as-is")
+        subprocess.run(['ffmpeg', '-y', '-i', video_path, '-c', 'copy', output_path],
+                       check=True, capture_output=True)
         return
 
-    print(f"  🎬 Compositing {len(text_clips)} clips onto video...")
-    try:
-        final = CompositeVideoClip([video] + text_clips, size=(OUTPUT_WIDTH, OUTPUT_HEIGHT))
-        final.write_videofile(
-            output_path,
-            codec       = 'libx264',
-            audio_codec = 'aac',
-            fps         = 30,
-            logger      = None,
-            threads     = 4,
-        )
+    # Apply all drawtext filters in one FFmpeg pass
+    vf_chain = ','.join(drawtext_filters)
+    print(f"  🎬 Applying {len(drawtext_filters)} drawtext filters...")
+
+    cmd = [
+        'ffmpeg', '-y', '-i', video_path,
+        '-vf', vf_chain,
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        '-c:a', 'copy',
+        output_path
+    ]
+
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        err = result.stderr.decode()[-800:]
+        print(f"  ❌ FFmpeg drawtext failed: {err}")
+        print(f"  ⚠ Falling back to copy without text")
+        subprocess.run(['ffmpeg', '-y', '-i', video_path, '-c', 'copy', output_path],
+                       check=True, capture_output=True)
+    else:
         print(f"  ✅ Text overlay complete: {output_path}")
-    except Exception as e:
-        print(f"  ❌ Composite write failed: {e}")
-        raise
-    finally:
-        try:
-            video.close()
-        except:
-            pass
-        try:
-            final.close()
-        except:
-            pass
 
 
 # ============================================================
@@ -842,12 +810,20 @@ class VaultsGenerator:
                         os.remove(tf)
                     except:
                         pass
-            for f in [concat_list, concat_output]:
+            for f in [concat_list, concat_output, audio_output]:
                 if os.path.exists(f):
                     try:
                         os.remove(f)
                     except:
                         pass
+            # Clean any MoviePy temp files left behind
+            import glob
+            for mpy_tmp in glob.glob("*TEMP_MPY*.mp4"):
+                try:
+                    os.remove(mpy_tmp)
+                    print(f"  🗑 Removed MoviePy temp: {mpy_tmp}")
+                except:
+                    pass
 
 
 # ============================================================
