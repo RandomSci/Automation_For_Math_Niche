@@ -19,3 +19,4 @@ gameplay_looped.mp4
 __pycache__/
 *.pyc
 *.pyo
+.env
