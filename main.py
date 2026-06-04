@@ -218,7 +218,7 @@ def render_text_overlay(video_path: str, segments: list, word_timestamps: list, 
         text         = seg.get("text", "").strip()
         color        = seg.get("color", "#FFFFFF")
         hi_color     = seg.get("highlight_color")
-        fontsize     = int(seg.get("font_size", 68))
+        fontsize     = int(seg.get("font_size") or 68)
         position     = seg.get("position", "bottom")
         dur_override = seg.get("duration_override")
 
@@ -597,21 +597,12 @@ class VaultsGenerator:
 
     # ----------------------------------------------------------
     def _add_cta_overlay(self, video_input: str, output_path: str, duration: float):
-        start_texts = [
-            "Follow if this broke your brain",
-            "Save this and watch again later",
-            "Share if you never knew this",
-            "Comment what shocked you most",
-        ]
-        start_text = random.choice(start_texts)
-        end_text   = "Vaults of History"
-        end_time   = round(max(duration - 4, 1), 3)
+        # Only show "Vaults of History" watermark at the END of the video
+        # NO start text -- it interrupts the content
+        end_text = "Vaults of History"
+        end_time = round(max(duration - 4, 1), 3)
 
         vf = (
-            f"drawtext=text='{start_text}'"
-            f":fontcolor=white:fontsize=38:font=Arial"
-            f":borderw=2:bordercolor=black:shadowx=2:shadowy=2"
-            f":x=(w-text_w)/2:y=h*0.05:enable='lt(t\\,4)',"
             f"drawtext=text='{end_text}'"
             f":fontcolor=yellow:fontsize=42:font=Arial"
             f":borderw=2:bordercolor=black:shadowx=2:shadowy=2"
