@@ -44,99 +44,103 @@ MUSIC_MAP = {
     "default":  "bg_musics/vaults_ambient.mp3",
 }
 
-# ============================================================
-# FONT SYSTEM -- Montserrat ExtraBold = sackfeels primary font
-# Rounded heavy sans-serif, identical to CapCut word-by-word style
-# ============================================================
-FONTS_DIR = "fonts"
+FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
-GOOGLE_FONTS = {
-    "Montserrat-ExtraBold": "https://fonts.googleapis.com/css2?family=Montserrat:wght@800&display=swap",
-    "Montserrat-Black":     "https://fonts.googleapis.com/css2?family=Montserrat:wght@900&display=swap",
-    "Barlow-Black":         "https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@900&display=swap",
-    "Oswald-Bold":          "https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap",
-}
+FONT_BLACK_CANDIDATES = [
+    os.path.join(FONTS_DIR, "Anton-Regular.ttf"),
+    os.path.join(FONTS_DIR, "Montserrat-Black.ttf"),
+    os.path.join(FONTS_DIR, "Montserrat-ExtraBold.ttf"),
+    "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+]
+FONT_BOLD_CANDIDATES = [
+    os.path.join(FONTS_DIR, "Montserrat-ExtraBold.ttf"),
+    os.path.join(FONTS_DIR, "Montserrat-Bold.ttf"),
+    "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+]
+FONT_REGULAR_CANDIDATES = [
+    os.path.join(FONTS_DIR, "Montserrat-Bold.ttf"),
+    "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+]
 
-def download_fonts():
-    import re
-    os.makedirs(FONTS_DIR, exist_ok=True)
-    headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'}
-    downloaded = []
-    for name, css_url in GOOGLE_FONTS.items():
-        path = os.path.join(FONTS_DIR, f"{name}.ttf")
+def find_font(candidates):
+    for path in candidates:
         if os.path.exists(path) and os.path.getsize(path) > 1000:
-            downloaded.append(path)
-            continue
-        try:
-            r = requests.get(css_url, headers=headers, timeout=10)
-            urls = re.findall(r'url\((https://fonts\.gstatic\.com/[^)]+\.ttf)\)', r.text)
-            if urls:
-                fr = requests.get(urls[0], headers=headers, timeout=10)
-                with open(path, 'wb') as f:
-                    f.write(fr.content)
-                if os.path.getsize(path) > 1000:
-                    print(f"  ✅ Font: {name} ({os.path.getsize(path)//1024}KB)")
-                    downloaded.append(path)
-        except Exception as e:
-            print(f"  ⚠ Font download failed {name}: {e}")
-    return downloaded
-
-# Download on startup
-_downloaded_fonts = download_fonts()
-
-def get_primary_font_path() -> str:
-    """Always return Montserrat ExtraBold -- the sackfeels font"""
-    for name in ["Montserrat-ExtraBold", "Montserrat-Black", "Barlow-Black", "Oswald-Bold"]:
-        path = os.path.join(FONTS_DIR, f"{name}.ttf")
-        if os.path.exists(path) and os.path.getsize(path) > 1000:
+            print(f"  ✓ Font: {path}")
             return path
-    for fallback in [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    ]:
-        if os.path.exists(fallback):
-            return fallback
+    return None
+
+FONT_BLACK   = find_font(FONT_BLACK_CANDIDATES)
+FONT_BOLD    = find_font(FONT_BOLD_CANDIDATES)
+FONT_REGULAR = find_font(FONT_REGULAR_CANDIDATES)
+
+def get_primary_font_path(bold: bool = True) -> str:
+    """Return best available font: Black > ExtraBold > Bold > anything."""
+    if FONT_BLACK:   return FONT_BLACK
+    if FONT_BOLD:    return FONT_BOLD
+    if FONT_REGULAR: return FONT_REGULAR
     return None
 
 @app.on_event("startup")
 async def startup_event():
     print("🚀 Vaults of History v3 starting...")
+    # Audit broll folders so missing clips are immediately visible
+    broll_dirs = ['space_vids','ancient_ruins_vids','cosmic_vids',
+                  'dark_sky_vids','temple_vids']
+    print("📁 Broll folder audit:")
+    for d in broll_dirs:
+        if os.path.exists(d):
+            files = [f for f in os.listdir(d) if f.lower().endswith(('.mp4','.mov','.avi'))]
+            status = f"✅ {len(files)} clips" if files else "❌ EMPTY -- add Seedance clips here"
+        else:
+            status = "❌ MISSING -- folder doesn't exist"
+        print(f"  {d}: {status}")
 
 
 # ============================================================
 # GPT CALL 1 -- STORY BEAT ANALYZER
+# Sends Whisper segments (with timestamps) to GPT so it can
+# produce accurate timing without word-level lookup
 # ============================================================
-def analyze_story_beats(transcript_text: str, topic_hint: str, total_duration: float) -> dict:
+def analyze_story_beats(transcript_text: str, whisper_segments: list,
+                        topic_hint: str, total_duration: float) -> dict:
     if not OPENAI_API_KEY:
         raise Exception("OPENAI_API_KEY not set.")
 
     print(f"  🎭 Call 1: Story beats ({len(transcript_text)} chars, {total_duration:.1f}s)...")
     client = OpenAI(api_key=OPENAI_API_KEY)
 
+    # Build timed transcript — each Whisper segment on its own line with [start - end]
+    timed_lines = []
+    for seg in whisper_segments:
+        s = float(seg.get('start', 0))
+        e = float(seg.get('end', 0))
+        t = seg.get('text', '').strip()
+        if t:
+            timed_lines.append(f"[{s:.2f}s - {e:.2f}s] {t}")
+    timed_transcript = "\n".join(timed_lines)
+
     system_prompt = f"""You are the story producer for VAULTS OF HISTORY -- a viral mind-bending facts channel.
-Style: @sackfeels on TikTok. Dramatic. Eerie. Cinematic. Makes people stop scrolling.
-Topics: space mysteries, ancient civilizations, lost history, religion, human consciousness.
-Canvas: {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} pixels. Total video duration: {total_duration:.1f} seconds.
+Style: @sackfeels on TikTok. Dramatic. Eerie. Cinematic.
+Total audio duration: {total_duration:.1f} seconds.
 
-TASK: Read the transcript. Segment it into story beats using EXACT timestamps from the audio.
+You will receive a transcript with EXACT timestamps from Whisper speech recognition.
+Each line is formatted as: [start - end] spoken words
 
-CRITICAL RULES:
-- Use ONLY words that are actually spoken in the transcript. NEVER add your own words.
-- beat_type: "hook"|"buildup"|"reveal"|"shock"|"pause"|"resolution"|"outro"
-- start_time and end_time MUST be real seconds where those words are spoken
-- Cover the ENTIRE transcript with no gaps longer than 3 seconds
-- hook beat: always first, start_time=0.0, uses the first spoken words
-- Each beat text = EXACT verbatim words from transcript at that timestamp
-- Keep beats short: 3-8 words each. Split long sentences into multiple beats.
-- "pause" beats: 0.5-1.5 second natural silence gaps only
+YOUR JOB: Segment the transcript into story beats for cinematic video editing.
 
-For EVERY beat provide:
-- beat_type: "hook"|"buildup"|"reveal"|"shock"|"pause"|"resolution"|"outro"
-- text: EXACT verbatim words from transcript
-- start_time: seconds when FIRST word of this beat is spoken
-- end_time: seconds when LAST word of this beat finishes
-- intensity: 1-10
-- broll_category: "space"|"ancient"|"cosmic"|"sky"|"temple"|"any"
-- clip_duration: 2.0-6.0 seconds
+RULES:
+- Use the Whisper timestamps directly -- they are accurate. Copy start_time and end_time from the brackets.
+- Beat text MUST be copied VERBATIM from the transcript. Exact words, exact spelling. No paraphrasing.
+- Keep beats 2-10 words -- natural spoken phrases or short clauses.
+- A single Whisper segment can become 1-3 beats if it contains multiple natural phrases.
+- Cover the ENTIRE transcript -- every word must appear in some beat.
+- "pause" beats only for clear silence gaps (>0.5s) between segments.
+
+beat_type: "hook"|"buildup"|"reveal"|"shock"|"pause"|"resolution"|"outro"
 
 Return ONLY valid JSON:
 {{
@@ -145,7 +149,7 @@ Return ONLY valid JSON:
   "beats": [
     {{
       "beat_type": "hook|buildup|reveal|shock|pause|resolution|outro",
-      "text": "exact transcript words only",
+      "text": "verbatim words from transcript",
       "start_time": 0.0,
       "end_time": 2.5,
       "intensity": 8,
@@ -160,16 +164,14 @@ Return ONLY valid JSON:
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Topic: {topic_hint}\n\nFull transcript:\n{transcript_text}\n\nSegment this transcript into beats. Use ONLY the exact words spoken. Never add your own commentary."}
+                {"role": "user", "content": f"Topic hint: {topic_hint}\n\nTimed transcript:\n{timed_transcript}\n\nSegment every line into beats. Use the timestamps shown. Copy text verbatim."}
             ],
             response_format={"type": "json_object"},
-            temperature=0.4,
+            temperature=0.2,
             timeout=90,
         )
         result = json.loads(response.choices[0].message.content)
-        # Filter out any ai_opinion beats that GPT might add despite instructions
-        beats = [b for b in result.get('beats', []) if b.get('beat_type') != 'ai_opinion']
-        result['beats'] = beats
+        beats  = result.get('beats', [])
         print(f"  ✅ {len(beats)} beats, topic={result.get('topic')}")
         return result
     except Exception as e:
@@ -178,285 +180,309 @@ Return ONLY valid JSON:
 
 
 # ============================================================
-# GPT CALL 2 -- SEMANTIC HIGHLIGHT IDENTIFIER
-# GPT's ONLY job: identify the emotionally important span per beat
-# + importance score. All render decisions made by Python.
+# GPT CALL 2 -- RENDER DECISION GENERATOR
 # ============================================================
 def generate_render_decisions(beats: list, topic: str) -> list:
     if not OPENAI_API_KEY:
         raise Exception("OPENAI_API_KEY not set.")
 
-    print(f"  🎨 Call 2: Semantic highlights for {len(beats)} beats...")
+    print(f"  🎨 Call 2: Scene compositions for {len(beats)} beats...")
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    system_prompt = """You are a professional video editor analyzing a transcript for a viral mind-bending facts channel (@sackfeels style on TikTok).
+    system_prompt = f"""You are an elite short-form video editor. You compose every frame like a motion designer -- choosing position, size, color, animation, and timing for each visual element. You are not picking from preset templates. You are designing each scene.
 
-YOUR ONLY JOB: For each beat, identify the most emotionally powerful word or span of words, and score its importance.
+Channel: VAULTS OF HISTORY -- mind-bending facts about space, ancient civilizations, and human consciousness. Audience is impossible to impress. The aesthetic is CINEMATIC and DARK -- like a documentary trailer, not a social media post.
 
-RULES:
-- highlight_span: the exact word or multi-word phrase that carries the most emotional/semantic weight
-  Examples: "US", "dying?", "World War II", "precision", "guaranteed", "impossible"
-- importance: float 0.0-1.0
-  0.9-1.0 = must isolate visually (shocking, revelatory, emotionally heavy)
-  0.6-0.89 = strong highlight, golden inline
-  0.0-0.59 = mild, normal white text
-- Can be multi-word: "World War II", "Stock Market Crash", "never existed"
-- null if the beat has no highlight (pause beats, transitional filler)
-- Think like an editor: what word would you PUNCH UP if editing this?
+=== FONT BEHAVIOR ===
+The renderer uses Anton (ultra-condensed, cinematic) as the primary font. This font is TALL and NARROW. Design accordingly:
+- Single impact words: size 180-280px, dead center or dramatically off-center
+- Sentence words: size 90-140px per word, spread across the canvas
+- Never stack more than 3-4 words at the same size in a column -- vary sizes
+- Words should feel MASSIVE and COMMANDING, not informational
+
+=== YOUR RENDERING ENGINE ===
+Python OpenCV + Pillow on a {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} canvas.
+
+For each beat, you output a SCENE -- a list of ELEMENTS placed and animated however you want.
+
+=== ELEMENT TYPES ===
+
+TEXT element:
+{{
+  "type": "text",
+  "content": "WORD",              // the text string
+  "x": 0.5,                       // 0.0-1.0 horizontal position (anchor)
+  "y": 0.4,                       // 0.0-1.0 vertical position (anchor)
+  "anchor": "center",             // "center" | "left" | "right" -- how x,y aligns the text
+  "size": 120,                    // pixels
+  "color": "#FFFFFF",             // hex
+  "weight": "black",              // "regular" | "bold" | "black" (use black for impact)
+  "outline": 4,                   // pixels of black outline (3-6 typical)
+  "anim": "fade_in",              // see ANIMATIONS below
+  "start_offset": 0.0,            // seconds after beat starts when element appears
+  "duration": null,               // seconds visible (null = until next beat)
+  "anim_duration": 0.15,          // how long entrance animation takes
+  "effect": "none"                // see EFFECTS below
+}}
+
+LINE element (for fractions, dividers, underlines):
+{{
+  "type": "line",
+  "x1": 0.3, "y1": 0.5, "x2": 0.7, "y2": 0.5,
+  "thickness": 8,
+  "color": "#FFFFFF",
+  "anim": "draw_horizontal",      // "draw_horizontal" draws left-to-right, "fade_in" fades, "none" appears instantly
+  "start_offset": 0.2,
+  "duration": null,
+  "anim_duration": 0.3
+}}
+
+RECT element (for boxes, backgrounds, highlight bars):
+{{
+  "type": "rect",
+  "x": 0.4, "y": 0.5, "w": 0.2, "h": 0.1,   // x,y is top-left corner. w,h are width/height
+  "color": "#FBC02D",
+  "filled": true,                   // true=filled, false=outline only
+  "thickness": 4,                   // only used if filled=false
+  "anim": "fade_in",
+  "start_offset": 0.0,
+  "duration": null
+}}
+
+CIRCLE element:
+{{
+  "type": "circle",
+  "x": 0.5, "y": 0.5, "radius": 0.05,
+  "color": "#FFFFFF",
+  "filled": false,
+  "thickness": 4,
+  "anim": "fade_in",
+  "start_offset": 0.0,
+  "duration": null
+}}
+
+=== ANIMATIONS ===
+- "none": appears instantly
+- "fade_in": opacity 0→100% over anim_duration
+- "slide_in_left": slides in from off-screen left
+- "slide_in_right": slides in from off-screen right
+- "slide_in_top": slides in from off-screen top
+- "slide_in_bottom": slides in from off-screen bottom
+- "scale_in": starts at 1.3x scale and snaps to 1.0x (punch effect)
+- "snap": appears instantly with a 1-frame white flash
+- "draw_horizontal": (lines only) draws progressively left-to-right
+
+=== EFFECTS (applied during display, not just entrance) ===
+- "none": static
+- "flicker": rapid on/off blinking for first 0.3s (for shock words)
+- "shake": position jitters slightly (for impact)
+- "glow": adds soft colored glow halo around element
+
+=== HOW TO COMPOSE SCENES ===
+
+For a SPOKEN SENTENCE (3+ words): create one TEXT element per word. Words build across the frame -- horizontal flow, diagonal cascade, or scattered cluster. Keep words in the CENTER ZONE (x: 0.2-0.8, y: 0.2-0.8). Don't push words to extreme corners unless it's a dramatic 1-word-per-corner composition with 4+ words.
+
+For a SHORT BEAT (1-2 words): compose as a CLUSTER, not a scatter. Both words should be near each other -- stacked vertically or side by side in the center region. NEVER put 2 words at opposite extreme corners (x:0.1 and x:0.8) with empty space between them. That looks broken.
+
+For a SINGLE IMPACT WORD: one giant TEXT element, centered or slightly off-center. scale_in animation. Size 180-260px.
+
+For a NUMBER OR FRACTION (like "1 in 1 billion"): compose it visually -- TEXT for "1", LINE for the divider, TEXT for "1 BILLION" below. Make it look like a math equation.
+
+For COMPARISONS or BEFORE/AFTER: stack two TEXT elements vertically, use different colors, maybe a LINE separator.
+
+For EMPHASIS: combine a RECT highlight bar behind a TEXT word. Or a CIRCLE around a key word.
+
+VARY the composition across beats -- no two beats should look identical. But each beat must feel INTENTIONAL and complete, not like words floating randomly in space.
+
+=== HARD RULES ===
+1. Output exactly {len(beats)} scenes, one per beat, in order.
+2. Every "content" in TEXT elements must use words VERBATIM from the beat text. Don't paraphrase. Don't add words not in the beat.
+3. For pause beats: output {{"elements": []}} (empty scene).
+4. start_offset values must fit within the beat duration.
+5. x, y values are 0.0-1.0. NEVER use percentages or pixels.
+6. For beats with 1-2 words: keep all elements within x: 0.2-0.75, y: 0.25-0.75. No extreme-corner scatters.
+7. Never repeat the same word twice in one scene's elements -- each word appears exactly once.
+
+=== COLOR DISCIPLINE ===
+White (#FFFFFF) is your dominant color. Yellow (#FBC02D) for ONE key word per scene maximum. Other colors (red, blue, purple) only for very specific moments.
 
 Return ONLY valid JSON:
-{
-  "highlights": [
-    {
-      "beat_index": 0,
-      "highlight_span": "dying?",
-      "importance": 0.95
-    }
+{{
+  "scenes": [
+    {{
+      "beat_index": <int>,
+      "beat_type": "<hook|shock|reveal|buildup|pause|resolution|outro>",
+      "elements": [
+        // list of element objects as specified above
+      ]
+    }}
+    // ... exactly {len(beats)} scenes
   ]
-}"""
+}}"""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Topic: {topic}\n\nBeats:\n{json.dumps(beats, indent=2)}\n\nIdentify the emotional highlight span and importance for each beat. Think like a film editor."}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.5,
-            timeout=60,
-        )
-        result     = json.loads(response.choices[0].message.content)
-        highlights = result.get('highlights', [])
-        print(f"  ✅ {len(highlights)} highlight decisions")
-        return highlights
-    except Exception as e:
-        print(f"  ❌ Highlight decisions failed: {e}")
-        raise
+    # Batch to stay safely under GPT-4o's 16384 output token limit.
+    # 6 beats per batch ~ 5-7k tokens output, well within limit even with long scenes.
+    BATCH_SIZE = 6
+    all_scenes = []
+    batches = [beats[i:i+BATCH_SIZE] for i in range(0, len(beats), BATCH_SIZE)]
+
+    for batch_idx, batch in enumerate(batches):
+        start_beat = batch_idx * BATCH_SIZE
+        print(f"  🎨 Batch {batch_idx+1}/{len(batches)}: beats {start_beat}-{start_beat+len(batch)-1}...")
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Topic: {topic}\n\nBeats ({len(batch)} total -- output exactly {len(batch)} scenes):\n{json.dumps(batch, indent=2)}\n\nCompose each scene like a real motion designer. Vary your layouts. Use the full canvas. Make numbers visual. Make impact words massive. Use white as your base, yellow for one key emphasis per scene."}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.85,
+                max_tokens=8000,
+                timeout=120,
+            )
+            result = json.loads(response.choices[0].message.content)
+            batch_scenes = result.get('scenes', [])
+            if len(batch_scenes) != len(batch):
+                print(f"  ⚠️  Batch {batch_idx+1}: expected {len(batch)} scenes, got {len(batch_scenes)} -- padding with empty scenes")
+                while len(batch_scenes) < len(batch):
+                    batch_scenes.append({"beat_index": start_beat + len(batch_scenes), "elements": []})
+            all_scenes.extend(batch_scenes)
+            print(f"  ✅ Batch {batch_idx+1} done: {len(batch_scenes)} scenes")
+        except Exception as e:
+            print(f"  ❌ Batch {batch_idx+1} failed: {e}")
+            raise
+
+    print(f"  ✅ {len(all_scenes)} total scenes composed")
+    return all_scenes
 
 
 # ============================================================
-# PHRASE BUILDER + IMPORTANCE SCORER
-# Whisper gaps drive phrase grouping.
-# Importance = pause_score + gpt_score + sentence_bonus + position_bonus
-# Render decision = relative ranking within full video
+# VALIDATION PASS - validates scene compositions
 # ============================================================
-def build_phrase_blocks(word_timestamps: list, highlights: list, beats: list) -> list:
-    """
-    Groups Whisper words into phrase blocks using gap detection.
-    Scores each block. Returns list of phrase_block dicts.
+def validate_decisions(scenes: list, beats: list) -> list:
+    print(f"  🔍 Validating {len(scenes)} scenes...")
+    fixed = 0
 
-    phrase_block = {
-        words: [{word, start, end}],
-        start: float,
-        end: float,
-        score: float,
-        highlight_span: str or None,   # the GPT-identified span within this block
-        importance: float,             # GPT importance 0-1
-        beat_idx: int,
-        render_mode: 'normal'|'highlighted'|'isolated'  # set after scoring
-        block_color: 'white'|'gold'|'full_gold'         # set after scoring
-        y_zone: 'upper'|'center'|'lower'                # set per beat
-    }
-    """
-    if not word_timestamps:
-        return []
-
-    # Build highlight lookup: beat_idx → {span, importance}
-    hi_map = {}
-    for h in highlights:
-        bi = int(h.get("beat_index", 0))
-        hi_map[bi] = {
-            "span":       (h.get("highlight_span") or "").lower().strip(".,!?-'\""),
-            "importance": float(h.get("importance", 0.0)),
-        }
-
-    # Assign each word to a beat
-    beat_windows = []
-    for i, beat in enumerate(beats):
-        if beat.get("beat_type") == "pause":
-            continue
-        beat_windows.append({
-            "beat_idx": i,
-            "start":    float(beat.get("start_time", 0.0)),
-            "end":      float(beat.get("end_time", 0.0)),
-        })
-
-    def get_beat_for_word(w_start):
-        for bw in beat_windows:
-            if bw["start"] - 0.3 <= w_start <= bw["end"] + 0.3:
-                return bw["beat_idx"]
-        if beat_windows:
-            return min(beat_windows,
-                key=lambda bw: min(abs(w_start - bw["start"]), abs(w_start - bw["end"]))
-            )["beat_idx"]
-        return 0
-
-    # Assign y_zone per beat (randomized once per beat, consistent within)
-    y_zones = {}
-    zone_options = ["upper", "center", "lower"]
-    for bw in beat_windows:
-        y_zones[bw["beat_idx"]] = random.choice(zone_options)
-
-    # Group words into phrase blocks
-    # Hard cap: 3 words max per block — sackfeels NEVER shows more than 3 words at once
-    # Break on: word cap hit, gap > 0.5s (real breath), beat boundary change
-    MAX_WORDS   = 3
-    GAP_BREAK   = 0.50   # hard break — definite new thought
-    blocks      = []
-    current_block_words = []
-
-    for i, ww in enumerate(word_timestamps):
-        w_text  = ww["word"].strip()
-        w_start = float(ww["start"])
-        w_end   = float(ww["end"])
-        if not w_text:
+    for scene_pos, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            scenes[scene_pos] = {"beat_index": scene_pos, "elements": []}
             continue
 
-        if not current_block_words:
-            current_block_words.append(ww)
-        else:
-            prev_end  = float(current_block_words[-1]["end"])
-            gap       = w_start - prev_end
-            prev_beat = get_beat_for_word(float(current_block_words[-1]["start"]))
-            curr_beat = get_beat_for_word(w_start)
-            at_cap    = len(current_block_words) >= MAX_WORDS
+        # Use enumeration position -- ignore GPT's beat_index
+        scene["beat_index"] = scene_pos
+        beat = beats[scene_pos] if scene_pos < len(beats) else {}
+        beat_text = beat.get("text", "").strip().lower()
+        beat_words = set()
+        for w in beat_text.split():
+            beat_words.add(w.strip('.,!?;:\'"()[]- '))
 
-            # Break if: word cap hit OR real pause OR beat changed
-            if at_cap or gap >= GAP_BREAK or prev_beat != curr_beat:
-                blocks.append(current_block_words)
-                current_block_words = [ww]
+        elements = scene.get("elements", [])
+        if not isinstance(elements, list):
+            scene["elements"] = []
+            continue
+
+        cleaned = []
+        for el in elements:
+            if not isinstance(el, dict):
+                continue
+            etype = el.get("type", "text")
+
+            # Validate TEXT content against beat text
+            if etype == "text":
+                content = (el.get("content") or "").strip()
+                if not content:
+                    continue
+                # Strip punctuation, lowercase for comparison
+                check_words = [w.strip('.,!?;:\'"()[]- ').lower()
+                               for w in content.split()
+                               if len(w.strip('.,!?;:\'"()[]- ')) > 2]
+                if check_words and beat_words:
+                    matches = sum(1 for w in check_words if w in beat_words)
+                    if matches == 0 and len(check_words) > 0:
+                        # Pure hallucination -- skip element
+                        print(f"  ⚠ Scene {scene_pos}: dropped hallucinated text '{content[:30]}'")
+                        fixed += 1
+                        continue
+
+                # Default text properties
+                el.setdefault("x", 0.5)
+                el.setdefault("y", 0.5)
+                el.setdefault("anchor", "center")
+                el.setdefault("size", 90)
+                el.setdefault("color", "#FFFFFF")
+                el.setdefault("weight", "black")
+                el.setdefault("outline", 4)
+                el.setdefault("anim", "fade_in")
+                el.setdefault("start_offset", 0.0)
+                el.setdefault("duration", None)
+                el.setdefault("anim_duration", 0.15)
+                el.setdefault("effect", "none")
+
+            elif etype == "line":
+                el.setdefault("x1", 0.3)
+                el.setdefault("y1", 0.5)
+                el.setdefault("x2", 0.7)
+                el.setdefault("y2", 0.5)
+                el.setdefault("thickness", 6)
+                el.setdefault("color", "#FFFFFF")
+                el.setdefault("anim", "draw_horizontal")
+                el.setdefault("start_offset", 0.0)
+                el.setdefault("duration", None)
+                el.setdefault("anim_duration", 0.3)
+
+            elif etype == "rect":
+                el.setdefault("x", 0.4)
+                el.setdefault("y", 0.4)
+                el.setdefault("w", 0.2)
+                el.setdefault("h", 0.1)
+                el.setdefault("color", "#FFFFFF")
+                el.setdefault("filled", True)
+                el.setdefault("thickness", 3)
+                el.setdefault("anim", "fade_in")
+                el.setdefault("start_offset", 0.0)
+                el.setdefault("duration", None)
+                el.setdefault("anim_duration", 0.2)
+
+            elif etype == "circle":
+                el.setdefault("x", 0.5)
+                el.setdefault("y", 0.5)
+                el.setdefault("radius", 0.05)
+                el.setdefault("color", "#FFFFFF")
+                el.setdefault("filled", False)
+                el.setdefault("thickness", 4)
+                el.setdefault("anim", "fade_in")
+                el.setdefault("start_offset", 0.0)
+                el.setdefault("duration", None)
+                el.setdefault("anim_duration", 0.2)
+
             else:
-                current_block_words.append(ww)
+                # Unknown type, skip
+                continue
 
-    if current_block_words:
-        blocks.append(current_block_words)
+            # Clamp coordinates to safe range
+            for k in ("x", "y", "x1", "y1", "x2", "y2", "w", "h", "radius"):
+                if k in el and isinstance(el[k], (int, float)):
+                    el[k] = max(0.0, min(1.0, float(el[k])))
 
-    # Score each block
-    phrase_blocks = []
-    for block_words in blocks:
-        b_start   = float(block_words[0]["start"])
-        b_end     = float(block_words[-1]["end"])
-        beat_idx  = get_beat_for_word(b_start)
-        hi_info   = hi_map.get(beat_idx, {"span": "", "importance": 0.0})
-        hi_span   = hi_info["span"]
-        gpt_imp   = hi_info["importance"]
+            cleaned.append(el)
 
-        # pause_score: gap before this block (0-30)
-        if phrase_blocks:
-            prev_end   = phrase_blocks[-1]["end"]
-            pause_secs = b_start - prev_end
-        else:
-            pause_secs = 0.0
-        pause_score = min(30, pause_secs * 40)
+        scene["elements"] = cleaned
 
-        # gpt_score: GPT importance mapped to 0-40
-        # Only applies if this block contains the highlight span
-        block_text = " ".join(w["word"].strip().lower().strip(".,!?-'\"")
-                               for w in block_words)
-        contains_span = hi_span and hi_span in block_text
-        gpt_score = (gpt_imp * 40) if contains_span else 0.0
+    print(f"  ✅ Validated {len(scenes)} scenes, fixed {fixed} issues")
+    return scenes
 
-        # sentence_bonus: block ends with sentence-ending punctuation (0-20)
-        last_word    = block_words[-1]["word"].strip()
-        sentence_end = last_word.endswith(('.', '?', '!'))
-        sentence_bonus = 15 if sentence_end else 0
-
-        # position_bonus: last block in beat gets +10
-        # (we'll apply this after grouping all blocks by beat)
-        score = pause_score + gpt_score + sentence_bonus
-
-        phrase_blocks.append({
-            "words":          block_words,
-            "start":          b_start,
-            "end":            b_end,
-            "score":          score,
-            "highlight_span": hi_span if contains_span else None,
-            "importance":     gpt_imp if contains_span else 0.0,
-            "beat_idx":       beat_idx,
-            "render_mode":    "normal",
-            "block_color":    "white",
-            "y_zone":         y_zones.get(beat_idx, "center"),
-        })
-
-    # Apply position_bonus: last block per beat gets +10
-    beat_last = {}
-    for i, pb in enumerate(phrase_blocks):
-        beat_last[pb["beat_idx"]] = i
-    for i, pb in enumerate(phrase_blocks):
-        if beat_last.get(pb["beat_idx"]) == i:
-            pb["score"] += 10
-
-    # Relative ranking: compute mean + stddev across all scores
-    scores = [pb["score"] for pb in phrase_blocks]
-    if len(scores) > 1:
-        mean   = sum(scores) / len(scores)
-        stddev = (sum((s - mean) ** 2 for s in scores) / len(scores)) ** 0.5
-    else:
-        mean   = scores[0] if scores else 0
-        stddev = 1.0
-
-    FILLER_ONLY = {"a", "an", "the", "of", "in", "on", "at", "to", "and", "or",
-                   "but", "so", "yet", "for", "nor", "is", "are", "was", "were",
-                   "it", "its", "this", "that", "with", "by", "as", "be", "now",
-                   "i", "we", "you", "he", "she", "they", "my", "our", "your"}
-
-    isolated_count = 0
-    MAX_ISOLATED   = 5  # cap isolated moments per video
-
-    for pb in phrase_blocks:
-        s   = pb["score"]
-        imp = pb["importance"]
-
-        # A block is ONLY isolated if:
-        # 1. Score is high relative to video (mean + stddev)
-        # 2. GPT gave it real importance (>= 0.70)
-        # 3. It actually contains the highlight span
-        # 4. It's not ALL filler words
-        block_words_clean = [w["word"].strip().lower().strip(".,!?-'\"")
-                             for w in pb["words"] if w["word"].strip()]
-        all_filler = all(w in FILLER_ONLY for w in block_words_clean)
-        has_span   = pb["highlight_span"] is not None
-
-        can_isolate = (s > mean + stddev and
-                       imp >= 0.70 and
-                       has_span and
-                       not all_filler and
-                       isolated_count < MAX_ISOLATED)
-
-        if can_isolate:
-            pb["render_mode"] = "isolated"
-            pb["block_color"] = "full_gold"
-            isolated_count += 1
-        elif s > mean and has_span:
-            pb["render_mode"] = "highlighted"
-            pb["block_color"] = "gold"
-        elif pb["highlight_span"]:
-            pb["render_mode"] = "highlighted"
-            pb["block_color"] = "gold"
-        else:
-            pb["render_mode"] = "normal"
-            pb["block_color"] = "white"
-
-    print(f"  📊 {len(phrase_blocks)} phrase blocks | "
-          f"isolated={isolated_count} highlighted={sum(1 for p in phrase_blocks if p['render_mode']=='highlighted')} "
-          f"normal={sum(1 for p in phrase_blocks if p['render_mode']=='normal')}")
-    return phrase_blocks
 
 
 # ============================================================
-# RENDERER v4 -- SACKFEELS KINETIC TYPOGRAPHY
-# Phrase blocks drive everything. Two modes:
-#   INLINE: words on one line, whole block fades in/out as unit
-#   ISOLATED: single word/span alone, massive, fast flash
-# Position: y_zone (upper/center/lower) per beat, centered horizontally
-# Colors: white (normal), gold inline (highlighted), full gold (isolated)
-# Opacity: setup phrases 75%, payoff 100%
-# Between beats: 3-frame dark gap
+# SCENE-BASED RENDERER v5
+# GPT outputs scene compositions (lists of elements).
+# This renderer executes any combination of text/line/rect/circle
+# with per-element animation and timing.
 # ============================================================
-def render_text_overlay_opencv(video_path: str, phrase_blocks: list, beats: list,
-                               word_timestamps: list, output_path: str):
-    print(f"🎨 Renderer v4: {len(phrase_blocks)} phrase blocks...")
+def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
+                               whisper_segments: list, output_path: str):
+    print(f"🎨 Scene renderer v5: {len(scenes)} scenes...")
 
     try:
         import cv2
@@ -471,276 +497,477 @@ def render_text_overlay_opencv(video_path: str, phrase_blocks: list, beats: list
     if not os.path.exists(video_path):
         raise Exception(f"Video not found: {video_path}")
 
-    _font_path = get_primary_font_path()
-
-    def load_font(size):
-        if _font_path:
-            try:
-                return ImageFont.truetype(_font_path, size)
-            except:
-                pass
+    # ── basic helpers ──────────────────────────────────────────────
+    def load_pil_font(path, size, weight="black"):
+        # weight selects between Black / ExtraBold / Bold
+        try:
+            if weight == "regular":
+                p = FONT_BOLD or path
+            elif weight == "black":
+                p = FONT_BLACK or FONT_BOLD or path
+            else:
+                p = FONT_BOLD or FONT_BLACK or path
+            if p and os.path.exists(p):
+                return ImageFont.truetype(p, size)
+        except: pass
         return ImageFont.load_default()
 
-    def apply_glitch(frame):
-        b, g, r = cv2.split(frame)
-        shift = random.randint(6, 14)
-        return cv2.merge([np.roll(b, -shift, axis=1), g, np.roll(r, shift, axis=1)])
+    def hex_to_rgb(hex_str):
+        h = (hex_str or "#FFFFFF").lstrip('#')
+        try: return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+        except: return (255, 255, 255)
 
-    # Colors
-    WHITE     = (255, 255, 255)
-    GOLD      = (212, 160, 23)
-    FADE_DARK = (0, 0, 0)
+    def apply_vignette(frame):
+        import numpy as np
+        rows, cols = frame.shape[:2]
+        X = cv2.getGaussianKernel(cols, cols * 0.6)
+        Y = cv2.getGaussianKernel(rows, rows * 0.6)
+        mask = (Y * X.T) / (Y * X.T).max()
+        out = frame.copy().astype(np.float32)
+        for i in range(3): out[:,:,i] *= mask
+        return np.clip(out, 0, 255).astype(np.uint8)
 
-    # Font sizes
-    INLINE_SIZE   = 90    # base inline phrase size
-    ISOLATED_SIZE = 180   # isolated word — massive
-    INLINE_HI_SIZE = 105  # highlighted word inline — slightly bigger
+    def apply_warm_grade(frame):
+        import numpy as np
+        out = frame.copy().astype(np.float32)
+        out[:,:,2] = np.clip(out[:,:,2] * 1.04, 0, 255)
+        return out.astype(np.uint8)
 
-    # phrase_blocks already built and scored upstream
-    if not phrase_blocks:
-        print(f"  ⚠ No phrase blocks -- copying without text")
-        subprocess.run(['ffmpeg', '-y', '-i', video_path, '-c', 'copy', output_path],
-                       check=True, capture_output=True)
-        return
+    def to_pil(frame):
+        return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
-    # Set display_end: hold until just before next block starts (no overlap)
-    for i, pb in enumerate(phrase_blocks):
-        if i + 1 < len(phrase_blocks):
-            next_start = phrase_blocks[i + 1]["start"]
-            # Hold for up to 0.15s but NEVER overlap next block
-            pb["display_end"] = min(pb["end"] + 0.15, next_start - 0.01)
-        else:
-            pb["display_end"] = pb["end"] + 0.3
+    def to_frame(pil_img):
+        import numpy as np
+        return cv2.cvtColor(np.array(pil_img.convert('RGB')), cv2.COLOR_RGB2BGR)
 
-    FADE_FRAMES = 6   # frames for fade in / fade out
-    DARK_FRAMES = 3   # brief dark gap between blocks
+    def composite_layer(frame, layer):
+        pil = to_pil(frame).convert('RGBA')
+        merged = Image.alpha_composite(pil, layer)
+        return to_frame(merged)
 
-    # Video capture
-    cap          = cv2.VideoCapture(video_path)
+    # ── video metadata ─────────────────────────────────────────────
+    def _ffprobe_dur(path):
+        try:
+            r = subprocess.run(['ffprobe','-v','error','-show_entries','format=duration',
+                                '-of','default=noprint_wrappers=1:nokey=1', path],
+                               capture_output=True, text=True)
+            return float(r.stdout.strip())
+        except: return 0.0
+
+    TARGET_FPS = 30.0
+    vid_dur = _ffprobe_dur(video_path)
+
+    # Transcode to CFR for predictable frame timing
+    cfr_video = output_path.replace(".mp4", "_cfr_tmp.mp4")
+    subprocess.run(['ffmpeg','-y','-i',video_path,
+                    '-vf',f'fps={TARGET_FPS:.0f}',
+                    '-c:v','libx264','-preset','ultrafast','-crf','18',
+                    '-an', cfr_video],
+                   capture_output=True, check=True)
+
+    # ── Whisper word time index for word-by-word timing ───────────
+    whisper_word_times = {}
+    for seg in whisper_segments:
+        seg_start = float(seg.get('start', 0))
+        seg_end = float(seg.get('end', 0))
+        seg_dur = max(seg_end - seg_start, 0.01)
+        word_entries = seg.get('words', [])
+        if word_entries:
+            for we in word_entries:
+                wc = we.get('word', '').upper().strip('.,!?;:\'"()[]- ')
+                if not wc: continue
+                ws_t = float(we.get('start', seg_start))
+                we_t = float(we.get('end', ws_t + 0.2))
+                whisper_word_times.setdefault(wc, []).append((ws_t, we_t))
+
+    def find_word_time(word: str, hint_start: float):
+        wc = word.upper().strip('.,!?;:\'"()[]- ')
+        candidates = whisper_word_times.get(wc, [])
+        if not candidates:
+            for k, v in whisper_word_times.items():
+                if wc in k or k in wc:
+                    candidates = v; break
+        if not candidates:
+            return None
+        best = min(candidates, key=lambda x: abs(x[0] - hint_start))
+        return best[0]
+
+    def clamp(v, lo, hi): return max(lo, min(v, hi))
+
+    # ── Build flat timeline: each element gets absolute start/end times ─────
+    timeline = []
+    for scene_pos, scene in enumerate(scenes):
+        beat = beats[scene_pos] if scene_pos < len(beats) else {}
+        beat_start = clamp(float(beat.get("start_time", 0.0)), 0, vid_dur - 0.1)
+        beat_end = clamp(float(beat.get("end_time", beat_start + 2.0)),
+                         beat_start + 0.1, vid_dur)
+
+        # Cap beat_end at next beat's start so elements never bleed into next beat
+        if scene_pos + 1 < len(beats):
+            next_start = float(beats[scene_pos + 1].get("start_time", beat_end))
+            beat_end = min(beat_end, next_start)
+
+        elements = scene.get("elements", [])
+        for el in elements:
+            etype = el.get("type", "text")
+
+            # Resolve start time: prefer Whisper word match for text elements
+            start_offset = float(el.get("start_offset", 0.0))
+            anim_start = beat_start + start_offset
+
+            # If text matches a word in the beat, use exact Whisper timestamp
+            if etype == "text":
+                content = (el.get("content") or "").strip()
+                if content and " " not in content:
+                    # single word - try Whisper timestamp
+                    ws = find_word_time(content, beat_start + start_offset)
+                    if ws is not None and beat_start <= ws <= beat_end + 1.0:
+                        anim_start = ws
+
+            duration = el.get("duration")
+            if duration is None or duration <= 0:
+                anim_end = beat_end
+            else:
+                anim_end = anim_start + float(duration)
+
+            # Never let element extend past beat_end (which is now capped at next beat start)
+            anim_end = clamp(anim_end, anim_start + 0.1, beat_end)
+            anim_start = clamp(anim_start, 0, beat_end - 0.05)
+
+            timeline.append({
+                "el": el,
+                "start": anim_start,
+                "end": anim_end,
+                "anim_duration": float(el.get("anim_duration", 0.15)),
+            })
+
+    timeline.sort(key=lambda x: x["start"])
+    print(f"  📊 Timeline: {len(timeline)} elements")
+
+    # ── Frame-by-frame render ─────────────────────────────────────
+    cap = cv2.VideoCapture(cfr_video)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps_vid      = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    vid_w        = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    vid_h        = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps_vid = TARGET_FPS
 
     temp_video = output_path.replace(".mp4", "_noaudio_tmp.mp4")
-    fourcc     = cv2.VideoWriter_fourcc(*'mp4v')
-    out        = cv2.VideoWriter(temp_video, fourcc, fps_vid, (vid_w, vid_h))
+    out = cv2.VideoWriter(temp_video, cv2.VideoWriter_fourcc(*'mp4v'),
+                          fps_vid, (fw, fh))
 
-    print(f"  🎬 {total_frames} frames @ {fps_vid:.0f}fps ({vid_w}x{vid_h})...")
-
-    # Pre-compute y positions
-    # Inline phrases: left-anchored, upper portion of screen
-    # Isolated words: centered horizontally, centered vertically (alone) OR below phrase if phrase visible
-    INLINE_X     = int(vid_w * 0.05)   # left anchor for inline phrases
-    INLINE_Y     = int(vid_h * 0.22)   # upper area for inline phrases
-    ISOLATED_Y   = int(vid_h * 0.42)   # center-ish for isolated words alone
-    LINE_H       = INLINE_SIZE + 12
-
-    def get_y_anchor(zone):
-        # Keep for compatibility but not used for positioning anymore
-        return INLINE_Y
-
-    def measure_text_width(text, font):
-        bbox = font.getbbox(text)
-        return bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-    def split_line_by_pixels(words_list, font, max_w):
-        """Split words into lines based on pixel width, breaking at syntax boundaries."""
-        SYNTAX_BREAK = {"and", "but", "or", "so", "yet", "nor", "of", "in",
-                        "on", "at", "to", "for", "with", "by", "from"}
-        lines   = []
-        current = []
-        for w in words_list:
-            test = " ".join(current + [w])
-            tw, _ = measure_text_width(test, font)
-            if tw > max_w and current:
-                # Try to find a syntax break point in current
-                broke = False
-                for j in range(len(current) - 1, 0, -1):
-                    if current[j].lower().strip(".,!?") in SYNTAX_BREAK:
-                        lines.append(current[:j + 1])
-                        current = current[j + 1:] + [w]
-                        broke = True
-                        break
-                if not broke:
-                    lines.append(current)
-                    current = [w]
-            else:
-                current.append(w)
-        if current:
-            lines.append(current)
-        return lines
-
-    def draw_phrase_block(draw, pb, alpha_mult, vid_w, vid_h, current_t, current_frame, fps_vid):
-        """Draw a phrase block. Returns glitch flag."""
-        mode       = pb["render_mode"]
-        hi_span    = (pb["highlight_span"] or "").lower()
-        words_list = [w["word"].strip() for w in pb["words"] if w["word"].strip()]
-        do_glitch  = False
-
-        if mode == "isolated":
-            text  = " ".join(words_list)
-            fsize = ISOLATED_SIZE
-            font  = load_font(fsize)
-            tw, th = measure_text_width(text, font)
-            while tw > vid_w * 0.88 and fsize > 60:
-                fsize -= 10
-                font   = load_font(fsize)
-                tw, th = measure_text_width(text, font)
-            x     = (vid_w - tw) // 2
-            y     = (vid_h - th) // 2
-            color = (*GOLD, int(255 * alpha_mult))
-            draw.text((x, y), text, font=font, fill=color)
-
-            # Glitch ONLY on first 4 frames after isolated word appears
-            frames_since_start = int((current_t - pb["start"]) * fps_vid)
-            if pb["importance"] >= 0.88 and frames_since_start < 4 and current_frame % 2 == 0:
-                do_glitch = True
-
-        else:
-            # INLINE: left-anchored, upper area, wraps if too long
-            max_line_w  = int(vid_w * 0.90)
-            font_inline = load_font(INLINE_SIZE)
-            lines       = split_line_by_pixels(words_list, font_inline, max_line_w)
-            base_alpha  = int(255 * alpha_mult * (0.80 if mode == "normal" else 1.0))
-            cur_y       = INLINE_Y
-
-            for line_words in lines:
-                x_cursor = INLINE_X
-                for wi, word in enumerate(line_words):
-                    w_clean = word.lower().strip(".,!?-'\"")
-                    in_span = hi_span and w_clean in hi_span
-                    is_hi   = (mode == "highlighted") and in_span
-
-                    if is_hi:
-                        font_w = load_font(INLINE_HI_SIZE)
-                        color  = (*GOLD, base_alpha)
-                    else:
-                        font_w = font_inline
-                        color  = (*WHITE, base_alpha)
-
-                    ww_text = word + (" " if wi < len(line_words) - 1 else "")
-                    draw.text((x_cursor, cur_y), ww_text, font=font_w, fill=color)
-                    tw_w, _ = measure_text_width(ww_text, font_w)
-                    x_cursor += tw_w
-
-                cur_y += LINE_H
-
-        return do_glitch
-
+    print(f"  🎬 {total_frames} frames @ {fps_vid:.0f}fps...")
     frame_idx = 0
-    prev_pct  = -1
-    n_blocks  = len(phrase_blocks)
+    prev_pct = -1
 
-    # Build frame→block lookup for efficiency
-    # Each frame: find which block is active
-    def find_active_block(t):
-        for pb in phrase_blocks:
-            if pb["start"] <= t <= pb["display_end"]:
-                return pb
-        return None
+    # ── Element drawing functions ──────────────────────────────────
+    def get_anim_progress(el_t, start, end, anim_dur):
+        """Return (entrance_progress, exit_progress) both 0..1.
+        entrance_progress: 0=not started, 1=fully appeared
+        exit_progress: 1=visible, 0=fully gone (only at end)
+        """
+        if anim_dur <= 0:
+            anim_dur = 0.001
+        entrance = clamp((el_t - start) / anim_dur, 0.0, 1.0)
+        # No exit fade by default - just snap out at end
+        return entrance
 
-    def get_fade_alpha(t, pb):
-        """Inline blocks appear instantly. Only isolated blocks fade in/out."""
-        if pb["render_mode"] != "isolated":
-            return 1.0  # instant — no flicker on inline phrases
+    def draw_text_element(layer, el, el_t, anim_t):
+        """Draw a TEXT element with animation."""
+        draw = ImageDraw.Draw(layer)
+        content = el.get("content", "")
+        x_pct = float(el.get("x", 0.5))
+        y_pct = float(el.get("y", 0.5))
+        size = max(20, min(int(el.get("size", 90)), 400))
+        color = hex_to_rgb(el.get("color", "#FFFFFF"))
+        weight = el.get("weight", "black")
+        outline = max(0, min(int(el.get("outline", 4)), 12))
+        anim = el.get("anim", "fade_in")
+        anchor = el.get("anchor", "center")
+        effect = el.get("effect", "none")
 
-        fade_dur    = 4 / fps_vid   # 4 frames fade in, 4 frames fade out
-        since_start = t - pb["start"]
-        until_end   = pb["display_end"] - t
+        font = load_pil_font(get_primary_font_path(), size, weight)
+        try:
+            bbox = font.getbbox(content)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+        except:
+            tw = size * len(content) * 0.55
+            th = size
 
-        if since_start < fade_dur:
-            return max(0.0, since_start / fade_dur)
-        if until_end < fade_dur:
-            return max(0.0, until_end / fade_dur)
-        return 1.0
+        # Compute base position
+        target_x = int(OUTPUT_WIDTH * x_pct)
+        target_y = int(OUTPUT_HEIGHT * y_pct)
+        if anchor == "center":
+            base_x = target_x - tw // 2
+            base_y = target_y - th // 2
+        elif anchor == "left":
+            base_x = target_x
+            base_y = target_y - th // 2
+        elif anchor == "right":
+            base_x = target_x - tw
+            base_y = target_y - th // 2
+        else:
+            base_x = target_x - tw // 2
+            base_y = target_y - th // 2
 
-    prev_block_id = None
+        # Clamp to screen with padding so text never goes off-edge
+        pad = 30
+        max_x = OUTPUT_WIDTH - tw - pad
+        max_y = OUTPUT_HEIGHT - th - pad
+        base_x = max(pad, min(base_x, max_x))
+        base_y = max(pad, min(base_y, max_y))
 
+        # Apply entrance animation
+        draw_x, draw_y = base_x, base_y
+        alpha = 1.0
+        scale = 1.0
+
+        if anim == "fade_in":
+            alpha = anim_t
+        elif anim == "slide_in_left":
+            slide_dist = int(OUTPUT_WIDTH * 0.3)
+            draw_x = base_x - int(slide_dist * (1.0 - anim_t))
+            alpha = anim_t
+        elif anim == "slide_in_right":
+            slide_dist = int(OUTPUT_WIDTH * 0.3)
+            draw_x = base_x + int(slide_dist * (1.0 - anim_t))
+            alpha = anim_t
+        elif anim == "slide_in_top":
+            slide_dist = int(OUTPUT_HEIGHT * 0.2)
+            draw_y = base_y - int(slide_dist * (1.0 - anim_t))
+            alpha = anim_t
+        elif anim == "slide_in_bottom":
+            slide_dist = int(OUTPUT_HEIGHT * 0.2)
+            draw_y = base_y + int(slide_dist * (1.0 - anim_t))
+            alpha = anim_t
+        elif anim == "scale_in":
+            scale = 1.3 - 0.3 * anim_t
+            alpha = anim_t
+        elif anim == "snap":
+            alpha = 1.0
+        elif anim == "none":
+            alpha = 1.0
+
+        # Effects (applied during display)
+        if effect == "flicker":
+            # Blink during first 0.3s of element life
+            if el_t - 0 < 0.3:
+                frame_no = int(el_t * 30)
+                if frame_no % 2 == 1:
+                    return
+        elif effect == "shake":
+            import random as _r
+            draw_x += _r.randint(-3, 3)
+            draw_y += _r.randint(-3, 3)
+
+        # Re-render text at scaled size if scale != 1.0
+        render_font = font
+        if abs(scale - 1.0) > 0.02:
+            new_size = max(20, int(size * scale))
+            render_font = load_pil_font(get_primary_font_path(), new_size, weight)
+            try:
+                bbox = render_font.getbbox(content)
+                tw2 = bbox[2] - bbox[0]
+                th2 = bbox[3] - bbox[1]
+                draw_x = base_x + (tw - tw2) // 2
+                draw_y = base_y + (th - th2) // 2
+            except: pass
+
+        # Clamp draw position AFTER animation offsets (slide/shake can push text off-screen)
+        draw_x = max(pad, min(draw_x, OUTPUT_WIDTH - tw - pad))
+        draw_y = max(pad, min(draw_y, OUTPUT_HEIGHT - th - pad))
+
+        a_int = max(0, min(int(255 * alpha), 255))
+        if a_int < 5:
+            return
+
+        # Draw outline (multiple offsets for thick outline)
+        if outline > 0:
+            for ox in range(-outline, outline + 1):
+                for oy in range(-outline, outline + 1):
+                    if ox * ox + oy * oy <= outline * outline:
+                        if ox == 0 and oy == 0:
+                            continue
+                        draw.text((draw_x + ox, draw_y + oy), content,
+                                  font=render_font, fill=(0, 0, 0, a_int))
+        # Draw fill
+        draw.text((draw_x, draw_y), content, font=render_font,
+                  fill=(color[0], color[1], color[2], a_int))
+
+    def draw_line_element(layer, el, el_t, anim_t):
+        """Draw a LINE element with animation."""
+        draw = ImageDraw.Draw(layer)
+        x1 = int(OUTPUT_WIDTH * float(el.get("x1", 0.3)))
+        y1 = int(OUTPUT_HEIGHT * float(el.get("y1", 0.5)))
+        x2 = int(OUTPUT_WIDTH * float(el.get("x2", 0.7)))
+        y2 = int(OUTPUT_HEIGHT * float(el.get("y2", 0.5)))
+        thickness = max(1, int(el.get("thickness", 6)))
+        color = hex_to_rgb(el.get("color", "#FFFFFF"))
+        anim = el.get("anim", "draw_horizontal")
+
+        alpha = 1.0
+        end_x, end_y = x2, y2
+
+        if anim == "fade_in":
+            alpha = anim_t
+        elif anim == "draw_horizontal":
+            end_x = x1 + int((x2 - x1) * anim_t)
+            end_y = y1 + int((y2 - y1) * anim_t)
+            alpha = 1.0
+        elif anim == "none":
+            alpha = 1.0
+
+        a_int = max(0, min(int(255 * alpha), 255))
+        if a_int < 5:
+            return
+
+        draw.line([(x1, y1), (end_x, end_y)],
+                  fill=(color[0], color[1], color[2], a_int),
+                  width=thickness)
+
+    def draw_rect_element(layer, el, el_t, anim_t):
+        """Draw a RECT element."""
+        draw = ImageDraw.Draw(layer)
+        x = int(OUTPUT_WIDTH * float(el.get("x", 0.4)))
+        y = int(OUTPUT_HEIGHT * float(el.get("y", 0.4)))
+        w = int(OUTPUT_WIDTH * float(el.get("w", 0.2)))
+        h = int(OUTPUT_HEIGHT * float(el.get("h", 0.1)))
+        color = hex_to_rgb(el.get("color", "#FFFFFF"))
+        filled = bool(el.get("filled", True))
+        thickness = max(1, int(el.get("thickness", 3)))
+        anim = el.get("anim", "fade_in")
+
+        alpha = 1.0
+        if anim == "fade_in":
+            alpha = anim_t
+        elif anim == "scale_in":
+            scale = anim_t
+            cx, cy = x + w // 2, y + h // 2
+            w = int(w * scale); h = int(h * scale)
+            x = cx - w // 2; y = cy - h // 2
+            alpha = anim_t
+
+        a_int = max(0, min(int(255 * alpha), 255))
+        if a_int < 5:
+            return
+
+        rgba = (color[0], color[1], color[2], a_int)
+        if filled:
+            draw.rectangle([x, y, x + w, y + h], fill=rgba)
+        else:
+            draw.rectangle([x, y, x + w, y + h], outline=rgba, width=thickness)
+
+    def draw_circle_element(layer, el, el_t, anim_t):
+        """Draw a CIRCLE element."""
+        draw = ImageDraw.Draw(layer)
+        cx = int(OUTPUT_WIDTH * float(el.get("x", 0.5)))
+        cy = int(OUTPUT_HEIGHT * float(el.get("y", 0.5)))
+        r = int(min(OUTPUT_WIDTH, OUTPUT_HEIGHT) * float(el.get("radius", 0.05)))
+        color = hex_to_rgb(el.get("color", "#FFFFFF"))
+        filled = bool(el.get("filled", False))
+        thickness = max(1, int(el.get("thickness", 4)))
+        anim = el.get("anim", "fade_in")
+
+        alpha = 1.0
+        if anim == "fade_in":
+            alpha = anim_t
+        elif anim == "scale_in":
+            r = int(r * anim_t)
+            alpha = anim_t
+
+        a_int = max(0, min(int(255 * alpha), 255))
+        if a_int < 5 or r <= 0:
+            return
+
+        rgba = (color[0], color[1], color[2], a_int)
+        bbox = [cx - r, cy - r, cx + r, cy + r]
+        if filled:
+            draw.ellipse(bbox, fill=rgba)
+        else:
+            draw.ellipse(bbox, outline=rgba, width=thickness)
+
+    # ── Main frame loop ──────────────────────────────────────────
     while True:
         ret, frame = cap.read()
-        if not ret:
-            break
+        if not ret: break
 
-        t          = frame_idx / fps_vid
-        active_pb  = find_active_block(t)
+        t = frame_idx / fps_vid
+        frame = apply_vignette(frame)
+        frame = apply_warm_grade(frame)
 
-        if active_pb is not None:
-            block_id = id(active_pb)
+        # Find all elements active at time t
+        raw_active = [item for item in timeline
+                      if item["start"] <= t < item["end"]]
 
-            # Only apply dark gap when coming FROM an isolated block
-            prev_was_isolated = any(
-                id(p) == prev_block_id and p["render_mode"] == "isolated"
-                for p in phrase_blocks
-            ) if prev_block_id is not None else False
+        # Deduplicate: if two elements share the same content + near-same x/y position,
+        # keep only the one whose start time is closest to t (most recently activated).
+        # This prevents "WE WE" doubles when GPT repeats a word across adjacent beats.
+        seen_keys = {}
+        for item in sorted(raw_active, key=lambda x: x["start"], reverse=True):
+            el = item["el"]
+            if el.get("type") == "text":
+                content_key = (el.get("content", "").upper().strip(),
+                               round(float(el.get("x", 0.5)), 1),
+                               round(float(el.get("y", 0.5)), 1))
+                if content_key not in seen_keys:
+                    seen_keys[content_key] = item
+            else:
+                seen_keys[id(item["el"])] = item
+        active = list(seen_keys.values())
 
-            if prev_was_isolated and block_id != prev_block_id:
-                since_block_start = t - active_pb["start"]
-                if since_block_start < (DARK_FRAMES / fps_vid):
-                    frame = cv2.addWeighted(frame, 0.3, np.zeros_like(frame), 0.7, 0)
-                    out.write(frame)
-                    frame_idx += 1
-                    prev_block_id = block_id
-                    continue
+        if active:
+            # Slight darkening overlay when text is on screen
+            import numpy as np
+            frame = cv2.addWeighted(frame, 0.82, np.zeros_like(frame), 0.18, 0)
 
-            prev_block_id = block_id
-            alpha = get_fade_alpha(t, active_pb)
+            # Build composite layer
+            layer = Image.new('RGBA', (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
 
-            frame_rgb  = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_img    = Image.fromarray(frame_rgb)
-            text_layer = Image.new('RGBA', (vid_w, vid_h), (0, 0, 0, 0))
-            draw       = ImageDraw.Draw(text_layer)
+            for item in active:
+                el = item["el"]
+                el_t = t - item["start"]   # time since element started
+                anim_t = get_anim_progress(el_t, 0, item["end"] - item["start"],
+                                            item["anim_duration"])
+                etype = el.get("type", "text")
+                try:
+                    if etype == "text":
+                        draw_text_element(layer, el, el_t, anim_t)
+                    elif etype == "line":
+                        draw_line_element(layer, el, el_t, anim_t)
+                    elif etype == "rect":
+                        draw_rect_element(layer, el, el_t, anim_t)
+                    elif etype == "circle":
+                        draw_circle_element(layer, el, el_t, anim_t)
+                except Exception as e:
+                    print(f"  ⚠ element render error: {e}")
 
-            # If isolated, also draw the previous inline phrase faintly above
-            if active_pb["render_mode"] == "isolated":
-                prev_inline = None
-                for pb2 in phrase_blocks:
-                    if id(pb2) == block_id:
-                        break
-                    if pb2["render_mode"] != "isolated":
-                        prev_inline = pb2
-                if prev_inline:
-                    draw_phrase_block(draw, prev_inline, 0.55, vid_w, vid_h, t, frame_idx, fps_vid)
-
-            do_glitch = draw_phrase_block(draw, active_pb, alpha, vid_w, vid_h, t, frame_idx, fps_vid)
-
-            pil_rgba = pil_img.convert('RGBA')
-            combined = Image.alpha_composite(pil_rgba, text_layer)
-            frame    = cv2.cvtColor(np.array(combined.convert('RGB')), cv2.COLOR_RGB2BGR)
-
-            if do_glitch and frame_idx % 2 == 0:
-                frame = apply_glitch(frame)
-        else:
-            prev_block_id = None
+            frame = composite_layer(frame, layer)
 
         out.write(frame)
         frame_idx += 1
-
         pct = int(frame_idx / max(total_frames, 1) * 20)
         if pct != prev_pct:
-            bar = '█' * pct + '░' * (20 - pct)
-            print(f"  [{bar}] {frame_idx}/{total_frames}", end='\r')
+            print(f"  [{'█' * pct}{'░' * (20 - pct)}] {frame_idx}/{total_frames}",
+                  end='\r')
             prev_pct = pct
 
-    cap.release()
-    out.release()
+    cap.release(); out.release()
+    if os.path.exists(cfr_video): os.remove(cfr_video)
     print(f"\n  ✓ Frames done")
 
     result = subprocess.run([
-        'ffmpeg', '-y',
-        '-i', temp_video, '-i', video_path,
+        'ffmpeg', '-y', '-i', temp_video, '-i', video_path,
         '-map', '0:v', '-map', '1:a',
         '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
         '-c:a', 'copy', output_path
     ], capture_output=True)
 
-    if os.path.exists(temp_video):
-        os.remove(temp_video)
-
+    if os.path.exists(temp_video): os.remove(temp_video)
     if result.returncode != 0:
         raise Exception(f"Audio merge failed: {result.stderr.decode()[-200:]}")
 
     print(f"  ✅ Render complete: {output_path}")
+
 
 
 # ============================================================
@@ -793,8 +1020,11 @@ class VaultsGenerator:
     def get_all_files_from_dir(self, directory: str) -> list:
         if not os.path.exists(directory):
             return []
-        return [os.path.join(directory, f) for f in os.listdir(directory)
-                if f.lower().endswith(('.mp4', '.mov', '.avi'))]
+        files = [os.path.join(directory, f) for f in os.listdir(directory)
+                 if f.lower().endswith(('.mp4', '.mov', '.avi'))]
+        if not files:
+            print(f"  ⚠ Folder exists but is EMPTY: {directory}")
+        return files
 
     def transcribe_with_whisper(self, model: str = "base") -> dict | None:
         cache_file = f"{os.path.splitext(self.audio_path)[0]}_transcription.json"
@@ -825,53 +1055,92 @@ class VaultsGenerator:
                   for cat, kws in self.keyword_map.items()}
         sorted_cats = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         top = [self.broll_dirs[c] for c, s in sorted_cats if s > 0 and c in self.broll_dirs]
-        return top or list(self.broll_dirs.values())[:3]
+
+        # FIX 2: Filter to only folders that actually exist and have clips
+        valid_top = []
+        for folder in top:
+            files = self.get_all_files_from_dir(folder)
+            if files:
+                valid_top.append(folder)
+            else:
+                print(f"  ⚠ Skipping empty/missing broll folder: {folder}")
+
+        if not valid_top:
+            # Fallback: scan ALL configured broll dirs and use any that have clips
+            print(f"  ⚠ No keyword-matched folders had clips -- scanning all broll dirs...")
+            for folder in self.broll_dirs.values():
+                files = self.get_all_files_from_dir(folder)
+                if files:
+                    valid_top.append(folder)
+                    print(f"  ✓ Found clips in: {folder} ({len(files)} files)")
+
+        if not valid_top:
+            raise Exception(
+                "No broll clips found in ANY configured folder.\n"
+                f"Configured dirs: {list(self.broll_dirs.values())}\n"
+                "Add your Seedance space/ancient/cosmic clips to these folders."
+            )
+
+        return valid_top
 
     def create_segment_plan(self, duration: float, beats: list, top_categories: list) -> list:
         segments = []
-        used     = set()
-        cat_map  = {
-            'space':   'space_vids',   'ancient': 'ancient_ruins_vids',
-            'cosmic':  'cosmic_vids',  'sky':     'dark_sky_vids',
-            'temple':  'temple_vids',  'any':     top_categories[0] if top_categories else 'space_vids',
+        # Build complete pool of all folders that have clips
+        all_folders = []
+        for folder in self.broll_dirs.values():
+            if self.get_all_files_from_dir(folder):
+                all_folders.append(folder)
+        if not all_folders:
+            raise Exception("No broll clips found in any folder.")
+
+        # Per-folder clip pools with used tracking
+        folder_pools = {}
+        for folder in all_folders:
+            folder_pools[folder] = list(self.get_all_files_from_dir(folder))
+
+        # Beat category → preferred folder (best-effort, falls back to rotation)
+        broll_cat_to_folder = {
+            'space':   self.broll_dirs.get('space',   'space_vids'),
+            'ancient': self.broll_dirs.get('ancient', 'ancient_ruins_vids'),
+            'cosmic':  self.broll_dirs.get('cosmic',  'cosmic_vids'),
+            'sky':     self.broll_dirs.get('sky',     'dark_sky_vids'),
+            'temple':  self.broll_dirs.get('temple',  'temple_vids'),
         }
-        base_dur = 4.0
-        n_segs   = max(int(duration / base_dur), 1)
+
+        # Per-folder shuffle indices so we cycle without repeating
+        folder_idx = {f: 0 for f in all_folders}
+        for f in all_folders:
+            random.shuffle(folder_pools[f])
+
+        base_dur   = 4.0
+        n_segs     = max(int(duration / base_dur), 1)
+        folder_rot = 0
 
         for i in range(n_segs):
-            if i < len(beats):
-                cat     = cat_map.get(beats[i].get('broll_category', 'any'),
-                                      top_categories[i % len(top_categories)])
-                seg_dur = float(beats[i].get('clip_duration', base_dur))
-            else:
-                cat     = top_categories[i % len(top_categories)]
-                seg_dur = base_dur + random.uniform(-1.0, 1.0)
+            seg_dur = float(beats[i].get('clip_duration', base_dur)) if i < len(beats) else base_dur
+            # Pure round-robin across all folders -- guaranteed variety
+            target_folder = all_folders[folder_rot % len(all_folders)]
+            folder_rot += 1
 
-            files = self.get_all_files_from_dir(cat)
-            if not files:
-                for fb in top_categories:
-                    files = self.get_all_files_from_dir(fb)
-                    if files:
-                        cat = fb
-                        break
+            # Pick next clip from folder, cycling
+            pool = folder_pools[target_folder]
+            idx  = folder_idx[target_folder]
+            if idx >= len(pool):
+                random.shuffle(pool)
+                idx = 0
+            chosen = pool[idx]
+            folder_idx[target_folder] = idx + 1
 
-            if not files:
-                continue
-
-            available = [f for f in files if f not in used]
-            if not available:
-                available = files
-                used.clear()
-
-            chosen = random.choice(available)
-            used.add(chosen)
-
-            if chosen.lower().endswith(('.mp4', '.mov', '.avi')):
-                segments.append({'type': 'broll', 'category': cat,
-                                  'file': chosen, 'duration': seg_dur})
+            segments.append({
+                'type':     'broll',
+                'category': target_folder,
+                'file':     chosen,
+                'duration': seg_dur,
+            })
+            print(f"    seg {i+1}: {os.path.basename(chosen)} [{os.path.basename(target_folder)}]")
 
         if not segments:
-            raise Exception("No segments. Check broll folders.")
+            raise Exception("No segments created.")
 
         total = sum(s['duration'] for s in segments)
         if total < duration:
@@ -895,25 +1164,25 @@ class VaultsGenerator:
             vf += [f"scale=-2:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase",
                    f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}"]
 
+        # fps=30 MUST come first to convert VFR → CFR before any other filter
+        # Without this, VFR clips produce frozen frames or wrong duration
+        vf = [f"fps=30"] + vf
         vf += ["eq=brightness=0.02:contrast=1.05:saturation=1.1", "format=yuv420p"]
         cmd += ['-vf', ','.join(vf), '-c:v', 'libx264', '-preset', 'ultrafast',
-                '-crf', '23', '-pix_fmt', 'yuv420p', '-an', output_file]
+                '-crf', '23', '-pix_fmt', 'yuv420p', '-r', '30', '-an', output_file]
 
         if progress_callback:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     universal_newlines=True, bufsize=1)
-            total_f  = int(dur * fps)
-            last_f   = 0
-            for line in proc.stderr:
-                if 'frame=' in line:
+            total_f = int(dur * fps)
+            last_f  = 0
+            for line in proc.stdout:  # progress goes to stdout via -progress pipe:1
+                if line.startswith('frame='):
                     try:
-                        for part in line.split():
-                            if part.startswith('frame='):
-                                cf = int(part.split('=')[1])
-                                if cf > last_f:
-                                    last_f = cf
-                                    progress_callback(cf, total_f)
-                                break
+                        cf = int(line.split('=')[1].strip())
+                        if cf > last_f:
+                            last_f = cf
+                            progress_callback(cf, total_f)
                     except:
                         pass
             proc.wait()
@@ -965,36 +1234,27 @@ class VaultsGenerator:
         if not transcription:
             raise Exception("Transcription failed")
 
-        full_text = transcription.get('text', '').strip()
-        all_words = []
-        for seg in transcription.get('segments', []):
-            for w in seg.get('words', []):
-                word = w.get('word', '').strip()
-                if word:
-                    all_words.append({
-                        'word':  word,
-                        'start': float(w.get('start', 0)),
-                        'end':   float(w.get('end', 0)),
-                    })
-        print(f"  ✅ {len(full_text)} chars, {len(all_words)} words")
+        full_text        = transcription.get('text', '').strip()
+        whisper_segments = transcription.get('segments', [])
+        print(f"  ✅ {len(full_text)} chars, {len(whisper_segments)} segments")
 
         print(f"\n[STEP 3] GPT Call 1: Story Beats...")
         try:
             topic_hint   = list(self.broll_dirs.keys())[0] if self.broll_dirs else "space"
-            beats_result = analyze_story_beats(full_text, topic_hint, duration)
+            beats_result = analyze_story_beats(full_text, whisper_segments, topic_hint, duration)
             topic        = beats_result.get('topic', 'default')
             beats        = beats_result.get('beats', [])
         except Exception as e:
             raise Exception(f"STEP 3 FAILED: {e}")
 
-        print(f"\n[STEP 4] GPT Call 2: Semantic Highlights...")
+        print(f"\n[STEP 4] GPT Call 2: Render Decisions...")
         try:
-            highlights = generate_render_decisions(beats, topic)
+            decisions = generate_render_decisions(beats, topic)
         except Exception as e:
             raise Exception(f"STEP 4 FAILED: {e}")
 
-        print(f"\n[STEP 5] Building phrase blocks...")
-        phrase_blocks = build_phrase_blocks(all_words, highlights, beats)
+        print(f"\n[STEP 5] Validating...")
+        decisions = validate_decisions(decisions, beats)
 
         print(f"\n[STEP 6] Music...")
         bg_music = MUSIC_MAP.get(topic, MUSIC_MAP['default'])
@@ -1091,7 +1351,7 @@ class VaultsGenerator:
             else:
                 cmd += ['-map', '0:v', '-map', '1:a']
             cmd += ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
-                    '-ar', '48000', '-ac', '2', '-shortest', audio_output]
+                    '-ar', '48000', '-ac', '2', '-t', str(duration), audio_output]
             r = subprocess.run(cmd, capture_output=True)
             if r.returncode != 0:
                 raise Exception(f"Audio failed: {r.stderr.decode()[-200:]}")
@@ -1099,7 +1359,7 @@ class VaultsGenerator:
 
             print(f"\n[STEP 12] OpenCV text render...")
             try:
-                render_text_overlay_opencv(audio_output, phrase_blocks, beats, all_words, self.output_path)
+                render_text_overlay_opencv(audio_output, decisions, beats, whisper_segments, self.output_path)
             except Exception as e:
                 print(f"  ❌ Render failed: {e}")
                 traceback.print_exc()
@@ -1124,7 +1384,7 @@ class VaultsGenerator:
             print(f"✅ COMPLETE!")
             print(f"📁 {self.output_path}")
             print(f"💾 {file_size:.2f} MB | ⏱ {duration:.1f}s | ⚡ {total_time:.0f}s")
-            print(f"🎭 {len(beats)} beats | 📝 {len(phrase_blocks)} phrase blocks")
+            print(f"🎭 {len(beats)} beats | 📝 {len(decisions)} decisions")
             print(f"{'='*70}\n")
             return True
 
@@ -1143,7 +1403,7 @@ class VaultsGenerator:
                 if os.path.exists(f):
                     try: os.remove(f)
                     except: pass
-            for tmp in glob.glob("*TEMP_MPY*.mp4") + glob.glob("*_noaudio_tmp.mp4"):
+            for tmp in glob.glob("*TEMP_MPY*.mp4") + glob.glob("*_noaudio_tmp.mp4") + glob.glob("*_cfr_tmp.mp4") + glob.glob("temp_segment_*.mp4"):
                 try: os.remove(tmp)
                 except: pass
 
