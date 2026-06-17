@@ -1,8 +1,16 @@
 # ============================================================
-# VAULTS OF HISTORY - AI Video Generator v3
-# Two-call GPT: Story Beats → Render Decisions
-# OpenCV + Pillow renderer with fade in/out animation
-# Proper timing via timestamp_hint + fuzzy anchor matching
+# FINANCE EXPLAINER - AI Video Generator v1
+# New niche, character-free. Reuses the Vaults v3 architecture:
+# Two-call GPT (Story Beats -> Render Decisions), OpenCV + Pillow
+# renderer, Whisper word-timestamp-driven timing, validation pass.
+#
+# What's NEW vs Vaults: the render decision vocabulary adds
+# number_counter (animated count-up/down) and grid (repeated-glyph
+# walls, e.g. a column of zeros) element types, suited to numbers/
+# stats/comparisons instead of dramatic single-word captions. Topic
+# styles, music map, and GPT prompts are finance-specific. No
+# recurring character, no procedural illustration shapes (planet/
+# brain/etc) -- this niche is character-free by design.
 # ============================================================
 
 import subprocess
@@ -18,6 +26,7 @@ import numpy as np
 from datetime import datetime
 from dotenv import load_dotenv
 import cv2
+from PIL import Image
 
 load_dotenv()
 
@@ -26,7 +35,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Vaults of History v3")
+app = FastAPI(title="Finance Explainer v1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 current_job = {"status": "idle", "progress": 0, "output": None, "error": None, "started_at": None}
@@ -34,6 +43,55 @@ current_job = {"status": "idle", "progress": 0, "output": None, "error": None, "
 OUTPUT_WIDTH  = 1920
 OUTPUT_HEIGHT = 1080
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+# ── Shared GPT-4o rate limiter ──────────────────────────────────────
+# Call 2 (render decisions) and Call 3 (freeform motion design) both
+# batch against gpt-4o with their own ThreadPoolExecutors. Those pools
+# have no idea about each other, but they share the SAME org-level
+# 30k-tokens-per-minute ceiling -- back-to-back Call 2 then Call 3
+# batches were colliding mid-window and getting 429'd. A single
+# process-wide semaphore + a minimum gap between calls keeps total
+# concurrent GPT-4o requests bounded regardless of which function
+# issued them.
+import threading
+import time as _time
+
+_GPT4O_CONCURRENCY = threading.Semaphore(3)   # max simultaneous gpt-4o requests, any caller
+_GPT4O_LOCK = threading.Lock()
+_GPT4O_LAST_CALL_TS = [0.0]
+_GPT4O_MIN_GAP_SECONDS = 1.5  # stagger request starts so bursts don't all land in the same TPM window
+
+def gpt4o_call(client, **kwargs):
+    """Wrapper around client.chat.completions.create for gpt-4o that
+    throttles across ALL callers (Call 2 and Call 3 batches alike) so
+    they can't collectively exceed the shared TPM budget."""
+    with _GPT4O_CONCURRENCY:
+        with _GPT4O_LOCK:
+            wait = _GPT4O_MIN_GAP_SECONDS - (_time.time() - _GPT4O_LAST_CALL_TS[0])
+            if wait > 0:
+                _time.sleep(wait)
+            _GPT4O_LAST_CALL_TS[0] = _time.time()
+        return client.chat.completions.create(**kwargs)
+
+
+def _call_with_retry(fn, label="gpt-4o call", max_retries=3):
+    """Retry on 429 (rate limit) with exponential backoff. OpenAI's 429
+    error includes a suggested wait time in its message; this is a
+    simple fixed-backoff fallback since parsing that out reliably isn't
+    worth the fragility. Re-raises on the final attempt so a genuinely
+    persistent failure still surfaces instead of silently vanishing."""
+    delay = 2.0
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except Exception as e:
+            is_rate_limit = "429" in str(e) or "rate_limit" in str(e).lower()
+            if is_rate_limit and attempt < max_retries - 1:
+                print(f"  ⏳ {label}: rate limited, retrying in {delay:.0f}s (attempt {attempt+1}/{max_retries})...")
+                _time.sleep(delay)
+                delay *= 2
+                continue
+            raise
 
 if not OPENAI_API_KEY:
     print("⚠  WARNING: OPENAI_API_KEY not set.")
@@ -43,12 +101,11 @@ if not OPENAI_API_KEY:
 USE_PROCEDURAL_BACKGROUND = True
 
 MUSIC_MAP = {
-    "space":    "bg_musics/space_ambient.mp3",
-    "death":    "bg_musics/dark_ambient.mp3",
-    "ancient":  "bg_musics/ancient_ambient.mp3",
-    "religion": "bg_musics/sacred_ambient.mp3",
-    "human":    "bg_musics/human_ambient.mp3",
-    "default":  "bg_musics/vaults_ambient.mp3",
+    "markets":   "bg_musics/finance_ambient.mp3",
+    "growth":    "bg_musics/finance_ambient.mp3",
+    "warning":   "bg_musics/dark_ambient.mp3",
+    "history":   "bg_musics/finance_ambient.mp3",
+    "default":   "bg_musics/finance_ambient.mp3",
 }
 
 FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
@@ -149,8 +206,8 @@ async def startup_event():
 # ============================================================
 # PROCEDURAL BACKGROUND GENERATOR
 # Replaces broll entirely. No clip failures, no black fillers,
-# zero cost, and a visual identity that actually matches a
-# "mind-bending facts" channel instead of random stock footage.
+# zero cost, and a visual identity matching a finance/numbers
+# explainer channel -- clean, data-forward, not cinematic-horror.
 #
 # One primary animated style per topic, with intensity (from
 # GPT Call 1's per-beat "intensity" field) smoothly driving
@@ -163,47 +220,35 @@ def _bgr(r, g, b):
 
 
 TOPIC_STYLES = {
-    'space': {
-        'bg':      _bgr(6, 8, 18),
-        'accent':  _bgr(255, 225, 170),   # warm starlight
-        'accent2': _bgr(150, 110, 255),   # violet nebula
-        'styles':  ['starfield', 'nebula'],
+    'markets': {
+        'bg':      _bgr(8, 10, 14),
+        'accent':  _bgr(120, 230, 170),    # market green
+        'accent2': _bgr(255, 215, 130),    # gold/currency
+        'styles':  ['particles', 'geometric'],
     },
-    'cosmic': {
-        'bg':      _bgr(10, 4, 22),
-        'accent':  _bgr(190, 110, 255),
-        'accent2': _bgr(255, 200, 90),
-        'styles':  ['nebula', 'particles'],
-    },
-    'ancient': {
-        'bg':      _bgr(12, 14, 20),
-        'accent':  _bgr(255, 210, 120),   # gold
-        'accent2': _bgr(170, 175, 190),   # stone grey
+    'growth': {
+        'bg':      _bgr(6, 12, 14),
+        'accent':  _bgr(120, 230, 170),
+        'accent2': _bgr(160, 210, 255),
         'styles':  ['geometric', 'particles'],
     },
-    'religion': {
-        'bg':      _bgr(14, 10, 22),
-        'accent':  _bgr(255, 215, 130),
-        'accent2': _bgr(180, 140, 255),
-        'styles':  ['geometric', 'aurora'],
+    'warning': {
+        'bg':      _bgr(10, 6, 6),
+        'accent':  _bgr(230, 90, 80),       # warning red
+        'accent2': _bgr(255, 200, 90),
+        'styles':  ['particles', 'geometric'],
     },
-    'human': {
-        'bg':      _bgr(8, 10, 16),
-        'accent':  _bgr(160, 210, 255),   # cool blue
-        'accent2': _bgr(255, 200, 110),
-        'styles':  ['particles', 'aurora'],
-    },
-    'death': {
-        'bg':      _bgr(5, 5, 9),
-        'accent':  _bgr(200, 60, 60),     # deep red
-        'accent2': _bgr(150, 150, 160),
-        'styles':  ['starfield', 'geometric'],
+    'history': {
+        'bg':      _bgr(10, 10, 14),
+        'accent':  _bgr(255, 215, 130),     # gold
+        'accent2': _bgr(170, 175, 190),
+        'styles':  ['geometric', 'particles'],
     },
     'default': {
-        'bg':      _bgr(8, 9, 16),
+        'bg':      _bgr(8, 9, 12),
         'accent':  _bgr(255, 255, 255),
-        'accent2': _bgr(255, 200, 90),
-        'styles':  ['starfield', 'particles'],
+        'accent2': _bgr(120, 230, 170),
+        'styles':  ['particles', 'geometric'],
     },
 }
 
@@ -367,75 +412,80 @@ def _lumpy_circle_pts(cx, cy, r, bumps=5, bump_amt=0.15, n=48):
 def _build_illustration_shapes():
     shapes = {}
 
-    # PLANET: sphere + tilted ring + small moon
-    shapes['planet'] = [
-        _circle_pts(0.5, 0.5, 0.26, n=36),
-        _ellipse_pts(0.5, 0.5, 0.42, 0.10, n=30, rot=math.radians(-15)),
-        _circle_pts(0.85, 0.18, 0.05, n=14),
+    # UPTREND: rising line + arrowhead, classic "stock going up" glyph
+    line_pts = [(0.18, 0.78), (0.36, 0.58), (0.50, 0.66), (0.82, 0.24)]
+    arrow_tip = line_pts[-1]
+    ang = math.atan2(line_pts[-1][1] - line_pts[-2][1], line_pts[-1][0] - line_pts[-2][0])
+    head_len, head_w = 0.09, 0.05
+    back_x = arrow_tip[0] - head_len * math.cos(ang)
+    back_y = arrow_tip[1] - head_len * math.sin(ang)
+    perp = ang + math.pi / 2
+    left  = (back_x + head_w * math.cos(perp), back_y + head_w * math.sin(perp))
+    right = (back_x - head_w * math.cos(perp), back_y - head_w * math.sin(perp))
+    shapes['uptrend'] = [
+        line_pts,
+        [left, arrow_tip, right],
     ]
 
-    # PYRAMID: triangle body + horizontal band + entrance
-    shapes['pyramid'] = [
-        [(0.22, 0.82), (0.50, 0.16), (0.78, 0.82), (0.22, 0.82)],
-        [(0.34, 0.55), (0.66, 0.55)],
-        [(0.465, 0.82), (0.465, 0.68), (0.535, 0.68), (0.535, 0.82)],
+    # DOWNTREND: mirror of uptrend
+    dline_pts = [(0.18, 0.24), (0.36, 0.46), (0.50, 0.38), (0.82, 0.78)]
+    dang = math.atan2(dline_pts[-1][1] - dline_pts[-2][1], dline_pts[-1][0] - dline_pts[-2][0])
+    dback_x = dline_pts[-1][0] - head_len * math.cos(dang)
+    dback_y = dline_pts[-1][1] - head_len * math.sin(dang)
+    dperp = dang + math.pi / 2
+    dleft  = (dback_x + head_w * math.cos(dperp), dback_y + head_w * math.sin(dperp))
+    dright = (dback_x - head_w * math.cos(dperp), dback_y - head_w * math.sin(dperp))
+    shapes['downtrend'] = [
+        dline_pts,
+        [dleft, dline_pts[-1], dright],
     ]
 
-    # BRAIN: two lumpy lobes + wavy center divide
-    divide = []
-    for i in range(12):
-        yy = 0.28 + (0.72-0.28) * i/11
-        xx = 0.5 + 0.04*math.sin(yy*20)
-        divide.append((xx, yy))
-    shapes['brain'] = [
-        _lumpy_circle_pts(0.40, 0.50, 0.24, bumps=5, bump_amt=0.16, n=40),
-        _lumpy_circle_pts(0.60, 0.50, 0.24, bumps=5, bump_amt=0.16, n=40),
-        divide,
+    # COIN STACK: 3 stacked ellipses (top view edge), side rim lines
+    shapes['coin_stack'] = [
+        _ellipse_pts(0.5, 0.70, 0.22, 0.07, n=28),
+        _ellipse_pts(0.5, 0.58, 0.22, 0.07, n=28),
+        _ellipse_pts(0.5, 0.46, 0.22, 0.07, n=28),
+        [(0.28, 0.46), (0.28, 0.70)],
+        [(0.72, 0.46), (0.72, 0.70)],
     ]
 
-    # EYE: upper lid arc, lower lid arc, pupil, highlight
-    upper, lower = [], []
-    for i in range(20):
-        xx = 0.15 + (0.85-0.15) * i/19
-        upper.append((xx, 0.50 - 0.28*math.sin(math.pi*(xx-0.15)/0.70)))
-        lower.append((xx, 0.50 + 0.16*math.sin(math.pi*(xx-0.15)/0.70)))
-    shapes['eye'] = [
-        upper, lower,
-        _circle_pts(0.5, 0.5, 0.10, n=22),
-        _circle_pts(0.55, 0.45, 0.03, n=10),
+    # CLOCK: circle face + two hands (time value of money / countdown)
+    hour_ang = math.radians(-60)
+    min_ang  = math.radians(60)
+    shapes['clock'] = [
+        _circle_pts(0.5, 0.5, 0.30, n=40),
+        [(0.5, 0.5), (0.5 + 0.14 * math.cos(hour_ang), 0.5 + 0.14 * math.sin(hour_ang))],
+        [(0.5, 0.5), (0.5 + 0.22 * math.cos(min_ang),  0.5 + 0.22 * math.sin(min_ang))],
     ]
 
-    # DNA: two sine strands + connecting rungs
-    strandA, strandB = [], []
-    for i in range(30):
-        yy = i/29
-        strandA.append((0.5 + 0.22*math.sin(2*math.pi*yy*2), yy))
-        strandB.append((0.5 + 0.22*math.sin(2*math.pi*yy*2 + math.pi), yy))
-    rungs = []
-    for k in range(6):
-        yy = k/5
-        xa = 0.5 + 0.22*math.sin(2*math.pi*yy*2)
-        xb = 0.5 + 0.22*math.sin(2*math.pi*yy*2 + math.pi)
-        rungs.append([(xa, yy), (xb, yy)])
-    shapes['dna'] = [strandA, strandB] + rungs
-
-    # ATOM: nucleus + three orbit ellipses at different rotations
-    shapes['atom'] = [
-        _circle_pts(0.5, 0.5, 0.05, n=14),
-        _ellipse_pts(0.5, 0.5, 0.40, 0.16, n=36, rot=0.0),
-        _ellipse_pts(0.5, 0.5, 0.40, 0.16, n=36, rot=math.radians(60)),
-        _ellipse_pts(0.5, 0.5, 0.40, 0.16, n=36, rot=math.radians(-60)),
+    # PERCENT: two circles + diagonal slash, the % glyph as line art
+    diag = [(0.24, 0.76), (0.76, 0.24)]
+    shapes['percent'] = [
+        _circle_pts(0.30, 0.30, 0.10, n=22),
+        _circle_pts(0.70, 0.70, 0.10, n=22),
+        diag,
     ]
 
-    # HOURGLASS: bowtie frame + top/bottom bars
-    shapes['hourglass'] = [
-        [(0.22, 0.12), (0.78, 0.12), (0.50, 0.50), (0.78, 0.88),
-         (0.22, 0.88), (0.50, 0.50), (0.22, 0.12)],
-        [(0.16, 0.10), (0.84, 0.10)],
-        [(0.16, 0.90), (0.84, 0.90)],
+    # SCALE: balance/comparison glyph -- center post + tilted beam + two pans
+    tilt = math.radians(-8)
+
+    def _rot(px, py, cx, cy, a):
+        dx, dy = px - cx, py - cy
+        return (cx + dx * math.cos(a) - dy * math.sin(a),
+                cy + dx * math.sin(a) + dy * math.cos(a))
+
+    beam_l = _rot(0.22, 0.32, 0.5, 0.32, tilt)
+    beam_r = _rot(0.78, 0.32, 0.5, 0.32, tilt)
+    shapes['scale'] = [
+        [(0.5, 0.20), (0.5, 0.82)],          # center post
+        [(0.34, 0.82), (0.66, 0.82)],        # base
+        [beam_l, beam_r],                     # beam
+        _ellipse_pts(beam_l[0], beam_l[1] + 0.10, 0.09, 0.035, n=18),  # left pan
+        _ellipse_pts(beam_r[0], beam_r[1] + 0.10, 0.09, 0.035, n=18),  # right pan
     ]
 
     return shapes
+
 
 
 ILLUSTRATION_SHAPES = _build_illustration_shapes()
@@ -646,6 +696,7 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
     return output_path
 
 
+
 # ============================================================
 # GPT CALL 1 -- STORY BEAT ANALYZER
 # Sends Whisper segments (with timestamps) to GPT so it can
@@ -767,58 +818,75 @@ def analyze_story_beats(transcript_text: str, whisper_segments: list,
             timed_lines.append(f"[{s:.2f}s - {e:.2f}s] {t}")
     timed_transcript = "\n".join(timed_lines)
 
-    system_prompt = f"""You are the story producer for VAULTS OF HISTORY -- a viral mind-bending facts channel.
-Style: @sackfeels on TikTok. Dramatic. Eerie. Cinematic.
+    system_prompt = f"""You are the producer for a finance/numbers explainer channel. Style: clear, dynamic, data-forward -- think "explain this number visually" rather than dramatic horror-story captions. Audience wants to actually understand the number, not just feel a jump-scare.
 Total audio duration: {total_duration:.1f} seconds.
 
 You will receive a transcript with EXACT timestamps from Whisper speech recognition.
 Each line is formatted as: [start - end] spoken words
 
-YOUR JOB: Segment the transcript into story beats for cinematic video editing.
+YOUR JOB: Segment the transcript into beats for visual data-explainer editing.
 
 RULES:
 - Use the Whisper timestamps directly -- they are accurate. Copy start_time and end_time from the brackets.
 - Beat text MUST be copied VERBATIM from the transcript. Exact words, exact spelling. No paraphrasing.
-- Keep beats 2-10 words -- natural spoken phrases or short clauses.
+- Keep beats 2-12 words -- natural spoken phrases or short clauses. Numbers/stats often need a slightly longer beat to land (e.g. "that's a four hundred percent increase").
 - A single Whisper segment can become 1-3 beats if it contains multiple natural phrases.
 - Cover the ENTIRE transcript -- every word must appear in some beat.
 - "pause" beats only for clear silence gaps (>0.5s) between segments.
 
-beat_type: "hook"|"buildup"|"reveal"|"shock"|"pause"|"resolution"|"outro"
+beat_type: "hook"|"setup"|"data_point"|"comparison"|"insight"|"warning"|"resolution"|"outro"
+- "data_point": beat states a specific number/stat/dollar amount/percentage
+- "comparison": beat contrasts two numbers or two things (X vs Y, before vs after)
+- "warning": beat flags risk, loss, a downside, a mistake to avoid
+- "insight": beat draws a conclusion or "here's what that means" takeaway
 
-VISUAL_SUBJECT (drawing system): if this beat's text CLEARLY and SPECIFICALLY
-evokes one of these objects, set visual_subject to it -- the renderer will
-draw it as a line-art animation. Options: "none"|"planet"|"pyramid"|"brain"|
-"eye"|"dna"|"atom"|"hourglass". Be CONSERVATIVE -- most beats should be "none".
-Only use a specific subject when the beat is clearly ABOUT that thing (e.g.
-"planet" only for beats actually discussing a planet/moon/sphere in space,
-"brain" only for beats about the brain/mind/neurons, "hourglass" only for
-beats about time running out / ancient time / countdown). Never force a match.
+DATA EXTRACTION (critical -- this is what makes the visuals possible):
+If a beat states an actual quantity, extract it into structured fields so the renderer can animate it precisely instead of guessing from prose:
+- "has_data": true/false -- true only if this beat states a concrete number/stat/amount
+- "data_value": the numeric value as a plain number (e.g. 400000, 4.5, 23). No currency symbols, no commas, no words.
+- "data_unit": "percent"|"dollars"|"years"|"times"|"count"|"none" -- what the number represents
+- "data_label": a SHORT (1-4 word) label for what the number IS, verbatim-ish from the beat (e.g. "AVERAGE RETURN", "COMPOUND INTEREST", "MARKET CAP")
+- "data_direction": "up"|"down"|"neutral" -- only relevant for comparison/trend beats (does the number represent growth, loss, or neither)
+- "compare_value": for "comparison" beats only -- the second number being compared against (numeric, same rules as data_value), else null
+
+VISUAL_SUBJECT (icon drawing system): if this beat CLEARLY evokes one of these
+concepts, set visual_subject to it -- the renderer draws it as line-art.
+Options: "none"|"uptrend"|"downtrend"|"coin_stack"|"clock"|"percent"|"scale".
+Be CONSERVATIVE -- most beats should be "none". Only set when the beat is
+genuinely about that concept (e.g. "uptrend" for beats about growth/gains,
+"downtrend" for losses/declines, "coin_stack" for savings/wealth/money itself,
+"clock" for time-value-of-money/waiting/compounding over time, "percent" for
+beats centrally about a rate/percentage, "scale" for risk/reward tradeoffs or
+weighing two options). Never force a match.
 
 Return ONLY valid JSON:
 {{
-  "topic": "space|ancient|religion|human|death|default",
-  "music_mood": "eerie|dark|mysterious|sacred|cosmic|haunting",
+  "topic": "markets|growth|warning|history|default",
+  "music_mood": "driving|tense|optimistic|neutral|serious",
   "beats": [
     {{
-      "beat_type": "hook|buildup|reveal|shock|pause|resolution|outro",
+      "beat_type": "hook|setup|data_point|comparison|insight|warning|resolution|outro",
       "text": "verbatim words from transcript",
       "start_time": 0.0,
       "end_time": 2.5,
       "intensity": 8,
-      "broll_category": "space|ancient|cosmic|sky|temple|any",
-      "clip_duration": 4.0,
-      "visual_subject": "none|planet|pyramid|brain|eye|dna|atom|hourglass"
+      "has_data": true,
+      "data_value": 400000,
+      "data_unit": "dollars",
+      "data_label": "RETIREMENT SAVINGS",
+      "data_direction": "up",
+      "compare_value": null,
+      "visual_subject": "none|uptrend|downtrend|coin_stack|clock|percent|scale"
     }}
   ]
 }}"""
 
     try:
-        response = client.chat.completions.create(
+        response = gpt4o_call(client,
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Topic hint: {topic_hint}\n\nTimed transcript:\n{timed_transcript}\n\nSegment every line into beats. Use the timestamps shown. Copy text verbatim."}
+                {"role": "user", "content": f"Topic hint: {topic_hint}\n\nTimed transcript:\n{timed_transcript}\n\nSegment every line into beats. Use the timestamps shown. Copy text verbatim. Extract data fields wherever a beat states a real number."}
             ],
             response_format={"type": "json_object"},
             temperature=0.2,
@@ -856,7 +924,7 @@ def _build_batch_prompt(topic: str, batch: list) -> str:
         f"For beats shorter than 0.5s: use only 1 element with start_offset 0.0. "
         f"For beats 0.5-1.0s: max 2 elements, stagger by 0.2s. "
         f"For beats >1.0s: up to 3 elements, stagger by 0.3s. "
-        f"Compose each scene cinematically. Vary layouts. White dominant, yellow for one key word per scene."
+        f"Compose each scene to make the number/concept understandable. Vary layouts. White dominant; use number_counter for every real value."
     )
 
 def generate_render_decisions(beats: list, topic: str) -> list:
@@ -866,67 +934,103 @@ def generate_render_decisions(beats: list, topic: str) -> list:
     print(f"  🎨 Call 2: Scene compositions for {len(beats)} beats...")
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    system_prompt = f"""You are an elite short-form video editor. You compose every frame like a motion designer -- choosing position, size, color, animation, and timing for each visual element. You are not picking from preset templates. You are designing each scene.
+    system_prompt = f"""You are an elite short-form video editor for a finance/numbers explainer channel. You compose every frame like a motion designer -- choosing position, size, color, animation, and timing for each visual element. You are not picking from preset templates. You are designing each scene to make a NUMBER or CONCEPT visually understandable, not just dramatic.
 
-Channel: VAULTS OF HISTORY -- mind-bending facts about space, ancient civilizations, and human consciousness. Audience is impossible to impress. The aesthetic is CINEMATIC and DARK -- like a documentary trailer, not a social media post.
+Channel: a finance/numbers explainer. Audience wants to actually grasp the number -- a stat, a comparison, a growth curve, a cost. The aesthetic is CLEAN and DATA-FORWARD -- like a sharp explainer video, not a horror-trailer caption stack. Still punchy and fast-paced, just clearer.
 
 === FONT BEHAVIOR ===
-The renderer uses Anton (ultra-condensed, cinematic) as the primary font. This font is TALL and NARROW. All text is automatically rendered in ALL CAPS -- so write content in ALL CAPS.
+The renderer uses Anton (ultra-condensed) as the primary font. This font is TALL and NARROW. All text is automatically rendered in ALL CAPS -- so write content in ALL CAPS.
 SIZE RULES (strictly enforced by renderer):
-- Single impact word: 120-160px max. Centered or slightly off-center.
+- Single impact word or number: 120-160px max. Centered or slightly off-center.
 - Sentence words (2+ words in a beat): 70-110px each. Cascade across canvas.
-- Use SIZE VARIATION within a scene: vary between 70px and 110px across words for rhythm.
-- DO NOT go above 160px for any element -- it will be clamped.
-- Fewer elements per scene is better. 3-5 elements max. Dense scenes are unreadable.
+- number_counter elements: 140-220px (numbers need to be the visual anchor of a data beat).
+- DO NOT go above 220px for any element -- it will be clamped.
+- Fewer elements per scene is better. 2-4 elements max. Dense scenes are unreadable.
 
 === YOUR RENDERING ENGINE ===
 Python OpenCV + Pillow on a {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} canvas.
 
-For each beat, you output a SCENE -- a list of ELEMENTS placed and animated however you want.
+For each beat, you output a SCENE -- a list of ELEMENTS placed and animated however you want. Each beat in the input includes data fields (has_data, data_value, data_unit, data_label, data_direction, compare_value) extracted from the transcript. USE THESE FIELDS when has_data is true -- they're the actual numbers you should visualize, not something to re-derive from the text.
 
 === ELEMENT TYPES ===
 
 TEXT element:
 {{
   "type": "text",
-  "content": "WORD",              // the text string
-  "x": 0.5,                       // 0.0-1.0 horizontal position (anchor)
-  "y": 0.4,                       // 0.0-1.0 vertical position (anchor)
-  "anchor": "center",             // "center" | "left" | "right" -- how x,y aligns the text
-  "size": 120,                    // pixels
-  "color": "#FFFFFF",             // hex
-  "weight": "black",              // "regular" | "bold" | "black" (use black for impact)
-  "outline": 4,                   // pixels of black outline (3-6 typical)
-  "anim": "fade_in",              // see ANIMATIONS below
-  "start_offset": 0.0,            // seconds after beat starts when element appears
-  "duration": null,               // seconds visible (null = until next beat)
-  "anim_duration": 0.15,          // how long entrance animation takes
-  "effect": "none"                // see EFFECTS below
+  "content": "WORD",
+  "x": 0.5, "y": 0.4,
+  "anchor": "center",              // "center" | "left" | "right"
+  "size": 120,
+  "color": "#FFFFFF",
+  "weight": "black",               // "regular" | "bold" | "black"
+  "outline": 4,
+  "anim": "fade_in",
+  "start_offset": 0.0,
+  "duration": null,
+  "anim_duration": 0.15,
+  "effect": "none"
 }}
 
-LINE element (for fractions, dividers, underlines):
+NUMBER_COUNTER element (NEW -- use this for any beat with has_data=true):
+{{
+  "type": "number_counter",
+  "target_value": 400000,          // copy from the beat's data_value
+  "prefix": "$",                   // "$" for dollars, "" otherwise
+  "suffix": "%",                   // "%" for percent, "" otherwise -- never put both prefix and suffix unless the unit genuinely needs it
+  "decimals": 0,                   // 0 for whole numbers, 1-2 for precise stats
+  "x": 0.5, "y": 0.42,
+  "anchor": "center",
+  "size": 180,
+  "color": "#FFFFFF",
+  "weight": "black",
+  "outline": 5,
+  "count_from": 0,                 // where the count-up animation starts (usually 0, or a lower number for a "before" value)
+  "count_duration": 0.8,           // seconds for the number to animate from count_from to target_value
+  "start_offset": 0.0,
+  "duration": null
+}}
+The renderer animates this counting UP (or down) from count_from to target_value over count_duration seconds, formatted with prefix/suffix/decimals/comma separators automatically. This is your primary tool for making a statistic feel alive instead of just appearing.
+
+GRID element (NEW -- use for beats about scale/quantity/repetition, e.g. "thousands of dollars" or visualizing a large count):
+{{
+  "type": "grid",
+  "glyph": "0",                    // the single character or short string repeated in the grid
+  "rows": 4,
+  "cols": 14,
+  "cell_size": 60,                 // pixel size of each glyph
+  "color": "#FBC02D",
+  "x": 0.5, "y": 0.55,             // CENTER of the whole grid
+  "anim": "fill_sequential",        // "fill_sequential" reveals cell by cell, "fade_in" reveals all at once
+  "fill_duration": 1.2,             // total seconds for fill_sequential to complete
+  "start_offset": 0.0,
+  "duration": null
+}}
+Use this sparingly -- it's for the rare beat where "a LOT of something" is the point (e.g. visualizing thousands as a wall of repeated digits/symbols). Keep rows*cols under 80 total cells or it gets visually noisy.
+
+LINE element (for dividers, underlines, comparison axes):
 {{
   "type": "line",
   "x1": 0.3, "y1": 0.5, "x2": 0.7, "y2": 0.5,
   "thickness": 8,
   "color": "#FFFFFF",
-  "anim": "draw_horizontal",      // "draw_horizontal" draws left-to-right, "fade_in" fades, "none" appears instantly
+  "anim": "draw_horizontal",
   "start_offset": 0.2,
   "duration": null,
   "anim_duration": 0.3
 }}
 
-RECT element (for boxes, backgrounds, highlight bars):
+RECT element (for boxes, comparison bars, highlight bars):
 {{
   "type": "rect",
-  "x": 0.4, "y": 0.5, "w": 0.2, "h": 0.1,   // x,y is top-left corner. w,h are width/height
+  "x": 0.4, "y": 0.5, "w": 0.2, "h": 0.1,
   "color": "#FBC02D",
-  "filled": true,                   // true=filled, false=outline only
-  "thickness": 4,                   // only used if filled=false
+  "filled": true,
+  "thickness": 4,
   "anim": "fade_in",
   "start_offset": 0.0,
   "duration": null
 }}
+For a COMPARISON beat (data_direction or compare_value set): two RECT bars side by side, heights proportional to the two values (taller bar = bigger number), is a strong visual. Pair with a TEXT label under each.
 
 CIRCLE element:
 {{
@@ -943,17 +1047,15 @@ CIRCLE element:
 === ANIMATIONS ===
 - "none": appears instantly
 - "fade_in": opacity 0→100% over anim_duration
-- "slide_in_left": slides in from off-screen left
-- "slide_in_right": slides in from off-screen right
-- "slide_in_top": slides in from off-screen top
-- "slide_in_bottom": slides in from off-screen bottom
+- "slide_in_left" / "slide_in_right" / "slide_in_top" / "slide_in_bottom"
 - "scale_in": starts at 1.3x scale and snaps to 1.0x (punch effect)
 - "snap": appears instantly with a 1-frame white flash
 - "draw_horizontal": (lines only) draws progressively left-to-right
+- "fill_sequential": (grid only) reveals cells one at a time
 
 === EFFECTS (applied during display, not just entrance) ===
 - "none": static
-- "flicker": rapid on/off blinking for first 0.3s (for shock words)
+- "flicker": rapid on/off blinking for first 0.3s (for warning/shock numbers)
 - "shake": position jitters slightly (for impact)
 - "glow": adds soft colored glow halo around element
 
@@ -961,36 +1063,35 @@ CIRCLE element:
 
 ELEMENT LIMIT: Maximum 4 elements per scene. Less is more. 2-3 elements is ideal.
 
-STAGGER ALL ELEMENTS: Words must appear one at a time. Use start_offset to sequence them. CRITICAL: start_offset must be less than the beat's _duration_seconds or the element will NEVER appear.
+STAGGER ALL ELEMENTS: start_offset must be less than the beat's _duration_seconds or the element will NEVER appear.
 - Beat <0.5s: 1 element only, start_offset 0.0
 - Beat 0.5-1.0s: max 2 elements, offsets 0.0 and 0.3
 - Beat >1.0s: up to 3 elements, offsets 0.0 / 0.35 / 0.7
-NEVER set start_offset >= _duration_seconds. The renderer clamps it and the word disappears.
+NEVER set start_offset >= _duration_seconds.
 
 === POSITIONING GRID (1920x1080 canvas) ===
-Safe zone: x: 0.08-0.92, y: 0.12-0.88. Never place text center-point outside this box -- it gets clipped or looks cramped against edges.
+Safe zone: x: 0.08-0.92, y: 0.12-0.88.
 
-Three vertical bands -- rotate between them across consecutive beats so the video doesn't feel static:
+Three vertical bands:
 - UPPER band:  y: 0.20-0.35
 - CENTER band: y: 0.42-0.58
 - LOWER band:  y: 0.65-0.80
 
-Size-to-position pairing:
-- Large text (140-160px): keep near CENTER band, x: 0.25-0.75 (needs room to breathe)
-- Medium text (90-130px): any band, x: 0.15-0.85
-- Small text (70-90px): can sit closer to edges, x: 0.10-0.90
+=== BEAT-TYPE -> COMPOSITION MAPPING ===
 
-For a SPOKEN SENTENCE (3-5 words): Pick the 2-3 most impactful words. One element per word, each ~90-120px. Place them across DIFFERENT bands (e.g. word 1 in UPPER, word 2 in CENTER) so they don't visually stack on top of each other. Vary x positions too -- don't put every word at x:0.5.
+For a "data_point" beat (has_data=true, no compare_value): ONE number_counter element in CENTER band showing the actual value (use prefix/suffix from data_unit), plus ONE text element in LOWER band with the data_label. 2 elements. This is your bread-and-butter scene type.
 
-For a SHORT BEAT (1-2 words): 1 or 2 elements max, 100-140px. Pick ONE band (not split across two) and place words side-by-side or stacked within that band, x: 0.2-0.8.
+For a "comparison" beat (has_data=true AND compare_value set): two RECT bars side by side (proportional heights, taller = larger value) OR two number_counter elements side by side (x: 0.28 and x: 0.72), each with a short text label beneath. 3-4 elements.
 
-For a SINGLE IMPACT WORD: One TEXT element, 120-160px, CENTER band, x: 0.3-0.7. scale_in animation.
+For a "warning" beat: text in CENTER band, color #E85D4A or similar warning-red (still pass through _ensure_bright_color), "shake" or "flicker" effect. 1-2 elements.
 
-For a NUMBER or STATISTIC: TEXT for the number (large, CENTER band), LINE divider just below it, TEXT for the unit in LOWER band. 3 elements.
+For an "insight"/"resolution" beat (the takeaway, usually no raw number): SPOKEN SENTENCE treatment -- pick the 1-2 most important words, place across UPPER/CENTER bands, 90-130px, fade_in or slide_in.
 
-For EMPHASIS: RECT highlight bar behind the key word, then the TEXT word on top, same position. 2 elements.
+For a "hook" or "setup" beat: 1-2 elements, CENTER or UPPER band, sets up the number that's about to land -- don't put the actual data_value here unless the beat itself states it.
 
-VARY bands across consecutive beats -- if the previous beat used CENTER, this beat should favor UPPER or LOWER. This creates visual rhythm instead of every beat looking the same.
+For a beat with visual_subject set (uptrend/downtrend/coin_stack/clock/percent/scale): the renderer draws that icon automatically in the background -- you do NOT need to add an element for it. Just compose the text/number elements as normal; they'll appear on top of the icon.
+
+VARY bands across consecutive beats so the video doesn't feel static.
 
 === HARD RULES ===
 1. Output exactly {len(beats)} scenes, one per beat, in order.
@@ -998,19 +1099,20 @@ VARY bands across consecutive beats -- if the previous beat used CENTER, this be
 3. For pause beats: output {{"elements": []}} (empty scene).
 4. start_offset values must fit within the beat duration. STAGGER them -- never all 0.0.
 5. x, y values are 0.0-1.0. NEVER use percentages or pixels.
-6. MAX 4 elements per scene. Violating this makes the video unreadable.
+6. MAX 4 elements per scene.
 7. Never repeat the same word twice in one scene.
 8. Content must be a SINGLE WORD or SHORT PHRASE -- never a full sentence in one element.
+9. When has_data is true, ALWAYS use a number_counter element for the actual value -- never spell the number out as a TEXT word (e.g. use number_counter with target_value=400000, not a text element saying "FOUR HUNDRED THOUSAND").
 
 === COLOR DISCIPLINE ===
-White (#FFFFFF) is your dominant color. Yellow (#FBC02D) for ONE key word per scene maximum. Other colors (red, blue, purple) only for very specific moments.
+White (#FFFFFF) is your dominant color. Market green (#78E6AA) for positive/growth numbers. Warning red (#E85D4A) for losses/risk. Gold (#FFD782) for ONE key highlight per scene maximum.
 
 Return ONLY valid JSON:
 {{
   "scenes": [
     {{
       "beat_index": <int>,
-      "beat_type": "<hook|shock|reveal|buildup|pause|resolution|outro>",
+      "beat_type": "<hook|setup|data_point|comparison|insight|warning|resolution|outro>",
       "elements": [
         // list of element objects as specified above
       ]
@@ -1028,7 +1130,7 @@ Return ONLY valid JSON:
     def _run_batch(batch_idx, batch):
         start_beat = batch_idx * BATCH_SIZE
         print(f"  🎨 Batch {batch_idx+1}/{len(batches)}: beats {start_beat}-{start_beat+len(batch)-1}...")
-        response = client.chat.completions.create(
+        response = _call_with_retry(lambda: gpt4o_call(client,
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -1038,7 +1140,7 @@ Return ONLY valid JSON:
             temperature=0.85,
             max_tokens=8000,
             timeout=120,
-        )
+        ), label=f"Call 2 batch {batch_idx+1}")
         result = json.loads(response.choices[0].message.content)
         batch_scenes = result.get('scenes', [])
         if len(batch_scenes) > len(batch):
@@ -1055,11 +1157,11 @@ Return ONLY valid JSON:
         print(f"  ✅ Batch {batch_idx+1} done: {len(batch_scenes)} scenes")
         return batch_idx, batch_scenes
 
-    # Run batches with 4 concurrent workers. Each batch is an independent
-    # GPT call, so this is purely an I/O-bound speedup -- order is preserved
-    # by collecting results into a pre-sized list before flattening.
+    # Concurrency is bounded by the shared _GPT4O_CONCURRENCY semaphore
+    # (process-wide, shared with Call 3), not by this pool size -- the
+    # pool just needs enough workers to keep the semaphore saturated.
     results = [None] * len(batches)
-    MAX_WORKERS = 4
+    MAX_WORKERS = 3
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(_run_batch, i, b): i for i, b in enumerate(batches)}
         for future in as_completed(futures):
@@ -1076,6 +1178,306 @@ Return ONLY valid JSON:
 
     print(f"  ✅ {len(all_scenes)} total scenes composed")
     return all_scenes
+
+
+# ============================================================
+# GPT CALL 3 -- FREEFORM MOTION DESIGNER + CODER
+#
+# Captions are handled by YouTube itself in this niche, so on-screen
+# TEXT is now the exception (a rare emphasis label), not the default.
+# The primary visual language is bespoke motion graphics: an object
+# (dot, shape outline, label pill, card) moving along a path the
+# Designer/Coder choose freely, timed to the beat's real audio window.
+#
+# GPT chooses WHAT happens and WHEN (full creative freedom over
+# composition, path shape, timing, easing CHOICE). The actual curve
+# math, easing FUNCTIONS, and pixel rendering stay deterministic on
+# the renderer side -- GPT never emits raw coordinate math, only
+# parameters into primitives that can't NaN/crash.
+#
+# No automated vision-QA loop. A scene that renders but looks wrong
+# is caught by the person reviewing output, not by another GPT call.
+# A scene that's malformed enough to fail validation just gets that
+# one object dropped (logged), never the whole video.
+# ============================================================
+
+FREEFORM_EASINGS = {"linear", "ease_out", "ease_in_out", "spring"}
+FREEFORM_OBJECT_TYPES = {"dot", "path_shape", "label_pill", "card"}
+
+def _build_freeform_batch_prompt(batch: list) -> str:
+    annotated = []
+    for b in batch:
+        dur = round(float(b.get("end_time", 0)) - float(b.get("start_time", 0)), 2)
+        entry = dict(b)
+        entry["_duration_seconds"] = dur
+        annotated.append(entry)
+    return (
+        f"Beats ({len(batch)} total -- output exactly {len(batch)} freeform scenes, one per beat, in order):\n"
+        f"{json.dumps(annotated, indent=2)}\n\n"
+        f"Each beat's _duration_seconds is its real spoken-audio window. All start_offset + duration "
+        f"for objects in that beat MUST fit inside _duration_seconds -- an object that starts after the "
+        f"beat ends will never be seen. "
+        f"Design a small bespoke motion graphic for each beat -- a metaphor or motion idea that matches "
+        f"what's being said, not a generic template repeated every beat. Vary the object type, path shape, "
+        f"and easing across consecutive beats so the video doesn't feel like the same animation looping."
+    )
+
+def generate_freeform_scenes(beats: list, topic: str) -> list:
+    if not OPENAI_API_KEY:
+        raise Exception("OPENAI_API_KEY not set.")
+
+    print(f"  🎬 Call 3: Freeform motion design for {len(beats)} beats...")
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    system_prompt = f"""You are a motion graphics designer AND the engineer who builds it, in one step. You invent a small bespoke animated moment for each beat of narration -- the kind of thing seen in sharp finance/explainer YouTube videos: a dot tracing an arc while a label springs in, a card tilting into view, a shape drawing itself stroke by stroke. You choose the concept. You choose the exact motion. You do NOT write raw math or code -- you express your choice as parameters into a small set of primitives the renderer already knows how to draw deterministically, so nothing you output can produce broken coordinates or crash the renderer.
+
+Captions are handled by YouTube itself -- you are NOT writing on-screen text. Your job is the animation, full stop. Do not include any text/caption elements here; that's a separate system.
+
+=== YOUR CANVAS ===
+{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}. All positions are 0.0-1.0 normalized (0,0 = top-left, 1,1 = bottom-right). NEVER use pixels.
+
+=== OBJECT TYPES (the only primitives you may use) ===
+
+DOT -- a small circle that travels along a path. Good for: tracing an arc, marking a moving point on a curve, a "play head" style marker.
+{{
+  "type": "dot",
+  "path": [[0.2, 0.7], [0.5, 0.3], [0.8, 0.2]],   // 2-5 points, the dot moves through them in order
+  "radius": 0.012,                                 // 0.005-0.03 typical
+  "color": "#FFD782",
+  "start_offset": 0.0,
+  "duration": 1.0,                                 // seconds to travel the whole path
+  "easing": "ease_out"
+}}
+
+PATH_SHAPE -- a line/curve that draws itself progressively (pen-reveal), then can hold or fade. Good for: an arc, a rising/falling trend gesture, an abstract underline-the-point stroke.
+{{
+  "type": "path_shape",
+  "path": [[0.15, 0.75], [0.5, 0.25], [0.85, 0.2]], // 2-6 points defining the curve (rendered as a smooth spline)
+  "color": "#78E6AA",
+  "thickness": 4,
+  "start_offset": 0.0,
+  "duration": 0.8,                                  // seconds for the draw-on to complete
+  "easing": "ease_out",
+  "hold": true                                       // true = stays visible after drawing, false = fades out after drawing completes
+}}
+
+LABEL_PILL -- a small rounded-rect badge with a short label (use ONLY for a number/value/very short tag, e.g. "13HR", "+started", "22%" -- never a sentence). Springs or fades into a fixed position.
+{{
+  "type": "label_pill",
+  "content": "13HR",
+  "x": 0.62, "y": 0.28,           // center position, normalized
+  "color": "#3A2E0A",             // pill background
+  "text_color": "#FFD782",
+  "start_offset": 0.4,
+  "anim_duration": 0.3,
+  "easing": "spring"               // springs in with overshoot-and-settle, matching the screenshots' bouncy feel
+}}
+
+CARD -- a rounded rect "panel" that can tilt in pseudo-3D and hold other objects conceptually behind/in front of it (you don't nest objects inside it -- just place a card as its own background panel for a moment).
+{{
+  "type": "card",
+  "x": 0.5, "y": 0.5, "w": 0.32, "h": 0.22,   // x,y is CENTER, w,h are normalized size
+  "color": "#1A1A1A",
+  "tilt_deg": 8,                                // -15 to 15, perspective tilt amount
+  "start_offset": 0.0,
+  "anim_duration": 0.4,
+  "easing": "ease_out"
+}}
+
+=== EASING (choose the feel, the renderer computes the actual curve) ===
+- "linear": constant speed, no easing personality -- use sparingly, feels mechanical
+- "ease_out": fast start, settles smoothly -- good default for most motion
+- "ease_in_out": smooth start and end -- good for slow contemplative beats
+- "spring": overshoots past the target then settles back -- bouncy, energetic. Use for label_pill reveals and anything that should feel like it "pops" in. This is what makes a reveal feel alive instead of a flat fade.
+
+=== HOW TO DESIGN A BEAT ===
+1. Read the beat text and its data fields. Ask: what's the simplest VISUAL IDEA that represents this moment? (e.g. "13 hours of work" -> a dot traveling along a rising arc with a "13HR" pill appearing at the peak. "the market went up" -> a path_shape drawing an upward stroke. "two options, pick one" -> two cards side by side.)
+2. Use 1-3 objects per scene. More than 3 gets visually noisy at this scale.
+3. Stagger start_offset so objects don't all begin at once -- let the dot/path move FIRST, then the label_pill appears once the motion lands somewhere meaningful (e.g. pill appears when the dot reaches the path's end).
+4. For "data_point" or "comparison" beats with a real number, that number can be a label_pill content (e.g. "$400K") riding alongside a path_shape/dot -- this is your strongest combo for stat beats.
+5. For "warning" beats: tighter, faster motion (shorter durations, ease_out) reads as more urgent than slow ease_in_out.
+6. For pause beats: output {{"freeform_objects": []}}.
+7. Vary path shapes across consecutive beats -- don't repeat the same arc shape every time. Mix rising arcs, falling arcs, S-curves, straight diagonals, simple horizontal sweeps.
+
+=== HARD RULES ===
+1. Output exactly {len(beats)} scenes, one per beat, in order.
+2. All path point coordinates are 0.0-1.0. NEVER pixels, NEVER values outside 0-1.
+3. start_offset + duration (or + anim_duration) MUST be less than the beat's _duration_seconds.
+4. label_pill content is SHORT (1-4 characters/words) -- a number, a tag, never a sentence. No other object type carries text.
+5. Max 3 objects per scene.
+6. easing must be exactly one of: linear, ease_out, ease_in_out, spring.
+
+Return ONLY valid JSON:
+{{
+  "scenes": [
+    {{
+      "beat_index": <int>,
+      "concept": "<one short phrase describing the visual idea, for human review only -- not rendered>",
+      "freeform_objects": [
+        // 0-3 objects as specified above
+      ]
+    }}
+    // ... exactly {len(beats)} scenes
+  ]
+}}"""
+
+    BATCH_SIZE = 3
+    all_scenes = []
+    batches = [beats[i:i+BATCH_SIZE] for i in range(0, len(beats), BATCH_SIZE)]
+
+    def _run_batch(batch_idx, batch):
+        start_beat = batch_idx * BATCH_SIZE
+        print(f"  🎬 Freeform batch {batch_idx+1}/{len(batches)}: beats {start_beat}-{start_beat+len(batch)-1}...")
+        response = _call_with_retry(lambda: gpt4o_call(client,
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": _build_freeform_batch_prompt(batch)}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.9,
+            max_tokens=6000,
+            timeout=120,
+        ), label=f"Call 3 batch {batch_idx+1}")
+        result = json.loads(response.choices[0].message.content)
+        batch_scenes = result.get('scenes', [])
+        if len(batch_scenes) > len(batch):
+            batch_scenes = batch_scenes[:len(batch)]
+        elif len(batch_scenes) < len(batch):
+            while len(batch_scenes) < len(batch):
+                batch_scenes.append({"beat_index": start_beat + len(batch_scenes),
+                                      "concept": "", "freeform_objects": []})
+        print(f"  ✅ Freeform batch {batch_idx+1} done: {len(batch_scenes)} scenes")
+        return batch_idx, batch_scenes
+
+    # Same shared semaphore as Call 2 -- the two calls run back-to-back
+    # in the pipeline but the TPM window doesn't care about function
+    # boundaries, only elapsed time, so they still need to share it.
+    results = [None] * len(batches)
+    MAX_WORKERS = 3
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(_run_batch, i, b): i for i, b in enumerate(batches)}
+        for future in as_completed(futures):
+            batch_idx = futures[future]
+            try:
+                idx, batch_scenes = future.result()
+                results[idx] = batch_scenes
+            except Exception as e:
+                print(f"  ❌ Freeform batch {batch_idx+1} failed: {e}")
+                raise
+
+    for batch_scenes in results:
+        all_scenes.extend(batch_scenes)
+
+    print(f"  ✅ {len(all_scenes)} total freeform scenes composed")
+    return all_scenes
+
+
+def validate_freeform_scenes(scenes: list, beats: list) -> list:
+    """Crash guard, not an aesthetics gate. Every numeric param is clamped
+    or the object is dropped outright if it can't be made safe. One bad
+    object never takes down the rest of its scene or the video."""
+    print(f"  🔍 Validating {len(scenes)} freeform scenes...")
+    dropped = 0
+
+    for scene_pos, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            scenes[scene_pos] = {"beat_index": scene_pos, "concept": "", "freeform_objects": []}
+            continue
+        scene["beat_index"] = scene_pos
+        beat_dur = 1.0
+        if scene_pos < len(beats):
+            beat_dur = max(0.1, float(beats[scene_pos].get("end_time", 1.0)) -
+                                float(beats[scene_pos].get("start_time", 0.0)))
+
+        objects = scene.get("freeform_objects", [])
+        if not isinstance(objects, list):
+            scene["freeform_objects"] = []
+            continue
+
+        cleaned = []
+        for obj in objects:
+            if not isinstance(obj, dict):
+                dropped += 1
+                continue
+            otype = obj.get("type")
+            if otype not in FREEFORM_OBJECT_TYPES:
+                dropped += 1
+                continue
+
+            try:
+                start_offset = max(0.0, float(obj.get("start_offset", 0.0)))
+                dur_key = "duration" if "duration" in obj else "anim_duration"
+                duration = max(0.05, float(obj.get(dur_key, 0.4)))
+                if start_offset >= beat_dur:
+                    dropped += 1
+                    continue
+                # Clamp duration so it never extends past the beat window
+                duration = min(duration, max(0.05, beat_dur - start_offset))
+                obj[dur_key] = round(duration, 3)
+                obj["start_offset"] = round(start_offset, 3)
+            except (TypeError, ValueError):
+                dropped += 1
+                continue
+
+            easing = obj.get("easing", "ease_out")
+            if easing not in FREEFORM_EASINGS:
+                easing = "ease_out"
+            obj["easing"] = easing
+
+            if otype in ("dot", "path_shape"):
+                path = obj.get("path", [])
+                if not isinstance(path, list) or len(path) < 2:
+                    dropped += 1
+                    continue
+                safe_path = []
+                ok = True
+                for pt in path[:6]:
+                    try:
+                        x, y = float(pt[0]), float(pt[1])
+                        safe_path.append([max(0.0, min(1.0, x)), max(0.0, min(1.0, y))])
+                    except (TypeError, ValueError, IndexError):
+                        ok = False
+                        break
+                if not ok or len(safe_path) < 2:
+                    dropped += 1
+                    continue
+                obj["path"] = safe_path
+                obj.setdefault("color", "#FFFFFF")
+                if otype == "dot":
+                    obj["radius"] = max(0.004, min(float(obj.get("radius", 0.012)), 0.05))
+                else:
+                    obj["thickness"] = max(1, min(int(obj.get("thickness", 4)), 12))
+                    obj["hold"] = bool(obj.get("hold", True))
+
+            elif otype == "label_pill":
+                content = str(obj.get("content", "")).strip()
+                if not content or len(content) > 12:
+                    dropped += 1
+                    continue
+                obj["content"] = content
+                obj["x"] = max(0.05, min(0.95, float(obj.get("x", 0.5))))
+                obj["y"] = max(0.05, min(0.95, float(obj.get("y", 0.5))))
+                obj.setdefault("color", "#1A1A1A")
+                obj.setdefault("text_color", "#FFD782")
+
+            elif otype == "card":
+                obj["x"] = max(0.1, min(0.9, float(obj.get("x", 0.5))))
+                obj["y"] = max(0.1, min(0.9, float(obj.get("y", 0.5))))
+                obj["w"] = max(0.05, min(0.9, float(obj.get("w", 0.3))))
+                obj["h"] = max(0.05, min(0.9, float(obj.get("h", 0.2))))
+                obj["tilt_deg"] = max(-15.0, min(15.0, float(obj.get("tilt_deg", 0.0))))
+                obj.setdefault("color", "#1A1A1A")
+
+            cleaned.append(obj)
+
+        if len(cleaned) > 3:
+            cleaned = cleaned[:3]
+
+        scene["freeform_objects"] = cleaned
+
+    print(f"  ✅ Validated {len(scenes)} freeform scenes, dropped {dropped} unsafe objects")
+    return scenes
 
 
 # ============================================================
@@ -1213,6 +1615,61 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el.setdefault("duration", None)
                 el.setdefault("anim_duration", 0.2)
 
+            elif etype == "number_counter":
+                # target_value is required and must be numeric -- if GPT
+                # sent something unparseable, drop the element entirely
+                # rather than render garbage.
+                try:
+                    el["target_value"] = float(el.get("target_value", 0))
+                except (TypeError, ValueError):
+                    print(f"  ⚠ Scene {scene_pos}: dropped number_counter with bad target_value")
+                    fixed += 1
+                    continue
+                el.setdefault("prefix", "")
+                el.setdefault("suffix", "")
+                el.setdefault("decimals", 0)
+                el.setdefault("x", 0.5)
+                el.setdefault("y", 0.42)
+                el.setdefault("anchor", "center")
+                el.setdefault("size", 180)
+                el.setdefault("color", "#FFFFFF")
+                el.setdefault("weight", "black")
+                el.setdefault("outline", 5)
+                el.setdefault("count_from", 0)
+                el.setdefault("count_duration", 0.8)
+                el.setdefault("start_offset", 0.0)
+                el.setdefault("duration", None)
+                el["color"] = _ensure_bright_color(el["color"])
+                el["size"] = max(60, min(int(el.get("size", 180)), 220))
+
+            elif etype == "grid":
+                glyph = str(el.get("glyph", "0")).strip()
+                if not glyph:
+                    print(f"  ⚠ Scene {scene_pos}: dropped grid with empty glyph")
+                    fixed += 1
+                    continue
+                el["glyph"] = glyph[:3]  # keep cells readable -- short glyphs only
+                el.setdefault("rows", 4)
+                el.setdefault("cols", 10)
+                el.setdefault("cell_size", 60)
+                el.setdefault("color", "#FBC02D")
+                el.setdefault("x", 0.5)
+                el.setdefault("y", 0.55)
+                el.setdefault("anim", "fill_sequential")
+                el.setdefault("fill_duration", 1.2)
+                el.setdefault("start_offset", 0.0)
+                el.setdefault("duration", None)
+                el["color"] = _ensure_bright_color(el["color"])
+                # Cap total cells so the grid never becomes visual noise
+                rows = max(1, min(int(el.get("rows", 4)), 10))
+                cols = max(1, min(int(el.get("cols", 10)), 16))
+                while rows * cols > 80:
+                    if cols > rows:
+                        cols -= 1
+                    else:
+                        rows -= 1
+                el["rows"], el["cols"] = rows, cols
+
             else:
                 # Unknown type, skip
                 continue
@@ -1254,8 +1711,10 @@ def validate_decisions(scenes: list, beats: list) -> list:
 # with per-element animation and timing.
 # ============================================================
 def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
-                               whisper_segments: list, output_path: str):
+                               whisper_segments: list, output_path: str,
+                               freeform_scenes: list = None):
     print(f"🎨 Scene renderer v5: {len(scenes)} scenes...")
+    freeform_scenes = freeform_scenes or []
 
     try:
         import cv2
@@ -1291,7 +1750,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         except: return (255, 255, 255)
 
     def apply_vignette(frame):
-        import numpy as np
         rows, cols = frame.shape[:2]
         X = cv2.getGaussianKernel(cols, cols * 0.6)
         Y = cv2.getGaussianKernel(rows, rows * 0.6)
@@ -1301,7 +1759,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         return np.clip(out, 0, 255).astype(np.uint8)
 
     def apply_warm_grade(frame):
-        import numpy as np
         out = frame.copy().astype(np.float32)
         out[:,:,2] = np.clip(out[:,:,2] * 1.04, 0, 255)
         return out.astype(np.uint8)
@@ -1310,7 +1767,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
     def to_frame(pil_img):
-        import numpy as np
         return cv2.cvtColor(np.array(pil_img.convert('RGB')), cv2.COLOR_RGB2BGR)
 
     def composite_layer(frame, layer):
@@ -1481,6 +1937,38 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     timeline.sort(key=lambda x: x["start"])
     print(f"  📊 Timeline: {len(timeline)} elements")
 
+    # ── Freeform object timeline -- beat-scoped, not word-scoped. These
+    # are independent animated objects (dots/paths/pills/cards), not
+    # spoken captions, so they're timed to the beat's real audio window
+    # directly rather than matched against individual Whisper words.
+    freeform_timeline = []
+    for scene_pos, fscene in enumerate(freeform_scenes):
+        beat = beats[scene_pos] if scene_pos < len(beats) else {}
+        beat_start = clamp(float(beat.get("start_time", 0.0)), 0, vid_dur - 0.1)
+        beat_end   = clamp(float(beat.get("end_time", beat_start + 2.0)),
+                           beat_start + 0.05, vid_dur)
+        if scene_pos + 1 < len(beats):
+            beat_end = min(beat_end, float(beats[scene_pos + 1].get("start_time", beat_end)))
+
+        for obj in fscene.get("freeform_objects", []):
+            dur_key = "duration" if "duration" in obj else "anim_duration"
+            start_offset = float(obj.get("start_offset", 0.0))
+            duration = float(obj.get(dur_key, 0.4))
+            # path_shape with hold=True and label_pill/card stay visible
+            # until the beat ends; dot and non-held path_shape end with
+            # their own motion duration.
+            stays_until_beat_end = obj.get("type") in ("label_pill", "card") or \
+                                    (obj.get("type") == "path_shape" and obj.get("hold", True))
+            obj_start = clamp(beat_start + start_offset, 0.0, vid_dur)
+            if stays_until_beat_end:
+                obj_end = beat_end
+            else:
+                obj_end = clamp(obj_start + duration + 0.3, obj_start + 0.1, vid_dur)
+            freeform_timeline.append({"obj": obj, "start": obj_start, "end": obj_end})
+
+    freeform_timeline.sort(key=lambda x: x["start"])
+    print(f"  🎬 Freeform timeline: {len(freeform_timeline)} objects")
+
     # ── Frame-by-frame render ─────────────────────────────────────
     cap = cv2.VideoCapture(cfr_video)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -1516,10 +2004,14 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
             return
         x_pct = float(el.get("x", 0.5))
         y_pct = float(el.get("y", 0.5))
-        # Hard cap: 130px max for sentence words, 160px for single-word impact
+        # Hard cap: 130px max for sentence words, 160px for single-word impact,
+        # 220px for number_counter values (numbers/currency need to read big)
         raw_size = int(el.get("size", 90))
         word_count = len(content.split())
-        size_cap = 160 if word_count == 1 else 110
+        if el.get("_is_counter"):
+            size_cap = 220
+        else:
+            size_cap = 160 if word_count == 1 else 110
         size = max(20, min(raw_size, size_cap))
         color = hex_to_rgb(el.get("color", "#FFFFFF"))
         weight = el.get("weight", "black")
@@ -1729,6 +2221,265 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         else:
             draw.ellipse(bbox, outline=rgba, width=thickness)
 
+    def _format_counter_value(value, decimals, prefix, suffix):
+        """Format a number with comma separators, fixed decimals, and
+        prefix/suffix -- e.g. 400000 -> '$400,000', 23.5 -> '23.5%'."""
+        if decimals > 0:
+            text = f"{value:,.{decimals}f}"
+        else:
+            text = f"{int(round(value)):,}"
+        return f"{prefix}{text}{suffix}"
+
+    def draw_number_counter_element(layer, el, el_t, anim_t):
+        """Draw a NUMBER_COUNTER element -- animates from count_from to
+        target_value over count_duration, then holds at target_value.
+        Reuses draw_text_element's rendering by building a synthetic
+        text element each frame with the current counted value."""
+        target = float(el.get("target_value", 0))
+        count_from = float(el.get("count_from", 0))
+        count_dur = max(0.05, float(el.get("count_duration", 0.8)))
+        decimals = max(0, int(el.get("decimals", 0)))
+        prefix = el.get("prefix", "")
+        suffix = el.get("suffix", "")
+
+        progress = clamp(el_t / count_dur, 0.0, 1.0)
+        # Ease-out so the count settles rather than stopping abruptly
+        eased = 1.0 - (1.0 - progress) ** 3
+        current_value = count_from + (target - count_from) * eased
+        content = _format_counter_value(current_value, decimals, prefix, suffix)
+
+        synthetic = dict(el)
+        synthetic["type"] = "text"
+        synthetic["content"] = content
+        # Counter elements should not be re-uppercased/word-counted like
+        # spoken captions -- force single-word sizing path (no cap at 110px)
+        synthetic["_is_counter"] = True
+        draw_text_element(layer, synthetic, el_t, 1.0 if progress > 0 else anim_t)
+
+    def draw_grid_element(layer, el, el_t, anim_t):
+        """Draw a GRID element -- rows x cols of a repeated glyph, either
+        all at once (fade_in) or revealed cell-by-cell left-to-right,
+        top-to-bottom (fill_sequential)."""
+        draw = ImageDraw.Draw(layer)
+        glyph = el.get("glyph", "0")
+        rows = max(1, int(el.get("rows", 4)))
+        cols = max(1, int(el.get("cols", 10)))
+        cell = max(10, int(el.get("cell_size", 60)))
+        color = hex_to_rgb(el.get("color", "#FBC02D"))
+        anim = el.get("anim", "fill_sequential")
+        fill_dur = max(0.05, float(el.get("fill_duration", 1.2)))
+
+        cx = int(OUTPUT_WIDTH * float(el.get("x", 0.5)))
+        cy = int(OUTPUT_HEIGHT * float(el.get("y", 0.55)))
+        grid_w = cols * cell
+        grid_h = rows * cell
+        ox = cx - grid_w // 2
+        oy = cy - grid_h // 2
+
+        font = load_pil_font(get_primary_font_path(), int(cell * 0.8), "black")
+
+        total_cells = rows * cols
+        if anim == "fill_sequential":
+            progress = clamp(el_t / fill_dur, 0.0, 1.0)
+            visible_cells = int(total_cells * progress)
+            cell_alpha = 1.0
+        else:
+            visible_cells = total_cells
+            cell_alpha = anim_t
+
+        a_int = max(0, min(int(255 * cell_alpha), 255))
+        if a_int < 5:
+            return
+
+        idx = 0
+        for r in range(rows):
+            for c in range(cols):
+                if idx >= visible_cells:
+                    return
+                gx = ox + c * cell + cell // 2
+                gy = oy + r * cell + cell // 2
+                try:
+                    bbox = font.getbbox(glyph)
+                    gw, gh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                except Exception:
+                    gw, gh = cell // 2, cell // 2
+                draw.text((gx - gw // 2, gy - gh // 2), glyph, font=font,
+                          fill=(color[0], color[1], color[2], a_int))
+                idx += 1
+
+    # ── Freeform motion primitives ──────────────────────────────────
+    # Deterministic easing + path math. GPT only ever chooses an easing
+    # NAME and a list of points -- this is the only code that turns those
+    # choices into an actual on-screen position, so nothing GPT emits can
+    # produce NaNs, runaway coordinates, or broken interpolation.
+
+    def _ease(progress, name):
+        p = clamp(progress, 0.0, 1.0)
+        if name == "linear":
+            return p
+        elif name == "ease_out":
+            return 1.0 - (1.0 - p) ** 3
+        elif name == "ease_in_out":
+            return 0.5 - 0.5 * math.cos(math.pi * p)
+        elif name == "spring":
+            # Damped oscillation: overshoots past 1.0 then settles back.
+            # Critically-damped-ish spring, tuned to feel like a quick pop.
+            if p >= 1.0:
+                return 1.0
+            omega = 14.0
+            zeta = 0.55
+            return 1.0 - math.exp(-zeta * omega * p) * math.cos(omega * math.sqrt(max(1e-6, 1 - zeta**2)) * p)
+        return p
+
+    def _point_along_path(path_px, progress):
+        """path_px: list of (x,y) pixel points. Walks the polyline at
+        normalized progress 0..1 by arc length, so motion speed is even
+        across uneven point spacing."""
+        if len(path_px) == 1:
+            return path_px[0]
+        seg_lens = [math.hypot(path_px[i+1][0]-path_px[i][0], path_px[i+1][1]-path_px[i][1])
+                    for i in range(len(path_px)-1)]
+        total = sum(seg_lens) or 1.0
+        target = clamp(progress, 0.0, 1.0) * total
+        acc = 0.0
+        for i, seg_len in enumerate(seg_lens):
+            if acc + seg_len >= target or i == len(seg_lens) - 1:
+                seg_progress = (target - acc) / seg_len if seg_len > 1e-6 else 0.0
+                seg_progress = clamp(seg_progress, 0.0, 1.0)
+                x0, y0 = path_px[i]
+                x1, y1 = path_px[i+1]
+                return (x0 + (x1-x0)*seg_progress, y0 + (y1-y0)*seg_progress)
+            acc += seg_len
+        return path_px[-1]
+
+    def _path_to_px(path_norm):
+        return [(p[0] * OUTPUT_WIDTH, p[1] * OUTPUT_HEIGHT) for p in path_norm]
+
+    def draw_freeform_dot(layer, obj, el_t, _anim_t_unused):
+        draw = ImageDraw.Draw(layer)
+        duration = max(0.05, float(obj.get("duration", 1.0)))
+        progress = _ease(el_t / duration, obj.get("easing", "ease_out"))
+        path_px = _path_to_px(obj.get("path", [[0.5, 0.5], [0.5, 0.5]]))
+        x, y = _point_along_path(path_px, progress)
+        r = max(2, int(obj.get("radius", 0.012) * min(OUTPUT_WIDTH, OUTPUT_HEIGHT)))
+        color = hex_to_rgb(obj.get("color", "#FFFFFF"))
+        draw.ellipse([x-r, y-r, x+r, y+r], fill=(color[0], color[1], color[2], 255))
+
+    def draw_freeform_path_shape(layer, obj, el_t, _anim_t_unused):
+        draw = ImageDraw.Draw(layer)
+        duration = max(0.05, float(obj.get("duration", 0.8)))
+        hold = bool(obj.get("hold", True))
+        progress = _ease(el_t / duration, obj.get("easing", "ease_out"))
+        path_px = _path_to_px(obj.get("path", [[0.2, 0.5], [0.8, 0.5]]))
+        color = hex_to_rgb(obj.get("color", "#FFFFFF"))
+        thickness = max(1, int(obj.get("thickness", 4)))
+
+        if progress >= 1.0 and not hold:
+            fade_t = clamp((el_t - duration) / 0.3, 0.0, 1.0)
+            alpha = max(0, int(255 * (1.0 - fade_t)))
+            if alpha < 5:
+                return
+        else:
+            alpha = 255
+
+        # Walk the path up to `progress` arc-length fraction, drawing
+        # only the revealed portion (pen-reveal effect).
+        seg_lens = [math.hypot(path_px[i+1][0]-path_px[i][0], path_px[i+1][1]-path_px[i][1])
+                    for i in range(len(path_px)-1)]
+        total = sum(seg_lens) or 1.0
+        target = progress * total
+        acc = 0.0
+        revealed = [path_px[0]]
+        for i, seg_len in enumerate(seg_lens):
+            if acc + seg_len <= target:
+                revealed.append(path_px[i+1])
+            else:
+                seg_progress = (target - acc) / seg_len if seg_len > 1e-6 else 0.0
+                x0, y0 = path_px[i]
+                x1, y1 = path_px[i+1]
+                revealed.append((x0 + (x1-x0)*seg_progress, y0 + (y1-y0)*seg_progress))
+                break
+            acc += seg_len
+
+        if len(revealed) >= 2:
+            draw.line(revealed, fill=(color[0], color[1], color[2], alpha),
+                       width=thickness, joint="curve")
+
+    def draw_freeform_label_pill(layer, obj, el_t, _anim_t_unused):
+        draw = ImageDraw.Draw(layer)
+        content = obj.get("content", "")
+        anim_dur = max(0.05, float(obj.get("anim_duration", 0.3)))
+        easing = obj.get("easing", "spring")
+        progress = _ease(el_t / anim_dur, easing)
+        # Spring overshoots past 1.0 -- use that for a scale-pop, clamp
+        # alpha separately so it doesn't go negative during the overshoot.
+        scale = max(0.3, progress)
+        alpha = max(0, min(255, int(255 * clamp(el_t / max(0.05, anim_dur * 0.6), 0.0, 1.0))))
+
+        cx = float(obj.get("x", 0.5)) * OUTPUT_WIDTH
+        cy = float(obj.get("y", 0.5)) * OUTPUT_HEIGHT
+        font_size = max(18, int(28 * scale))
+        font = load_pil_font(get_primary_font_path(), font_size, "bold")
+        try:
+            bbox = font.getbbox(content)
+            tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        except Exception:
+            tw, th = font_size * len(content) * 0.6, font_size
+
+        pad_x, pad_y = 18, 10
+        w, h = tw + pad_x*2, th + pad_y*2
+        bg = hex_to_rgb(obj.get("color", "#1A1A1A"))
+        txt_color = hex_to_rgb(obj.get("text_color", "#FFD782"))
+
+        x0, y0 = cx - w/2, cy - h/2
+        x1, y1 = cx + w/2, cy + h/2
+        radius = min(h/2, 16)
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=radius,
+                                 fill=(bg[0], bg[1], bg[2], alpha))
+        draw.text((cx - tw/2, cy - th/2), content, font=font,
+                   fill=(txt_color[0], txt_color[1], txt_color[2], alpha))
+
+    def draw_freeform_card(layer, obj, el_t, _anim_t_unused):
+        anim_dur = max(0.05, float(obj.get("anim_duration", 0.4)))
+        progress = _ease(el_t / anim_dur, obj.get("easing", "ease_out"))
+        alpha = max(0, min(255, int(255 * progress)))
+        if alpha < 5:
+            return
+
+        cx = float(obj.get("x", 0.5)) * OUTPUT_WIDTH
+        cy = float(obj.get("y", 0.5)) * OUTPUT_HEIGHT
+        w = float(obj.get("w", 0.3)) * OUTPUT_WIDTH
+        h = float(obj.get("h", 0.2)) * OUTPUT_HEIGHT
+        tilt_deg = float(obj.get("tilt_deg", 0.0))
+        color = hex_to_rgb(obj.get("color", "#1A1A1A"))
+
+        card_layer = Image.new('RGBA', (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
+        cdraw = ImageDraw.Draw(card_layer)
+        x0, y0 = cx - w/2, cy - h/2
+        x1, y1 = cx + w/2, cy + h/2
+        cdraw.rounded_rectangle([x0, y0, x1, y1], radius=min(20, h*0.1),
+                                  fill=(color[0], color[1], color[2], alpha))
+
+        if abs(tilt_deg) > 0.5:
+            # Perspective tilt via a simple shear + scale approximation --
+            # cheap and stable, avoids a full warpPerspective per frame.
+            card_arr = np.array(card_layer)
+            shear = math.tan(math.radians(tilt_deg)) * 0.3
+            M = np.array([[1, shear, -shear * cy], [0, 1, 0]], dtype=np.float32)
+            card_arr = cv2.warpAffine(card_arr, M, (OUTPUT_WIDTH, OUTPUT_HEIGHT),
+                                        flags=cv2.INTER_LINEAR,
+                                        borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0,0))
+            card_layer = Image.fromarray(card_arr)
+
+        layer.alpha_composite(card_layer)
+
+    FREEFORM_DRAW_FNS = {
+        "dot": draw_freeform_dot,
+        "path_shape": draw_freeform_path_shape,
+        "label_pill": draw_freeform_label_pill,
+        "card": draw_freeform_card,
+    }
+
     # ── Main frame loop ──────────────────────────────────────────
     while True:
         ret, frame = cap.read()
@@ -1737,6 +2488,31 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         t = frame_idx / fps_vid
         frame = apply_vignette(frame)
         frame = apply_warm_grade(frame)
+
+        # Freeform motion objects (dots/paths/pills/cards) -- composited
+        # before the text-element layer. Each object is wrapped in its
+        # own try/except: if one object's data is malformed in a way
+        # validation didn't catch, that object is skipped for this frame
+        # and logged once, never crashing the render or affecting any
+        # other object/beat.
+        ff_active = [item for item in freeform_timeline
+                     if item["start"] <= t < item["end"]]
+        if ff_active:
+            ff_layer = Image.new('RGBA', (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
+            for item in ff_active:
+                obj = item["obj"]
+                otype = obj.get("type")
+                obj_t = t - item["start"]
+                draw_fn = FREEFORM_DRAW_FNS.get(otype)
+                if not draw_fn:
+                    continue
+                try:
+                    draw_fn(ff_layer, obj, obj_t, None)
+                except Exception as e:
+                    if not obj.get("_warned"):
+                        print(f"  ⚠ freeform object render error ({otype}): {e}")
+                        obj["_warned"] = True
+            frame = composite_layer(frame, ff_layer)
 
         # Find all elements active at time t
         raw_active = [item for item in timeline
@@ -1760,7 +2536,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
 
         if active:
             # Slight darkening overlay when text is on screen
-            import numpy as np
             frame = cv2.addWeighted(frame, 0.82, np.zeros_like(frame), 0.18, 0)
 
             # Build composite layer
@@ -1814,6 +2589,10 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                             draw_rect_element(layer, el, el_t, anim_t)
                         elif etype == "circle":
                             draw_circle_element(layer, el, el_t, anim_t)
+                        elif etype == "number_counter":
+                            draw_number_counter_element(layer, el, el_t, anim_t)
+                        elif etype == "grid":
+                            draw_grid_element(layer, el, el_t, anim_t)
                     except Exception as e:
                         print(f"  ⚠ element render error: {e}")
 
@@ -1849,7 +2628,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
 # ============================================================
 # MAIN GENERATOR
 # ============================================================
-class VaultsGenerator:
+class FinanceGenerator:
     def __init__(self, audio_path: str, output_path: str = "output.mp4", niche_config: dict = None):
         self.audio_path  = audio_path
         self.output_path = output_path
@@ -2115,12 +2894,12 @@ class VaultsGenerator:
         else:
             print(f"  ✨ CTA added")
 
-    def create_vaults_video(self, bg_volume: float = 0.12, fps: int = 30) -> bool:
+    def create_finance_video(self, bg_volume: float = 0.12, fps: int = 30) -> bool:
         import time
         t0 = time.time()
 
         print(f"\n{'='*70}")
-        print(f"🏛  VAULTS OF HISTORY v3")
+        print(f"📊  FINANCE EXPLAINER v1")
         print(f"{'='*70}")
 
         try:
@@ -2161,8 +2940,20 @@ class VaultsGenerator:
         except Exception as e:
             raise Exception(f"STEP 4 FAILED: {e}")
 
+        print(f"\n[STEP 4b] GPT Call 3: Freeform Motion Design...")
+        try:
+            freeform_scenes = generate_freeform_scenes(beats, topic)
+        except Exception as e:
+            # Freeform is the new, riskier layer -- if it fails entirely,
+            # fall back to no freeform objects rather than failing the
+            # whole video. number_counter/text/etc still render fine.
+            print(f"  ⚠ Freeform generation failed, continuing without it: {e}")
+            freeform_scenes = []
+
         print(f"\n[STEP 5] Validating...")
         decisions = validate_decisions(decisions, beats)
+        if freeform_scenes:
+            freeform_scenes = validate_freeform_scenes(freeform_scenes, beats)
 
         print(f"\n[STEP 6] Music...")
         bg_music = MUSIC_MAP.get(topic, MUSIC_MAP['default'])
@@ -2267,7 +3058,8 @@ class VaultsGenerator:
 
             print(f"\n[STEP 12] OpenCV text render...")
             try:
-                render_text_overlay_opencv(audio_output, decisions, beats, whisper_segments, self.output_path)
+                render_text_overlay_opencv(audio_output, decisions, beats, whisper_segments,
+                                            self.output_path, freeform_scenes=freeform_scenes)
             except Exception as e:
                 print(f"  ❌ Render failed: {e}")
                 traceback.print_exc()
@@ -2318,25 +3110,16 @@ class VaultsGenerator:
 
 # ============================================================
 # NICHE TEMPLATES
+# Only relevant if USE_PROCEDURAL_BACKGROUND is False (broll-clip
+# fallback path). With procedural backgrounds on, this is unused.
 # ============================================================
 NICHE_TEMPLATES = {
-    'vaults': {
-        'broll_dirs': {
-            'space':   'space_vids',
-            'ancient': 'ancient_ruins_vids',
-            'cosmic':  'cosmic_vids',
-            'sky':     'dark_sky_vids',
-            'temple':  'temple_vids',
-        },
-        'keyword_map': {
-            'space':   ['universe', 'galaxy', 'black hole', 'star', 'planet', 'cosmos'],
-            'ancient': ['ancient', 'civilization', 'pyramid', 'ruins', 'lost', 'forgotten'],
-            'cosmic':  ['time', 'reality', 'dimension', 'quantum', 'existence', 'consciousness'],
-            'sky':     ['sky', 'atmosphere', 'above', 'beyond', 'vast', 'endless'],
-            'temple':  ['religion', 'god', 'sacred', 'ritual', 'belief', 'worship'],
-        }
+    'finance': {
+        'broll_dirs': {},
+        'keyword_map': {}
     },
 }
+
 
 
 # ============================================================
@@ -2344,11 +3127,11 @@ NICHE_TEMPLATES = {
 # ============================================================
 @app.get("/")
 def root():
-    return {"service": "Vaults of History v3", "status": "running",
+    return {"service": "Finance Explainer v1", "status": "running",
             "openai_key": bool(OPENAI_API_KEY)}
 
 @app.post("/generate")
-async def generate_video_api(background_tasks: BackgroundTasks, niche: str = "vaults"):
+async def generate_video_api(background_tasks: BackgroundTasks, niche: str = "finance"):
     global current_job
     if current_job["status"] == "processing":
         return {"message": "Already processing", "status": "processing"}
@@ -2357,7 +3140,7 @@ async def generate_video_api(background_tasks: BackgroundTasks, niche: str = "va
     background_tasks.add_task(process_video, niche)
     return {"message": f"Started niche={niche}", "status": "processing"}
 
-def process_video(niche: str = "vaults"):
+def process_video(niche: str = "finance"):
     global current_job
     try:
         current_job["progress"] = 5
@@ -2383,12 +3166,12 @@ def process_video(niche: str = "vaults"):
                 os.remove(old)
 
         current_job["progress"] = 15
-        niche_config = NICHE_TEMPLATES.get(niche, NICHE_TEMPLATES['vaults'])
-        gen = VaultsGenerator(audio_path=audio_file, output_path=output_file,
+        niche_config = NICHE_TEMPLATES.get(niche, NICHE_TEMPLATES['finance'])
+        gen = FinanceGenerator(audio_path=audio_file, output_path=output_file,
                               niche_config=niche_config)
 
         current_job["progress"] = 20
-        success = gen.create_vaults_video(bg_volume=0.12, fps=30)
+        success = gen.create_finance_video(bg_volume=0.12, fps=30)
         current_job["progress"] = 95
 
         final = output_file.replace(".mp4", "_cta.mp4")
@@ -2406,7 +3189,7 @@ def process_video(niche: str = "vaults"):
 @app.get("/status")
 def check_status():
     return {**current_job, "ready": current_job["status"] == "completed",
-            "niche": current_job.get("niche", "vaults")}
+            "niche": current_job.get("niche", "finance")}
 
 @app.get("/download")
 def download_video():
@@ -2415,10 +3198,10 @@ def download_video():
     if not current_job["output"] or not os.path.exists(current_job["output"]):
         raise HTTPException(404, "File not found")
     return FileResponse(current_job["output"], media_type="video/mp4",
-                        filename=f"vaults_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+                        filename=f"finance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Vaults v3 on :{port} | Key: {'set' if OPENAI_API_KEY else 'MISSING'}")
+    print(f"🚀 Finance Explainer v1 on :{port} | Key: {'set' if OPENAI_API_KEY else 'MISSING'}")
     uvicorn.run(app, host="0.0.0.0", port=port)
