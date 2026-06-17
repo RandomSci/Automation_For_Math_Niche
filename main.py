@@ -33,12 +33,12 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 import threading
 import time as _time
 
-_GPT4O_CONCURRENCY = threading.Semaphore(3)  
+_GPT4O_CONCURRENCY = threading.Semaphore(3)
 _GPT4O_LOCK = threading.Lock()
 _GPT4O_LAST_CALL_TS = [0.0]
-_GPT4O_TPM_LIMIT = 30000          # org's tokens-per-minute ceiling (used as the fallback reference)
-_GPT4O_REMAINING_TOKENS = [_GPT4O_TPM_LIMIT]   # last known remaining-tokens reading from headers
-_GPT4O_FALLBACK_GAP_SECONDS = 1.5  # used only if rate-limit headers are unavailable
+_GPT4O_TPM_LIMIT = 30000
+_GPT4O_REMAINING_TOKENS = [_GPT4O_TPM_LIMIT]
+_GPT4O_FALLBACK_GAP_SECONDS = 1.5
 
 def _adaptive_gap_seconds():
     """Scale the minimum gap between call starts based on the most
@@ -71,7 +71,7 @@ def gpt4o_call(client, **kwargs):
                 with _GPT4O_LOCK:
                     _GPT4O_REMAINING_TOKENS[0] = int(remaining_hdr)
         except (TypeError, ValueError):
-            pass  # header missing/malformed -- keep using the last known value
+            pass
         return raw.parse()
 
 
@@ -111,18 +111,14 @@ def dynamic_batch_size(n_beats: int, min_size: int = 3, max_size: int = 10) -> i
     if n_beats <= 20:
         size = min_size
     elif n_beats <= 60:
-        # Linear scale from 3 at 20 beats to 6 at 60 beats
         size = round(min_size + (6 - min_size) * (n_beats - 20) / 40)
     else:
-        # Linear scale from 6 at 60 beats to max_size at 150+ beats
         size = round(6 + (max_size - 6) * min(1.0, (n_beats - 60) / 90))
     return max(min_size, min(max_size, size))
 
 if not OPENAI_API_KEY:
     print("⚠  WARNING: OPENAI_API_KEY not set.")
 
-# Toggle: True = generate animated background procedurally (no broll, no
-# clip failures, zero cost). False = use the old broll-clip pipeline.
 USE_PROCEDURAL_BACKGROUND = True
 
 MUSIC_MAP = {
@@ -139,18 +135,21 @@ FONT_BLACK_CANDIDATES = [
     os.path.join(FONTS_DIR, "Anton-Regular.ttf"),
     os.path.join(FONTS_DIR, "Montserrat-Black.ttf"),
     os.path.join(FONTS_DIR, "Montserrat-ExtraBold.ttf"),
+    os.path.join(FONTS_DIR, "Poppins-Bold.ttf"),
     "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
 FONT_BOLD_CANDIDATES = [
     os.path.join(FONTS_DIR, "Montserrat-ExtraBold.ttf"),
     os.path.join(FONTS_DIR, "Montserrat-Bold.ttf"),
+    os.path.join(FONTS_DIR, "Poppins-Bold.ttf"),
     "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
 ]
 FONT_REGULAR_CANDIDATES = [
     os.path.join(FONTS_DIR, "Montserrat-Bold.ttf"),
+    os.path.join(FONTS_DIR, "Poppins-Bold.ttf"),
     "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
@@ -199,7 +198,6 @@ def _probe_clip_health(filepath: str) -> tuple[bool, str]:
 @app.on_event("startup")
 async def startup_event():
     print("🚀 Vaults of History v3 starting...")
-    # Audit broll folders so missing clips are immediately visible
     broll_dirs = ['space_vids','ancient_ruins_vids','cosmic_vids',
                   'dark_sky_vids','temple_vids']
     print("📁 Broll folder audit:")
@@ -209,7 +207,6 @@ async def startup_event():
             files = [f for f in os.listdir(d) if f.lower().endswith(('.mp4','.mov','.avi'))]
             status = f"✅ {len(files)} clips" if files else "❌ EMPTY -- add Seedance clips here"
             print(f"  {d}: {status}")
-            # Health-check each clip so broken files are caught before a run
             for f in files:
                 fpath = os.path.join(d, f)
                 healthy, reason = _probe_clip_health(fpath)
@@ -235,8 +232,8 @@ def _bgr(r, g, b):
 TOPIC_STYLES = {
     'markets': {
         'bg':      _bgr(8, 10, 14),
-        'accent':  _bgr(120, 230, 170),    # market green
-        'accent2': _bgr(255, 215, 130),    # gold/currency
+        'accent':  _bgr(120, 230, 170),
+        'accent2': _bgr(255, 215, 130),
         'styles':  ['particles', 'geometric'],
     },
     'growth': {
@@ -247,13 +244,13 @@ TOPIC_STYLES = {
     },
     'warning': {
         'bg':      _bgr(10, 6, 6),
-        'accent':  _bgr(230, 90, 80),       # warning red
+        'accent':  _bgr(230, 90, 80),
         'accent2': _bgr(255, 200, 90),
         'styles':  ['particles', 'geometric'],
     },
     'history': {
         'bg':      _bgr(10, 10, 14),
-        'accent':  _bgr(255, 215, 130),     # gold
+        'accent':  _bgr(255, 215, 130),
         'accent2': _bgr(170, 175, 190),
         'styles':  ['geometric', 'particles'],
     },
@@ -321,7 +318,7 @@ def _draw_geometric(frame, t, intensity, color):
     cx, cy = w // 2, h // 2
     base_r = int(min(w, h) * 0.32)
     n_shapes = 3
-    speed = 4 + intensity * 1.2  # degrees/sec
+    speed = 4 + intensity * 1.2
     for i in range(n_shapes):
         angle0 = math.radians(t * speed * (1 if i % 2 == 0 else -1) + i * 40)
         r = base_r - i * int(base_r * 0.22)
@@ -413,7 +410,6 @@ def _lumpy_circle_pts(cx, cy, r, bumps=5, bump_amt=0.15, n=48):
 def _build_illustration_shapes():
     shapes = {}
 
-    # UPTREND: rising line + arrowhead, classic "stock going up" glyph
     line_pts = [(0.18, 0.78), (0.36, 0.58), (0.50, 0.66), (0.82, 0.24)]
     arrow_tip = line_pts[-1]
     ang = math.atan2(line_pts[-1][1] - line_pts[-2][1], line_pts[-1][0] - line_pts[-2][0])
@@ -428,7 +424,6 @@ def _build_illustration_shapes():
         [left, arrow_tip, right],
     ]
 
-    # DOWNTREND: mirror of uptrend
     dline_pts = [(0.18, 0.24), (0.36, 0.46), (0.50, 0.38), (0.82, 0.78)]
     dang = math.atan2(dline_pts[-1][1] - dline_pts[-2][1], dline_pts[-1][0] - dline_pts[-2][0])
     dback_x = dline_pts[-1][0] - head_len * math.cos(dang)
@@ -441,7 +436,6 @@ def _build_illustration_shapes():
         [dleft, dline_pts[-1], dright],
     ]
 
-    # COIN STACK: 3 stacked ellipses (top view edge), side rim lines
     shapes['coin_stack'] = [
         _ellipse_pts(0.5, 0.70, 0.22, 0.07, n=28),
         _ellipse_pts(0.5, 0.58, 0.22, 0.07, n=28),
@@ -450,7 +444,6 @@ def _build_illustration_shapes():
         [(0.72, 0.46), (0.72, 0.70)],
     ]
 
-    # CLOCK: circle face + two hands (time value of money / countdown)
     hour_ang = math.radians(-60)
     min_ang  = math.radians(60)
     shapes['clock'] = [
@@ -459,7 +452,6 @@ def _build_illustration_shapes():
         [(0.5, 0.5), (0.5 + 0.22 * math.cos(min_ang),  0.5 + 0.22 * math.sin(min_ang))],
     ]
 
-    # PERCENT: two circles + diagonal slash, the % glyph as line art
     diag = [(0.24, 0.76), (0.76, 0.24)]
     shapes['percent'] = [
         _circle_pts(0.30, 0.30, 0.10, n=22),
@@ -467,7 +459,6 @@ def _build_illustration_shapes():
         diag,
     ]
 
-    # SCALE: balance/comparison glyph -- center post + tilted beam + two pans
     tilt = math.radians(-8)
 
     def _rot(px, py, cx, cy, a):
@@ -478,15 +469,14 @@ def _build_illustration_shapes():
     beam_l = _rot(0.22, 0.32, 0.5, 0.32, tilt)
     beam_r = _rot(0.78, 0.32, 0.5, 0.32, tilt)
     shapes['scale'] = [
-        [(0.5, 0.20), (0.5, 0.82)],          # center post
-        [(0.34, 0.82), (0.66, 0.82)],        # base
-        [beam_l, beam_r],                     # beam
-        _ellipse_pts(beam_l[0], beam_l[1] + 0.10, 0.09, 0.035, n=18),  # left pan
-        _ellipse_pts(beam_r[0], beam_r[1] + 0.10, 0.09, 0.035, n=18),  # right pan
+        [(0.5, 0.20), (0.5, 0.82)],
+        [(0.34, 0.82), (0.66, 0.82)],
+        [beam_l, beam_r],
+        _ellipse_pts(beam_l[0], beam_l[1] + 0.10, 0.09, 0.035, n=18),
+        _ellipse_pts(beam_r[0], beam_r[1] + 0.10, 0.09, 0.035, n=18),
     ]
 
     return shapes
-
 
 
 ILLUSTRATION_SHAPES = _build_illustration_shapes()
@@ -581,7 +571,6 @@ def _build_subject_timeline(beats, total_duration, fps):
     return out
 
 
-
 def _build_intensity_curve(beats, total_duration, fps):
     """Per-frame intensity (1-10), linearly interpolated between beat
     midpoints and smoothed slightly so it drifts rather than jumps."""
@@ -603,7 +592,6 @@ def _build_intensity_curve(beats, total_duration, fps):
         control_t, control_v,
         left=control_v[0], right=control_v[-1]
     )
-    # Light smoothing (moving average) so intensity drifts, not snaps
     if len(curve) > 5:
         kernel = np.ones(5) / 5
         curve = np.convolve(curve, kernel, mode='same')
@@ -633,9 +621,6 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
     if n_with_subject:
         print(f"  ✏️  Illustrations active on {n_with_subject}/{n_frames} frames")
 
-    # Render at half-resolution then upscale -- the background is intentionally
-    # soft/abstract (it sits behind text), so this is ~4x faster with no
-    # visible quality loss after upscale + video compression.
     rw, rh = width // 2, height // 2
     starfield = _Starfield(rw, rh, n_stars=220, seed=hash(topic) & 0xffff)
 
@@ -643,7 +628,6 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter(raw_path, fourcc, fps, (width, height))
 
-    # Precompute a subtle vignette mask once (multiplicative, darkens edges)
     yv, xv = np.mgrid[0:rh, 0:rw].astype(np.float32)
     cx, cy = rw / 2, rh / 2
     dist = np.sqrt(((xv - cx) / (rw / 2)) ** 2 + ((yv - cy) / (rh / 2)) ** 2)
@@ -656,23 +640,16 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
 
         frame = np.full((rh, rw, 3), bg_color, dtype=np.uint8)
 
-        # Primary style at full strength
         frame = _BG_DRAW_FNS[style_names[0]](frame, t, intensity, accent, starfield)
-        # Secondary style as subtle accent layer
         if len(style_names) > 1:
             frame = _BG_DRAW_FNS[style_names[1]](frame, t, intensity * 0.7, accent2, starfield)
 
-        # Content-aware illustration (drawing system) -- if this beat
-        # evokes a known subject (planet, brain, dna, etc.), draw it with
-        # a pen-reveal animation, centered, beneath the text layer
         subj, b_start, b_dur = subject_timeline[f]
         if subj in ILLUSTRATION_SHAPES:
             frame = _draw_illustration(frame, t, b_start, b_dur, subj, accent)
 
-        # Vignette
         frame = (frame.astype(np.float32) * vignette3).astype(np.uint8)
 
-        # Upscale to final output resolution
         frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
 
         writer.write(frame)
@@ -683,7 +660,6 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
     writer.release()
     print(f"    {n_frames}/{n_frames} frames... done")
 
-    # Re-encode to H.264 yuv420p for downstream ffmpeg compatibility
     r = subprocess.run([
         'ffmpeg', '-y', '-i', raw_path,
         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
@@ -697,12 +673,6 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
     return output_path
 
 
-
-# ============================================================
-# GPT CALL 1 -- STORY BEAT ANALYZER
-# Sends Whisper segments (with timestamps) to GPT so it can
-# produce accurate timing without word-level lookup
-# ============================================================
 def build_whisper_word_list(whisper_segments: list) -> list:
     """Flatten Whisper segments into an ordered word list with timestamps."""
     words = []
@@ -826,7 +796,6 @@ def analyze_story_beats(transcript_text: str, whisper_segments: list,
     print(f"  🎭 Call 1: Story beats ({len(transcript_text)} chars, {total_duration:.1f}s)...")
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    # Build timed lines -- each Whisper segment as its own line with [start - end]
     timed_lines = []
     for seg in whisper_segments:
         s = float(seg.get('start', 0))
@@ -898,13 +867,6 @@ Return ONLY valid JSON:
   ]
 }}"""
 
-    # Batch by Whisper segment count, not a single giant call -- a long
-    # script (100+ segments) asking for one uncapped JSON response with
-    # every beat in it can take a very long time to generate (or run
-    # into the output-token ceiling) before anything is returned, which
-    # looks identical to "stuck" with no progress output in between.
-    # Splitting into chunks gives fast, visible per-chunk progress, the
-    # same pattern already used for Call 2 and Call 3.
     SEGMENTS_PER_BATCH = dynamic_batch_size(len(timed_lines), min_size=15, max_size=40)
     batches = [timed_lines[i:i+SEGMENTS_PER_BATCH] for i in range(0, len(timed_lines), SEGMENTS_PER_BATCH)]
     print(f"  🎭 Call 1: {len(batches)} chunk(s) of ~{SEGMENTS_PER_BATCH} segments each...")
@@ -943,8 +905,6 @@ Return ONLY valid JSON:
     for r in results:
         all_beats.extend(r.get('beats', []))
 
-    # topic/music_mood come from the first chunk only -- they describe
-    # the whole video, not a per-chunk property.
     first_result = results[0] if results else {}
     final_result = {
         "topic": first_result.get("topic", "default"),
@@ -955,10 +915,6 @@ Return ONLY valid JSON:
     return final_result
 
 
-# ============================================================
-# GPT CALL 2 -- RENDER DECISION GENERATOR
-# ============================================================
-
 def _build_batch_prompt(topic: str, batch: list) -> str:
     """Build the GPT Call 2 user prompt, annotating each beat with its real duration
     so GPT can set start_offset values that actually fit within the beat window."""
@@ -966,7 +922,7 @@ def _build_batch_prompt(topic: str, batch: list) -> str:
     for b in batch:
         dur = round(float(b.get("end_time", 0)) - float(b.get("start_time", 0)), 2)
         entry = dict(b)
-        entry["_duration_seconds"] = dur  # injected so GPT knows the real budget
+        entry["_duration_seconds"] = dur
         annotated.append(entry)
     return (
         f"Topic: {topic}\n\n"
@@ -1175,12 +1131,6 @@ Return ONLY valid JSON:
   ]
 }}"""
 
-    # Batch size scales with script length (see dynamic_batch_size) --
-    # short scripts keep small batches, long scripts use bigger batches
-    # so total request count doesn't balloon and queue behind the
-    # shared throttle. Capped at 10/batch to stay safely under GPT-4o's
-    # 16384 output-token limit even for dense scenes (~1-1.2k tokens/beat
-    # worst case observed -> 10 beats is ~10-12k, still under the cap).
     BATCH_SIZE = dynamic_batch_size(len(beats))
     all_scenes = []
     batches = [beats[i:i+BATCH_SIZE] for i in range(0, len(beats), BATCH_SIZE)]
@@ -1202,10 +1152,6 @@ Return ONLY valid JSON:
         result = json.loads(response.choices[0].message.content)
         batch_scenes = result.get('scenes', [])
         if len(batch_scenes) > len(batch):
-            # GPT split a beat into 2 scenes -- if we keep the extra,
-            # EVERY subsequent scene shifts by +1 relative to its beat,
-            # causing cascading "hallucination" drops in the validator.
-            # Trim to guarantee scenes[i] always corresponds to beats[i].
             print(f"  ⚠️  Batch {batch_idx+1}: expected {len(batch)} scenes, got {len(batch_scenes)} -- trimming extras")
             batch_scenes = batch_scenes[:len(batch)]
         elif len(batch_scenes) < len(batch):
@@ -1215,9 +1161,6 @@ Return ONLY valid JSON:
         print(f"  ✅ Batch {batch_idx+1} done: {len(batch_scenes)} scenes")
         return batch_idx, batch_scenes
 
-    # Concurrency is bounded by the shared _GPT4O_CONCURRENCY semaphore
-    # (process-wide, shared with Call 3), not by this pool size -- the
-    # pool just needs enough workers to keep the semaphore saturated.
     results = [None] * len(batches)
     MAX_WORKERS = 3
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -1238,40 +1181,12 @@ Return ONLY valid JSON:
     return all_scenes
 
 
-# ============================================================
-# ============================================================
-# GPT CALL 3 -- PER-BEAT VISUAL CODE GENERATOR
-#
-# Replaces the old fixed-primitive freeform system (dot/path_shape/
-# label_pill/card) entirely. GPT now reasons from CONTENT to MEANING
-# to VISUAL, then writes real Python drawing code for that one beat --
-# no pre-named shape menu, no "pick from these 4 things". Full
-# creative range: anything Pillow's ImageDraw (or numpy/cv2, both
-# available) can express.
-#
-# Safety model, since GPT-authored code has no built-in math
-# guarantees: each beat's generated code runs in its OWN subprocess
-# with a hard wall-clock timeout and a restricted execution
-# namespace (no filesystem/network access exposed). If generation,
-# parsing, execution, or rendering fails for any reason, that single
-# beat renders blank and the failure is logged -- never crashes the
-# render, never takes down other beats. This is a crash guard, not
-# an aesthetics gate -- a beat that "works" but looks mediocre still
-# renders; only beats that are actually broken get dropped.
-# ============================================================
-
 import ast
 import multiprocessing
 import traceback as _traceback
 
 VISUAL_CODE_TIMEOUT_SECONDS = 8
 
-# Names the generated code is allowed to use. Deliberately excludes
-# anything filesystem/network/process related (open, os, sys, import,
-# eval, exec, __import__, etc). The function signature it must define
-# is draw_beat(draw, t, w, h, np, math) -- draw is a PIL ImageDraw on a
-# transparent RGBA layer already sized to the canvas, t is seconds
-# since this beat started, w/h are canvas pixel dimensions.
 _SAFE_BUILTINS = {
     "abs": abs, "min": min, "max": max, "round": round, "len": len,
     "range": range, "enumerate": enumerate, "zip": zip, "sum": sum,
@@ -1316,12 +1231,6 @@ def _static_safety_check(code: str) -> tuple[bool, str]:
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             return False, f"references dunder attribute '{node.attr}'"
 
-    # Structural check: exactly one top-level statement, and it must be
-    # a FunctionDef named draw_beat. Anything else at module level
-    # (stray calls, a second function, bare expressions) is rejected --
-    # those would execute immediately on exec() outside any function
-    # scope, which is exactly what produced the "'draw' is not defined"
-    # crashes.
     top_level_defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "draw_beat"]
     if not top_level_defs:
         return False, "missing required top-level draw_beat(...) function definition"
@@ -1333,39 +1242,10 @@ def _static_safety_check(code: str) -> tuple[bool, str]:
     return True, ""
 
 
-# ============================================================
-# PARALLEL PRE-RENDER POOL
-#
-# Replaces the old per-frame-then-per-beat subprocess models. Instead
-# of rendering generated-code frames live as the main video loop walks
-# through time, EVERY beat's full frame sequence is rendered ahead of
-# time, across a process pool, before the main loop starts at all.
-#
-# Three changes bundled together, since they only make sense combined:
-#  1. NO per-frame subprocess call and no per-beat persistent pipe --
-#     each pool worker task execs the beat's code ONCE and renders
-#     that beat's ENTIRE frame sequence in a tight in-process loop.
-#     The process boundary is still real (ProcessPoolExecutor uses
-#     separate OS processes) so the sandbox/isolation guarantee is
-#     unchanged -- what's gone is the per-frame IPC round-trip and
-#     per-beat long-lived-pipe bookkeeping.
-#  2. Beats render CONCURRENTLY across pool workers (one per CPU core
-#     by default), not sequentially one beat at a time.
-#  3. The generated-code layer renders at a REDUCED internal fps
-#     (default 15 vs the video's 30) and frames are held/duplicated
-#     to fill the gaps -- most motion graphics don't need true 30fps
-#     smoothness, and this halves the number of draw_beat() calls.
-#
-# Disk caching: each beat's rendered frame sequence is cached to
-# /tmp keyed by a hash of (code, duration, internal_fps, w, h). If the
-# same script is re-rendered (e.g. while iterating), beats whose code
-# didn't change skip re-rendering entirely.
-# ============================================================
-
 import hashlib
 
 _PRERENDER_CACHE_DIR = os.path.join(tempfile.gettempdir(), "finance_explainer_beat_cache")
-INTERNAL_VISUAL_FPS = 15  # generated-code layer renders at this fps, held to fill 30fps video frames
+INTERNAL_VISUAL_FPS = 15
 
 
 def _beat_cache_key(code: str, duration: float, fps: int, w: int, h: int) -> str:
@@ -1373,20 +1253,13 @@ def _beat_cache_key(code: str, duration: float, fps: int, w: int, h: int) -> str
     return hashlib.sha256(raw).hexdigest()[:24]
 
 
-# ── Emoji font loading ───────────────────────────────────────────
-# Color-emoji bitmap fonts (NotoColorEmoji and similar) only render
-# correctly via PIL at ONE exact native embedded strike size -- any
-# other requested size throws "invalid pixel size". The worker renders
-# at this native size and resizes the result itself (see draw_emoji
-# inside _render_beat_frames_worker), so this only needs to find a
-# working font file and confirm the native size actually works.
 _EMOJI_FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
     "/usr/share/fonts/noto/NotoColorEmoji.ttf",
     "/usr/share/fonts/truetype/noto-color-emoji/NotoColorEmoji.ttf",
-    "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",  # monochrome fallback, no embedded_color needed
+    "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
 ]
-_EMOJI_NATIVE_STRIKE_SIZE = 109  # NotoColorEmoji's known valid embedded size
+_EMOJI_NATIVE_STRIKE_SIZE = 109
 
 
 def _load_emoji_font():
@@ -1420,14 +1293,6 @@ def _render_beat_frames_worker(code: str, duration: float, fps: int, w: int, h: 
         import math as _math
         from PIL import Image as _Image, ImageDraw as _ImageDraw, ImageFont as _ImageFont
 
-        # ── Emoji helper, bound to THIS worker's layer-per-frame loop ──
-        # PIL's color-emoji font support only works at one exact native
-        # strike size (e.g. 109px for NotoColorEmoji) -- any other size
-        # throws. Rather than make generated code work around that, the
-        # glyph is rendered once at the native size, cropped, and resized
-        # to whatever size the beat code actually wants, then pasted onto
-        # the active layer via alpha_composite. Wrapped in try/except so
-        # a bad emoji char or missing font never takes down a whole beat.
         _emoji_font = _load_emoji_font()
         _emoji_cache_local = {}
 
@@ -1449,41 +1314,29 @@ def _render_beat_frames_worker(code: str, duration: float, fps: int, w: int, h: 
                     gw, gh = glyph.size
                     layer.alpha_composite(glyph, (int(cx - gw / 2), int(cy - gh / 2)))
                 except Exception:
-                    pass  # an accent emoji failing should never break the whole beat
+                    pass
             return draw_emoji
 
-        # `draw_emoji` needs to paste onto whichever `layer` is active
-        # for the CURRENT frame -- that layer is created fresh inside
-        # the frame loop below, so this uses a one-item mutable box the
-        # frame loop updates each iteration, and the closure reads from
-        # it lazily at call time (by which point the loop has already
-        # set it for this frame).
         _current_layer_box = [None]
         draw_emoji = _make_draw_emoji(lambda: _current_layer_box[0])
 
-        # ── Font helpers ─────────────────────────────────────────
-        # Generated code has no legitimate way to load a font on its
-        # own (no imports allowed, and it doesn't know font file paths
-        # on this machine) -- without a real helper, GPT was guessing
-        # at APIs that don't exist (np.Font, a bare ImageFont name with
-        # nothing behind it) or calling draw.textsize(), which Pillow
-        # removed years ago. get_font(size) returns a real, cached,
-        # pre-validated font at the requested size using the SAME font
-        # file the rest of this pipeline already uses successfully.
-        # text_size(text, font) replaces the removed textsize() using
-        # the modern textbbox API.
         _font_cache_local = {}
 
-        def get_font(size):
+        def get_font(size, style="bold"):
             size = max(1, int(size))
-            font = _font_cache_local.get(size)
+            style = style if style in ("bold", "black") else "bold"
+            cache_key = (size, style)
+            font = _font_cache_local.get(cache_key)
             if font is None:
                 try:
-                    font_path = FONT_BOLD or FONT_BLACK
+                    if style == "black":
+                        font_path = FONT_BLACK or FONT_BOLD
+                    else:
+                        font_path = FONT_BOLD or FONT_BLACK
                     font = _ImageFont.truetype(font_path, size) if font_path else _ImageFont.load_default()
                 except Exception:
                     font = _ImageFont.load_default()
-                _font_cache_local[size] = font
+                _font_cache_local[cache_key] = font
             return font
 
         def text_size(text, font):
@@ -1492,7 +1345,7 @@ def _render_beat_frames_worker(code: str, duration: float, fps: int, w: int, h: 
                 bbox = _ImageDraw.Draw(tmp).textbbox((0, 0), text, font=font)
                 return (bbox[2] - bbox[0], bbox[3] - bbox[1])
             except Exception:
-                return (len(text) * 10, 14)  # rough fallback, never raises
+                return (len(text) * 10, 14)
 
         namespace = {"__builtins__": _SAFE_BUILTINS, "draw_emoji": draw_emoji,
                      "get_font": get_font, "text_size": text_size}
@@ -1517,20 +1370,15 @@ def _render_beat_frames_worker(code: str, duration: float, fps: int, w: int, h: 
                 if arr.shape != (h, w, 4) or not _np.isfinite(arr.astype(_np.float32)).all():
                     if first_error is None:
                         first_error = f"frame {i} (t={t:.2f}) produced invalid pixel data (wrong shape or non-finite values)"
-                    continue  # leave this frame transparent, keep going
+                    continue
                 frames[i] = arr.astype("uint8")
                 any_ok = True
             except Exception as e:
                 if first_error is None:
                     first_error = f"frame {i} (t={t:.2f}): {e}"
-                continue  # leave this frame transparent, keep going
+                continue
 
         if not any_ok:
-            # If EVERY frame failed the same way, it's almost always a
-            # bug independent of t (undefined variable, bad arithmetic,
-            # wrong arg count) rather than a t-specific edge case --
-            # surfacing the first frame's actual error makes that
-            # diagnosable instead of just "every frame failed".
             return None, f"every frame in this beat failed to render -- first failure: {first_error}"
 
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -1559,7 +1407,7 @@ def prerender_all_beat_visuals(visual_code_timeline: list, w: int, h: int,
           f"(parallel pool, {INTERNAL_VISUAL_FPS}fps internal)...")
     os.makedirs(_PRERENDER_CACHE_DIR, exist_ok=True)
 
-    tasks = []  # (beat_index, cache_path, needs_render, code, duration)
+    tasks = []
     for item in visual_code_timeline:
         duration = max(0.05, item["end"] - item["start"])
         key = _beat_cache_key(item["code"], duration, fps, w, h)
@@ -1617,11 +1465,6 @@ def prerender_all_beat_visuals(visual_code_timeline: list, w: int, h: int,
     print(f"  ✅ Pre-render complete: {len(results)}/{len(visual_code_timeline)} beats have usable frames")
     return results
 
-
-
-# ============================================================
-# GPT CALL 3 -- system prompt + batching
-# ============================================================
 
 def _build_visual_code_batch_prompt(batch: list) -> str:
     annotated = []
@@ -1686,8 +1529,17 @@ A helper function `draw_emoji(emoji_char, cx, cy, size)` is available (already d
 === NOTICING LIST STRUCTURE ===
 Some scripts count through a numbered list ("the first warning sign...", "warning sign number two...", "here's the fourth..."). If THIS beat is the one introducing a new numbered item, it's worth reflecting that (e.g. a small "03" badge in a corner, an outlined number), but only on the beat that actually introduces the item -- not on every beat that elaborates on it afterward. Most beats in a list-style script are elaboration, not new-item beats; don't force a counter onto beats that don't need one.
 
+=== THE OPENING BEAT IS CRITICAL ===
+If this is beat_index 0 (or one of the very first beats), it sets the tone for whether a viewer keeps watching -- never leave it blank, minimal, or text-only even if the content seems like a plain hook with no obvious data. Find something visual for it: an abstract but purposeful shape that matches the emotional tone (tension, curiosity, a question), a number if one exists anywhere nearby, or a bold single graphic element that immediately signals "this video has real production value." The instruction elsewhere that transition beats can be minimal does NOT apply to the opening beat specifically.
+
 === 16:9 COMPOSITION ===
-Canvas is {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} (always compute from w/h, never hardcode). Keep all content within a safe margin of roughly 8% of w/h from every edge -- nothing should touch or crowd the frame edge. Favor a single clear focal point per beat (one chart, one figure, one number) rather than scattering multiple competing elements. If you do use more than one element (e.g. a chart plus an emoji accent), give them clearly different visual weight -- one primary, one small secondary -- not two equally-sized things competing for attention.
+Canvas is {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} (always compute from w/h, never hardcode). Keep all content within a safe margin of roughly 8% of w/h from every edge -- nothing should touch or crowd the frame edge.
+
+Favor ONE clear underlying idea per beat -- but a single idea rendered as a bare, undecorated shape (one flat rectangle, one plain circle, nothing else) reads as empty and unfinished, not clean. A good beat usually has 3-5 small details supporting its one idea, not 3-5 unrelated competing ideas. For example: a bar chart's "one idea" still includes the bar itself, a baseline/axis line, the value label, and a subtle highlight or motion on the bar -- that's one coherent composition with real detail, not clutter. A gauge's one idea includes the arc, the needle or fill, the number, and a small tick mark or two. Think of it as "one hero element, fully realized with supporting detail" rather than "one hero element floating alone." If your code only calls 1-2 drawing operations total, it is almost certainly too sparse -- add the supporting detail that makes the one idea feel complete and considered, not more competing ideas.
+
+Avoid reusing the same overall composition shape across different beats -- if you've described several beats in a row as "a rectangle with a label," vary it: try a circular/radial layout, a growing line, a grid, a gauge, concentric shapes, instead of defaulting back to the same rectangle-plus-line pattern every time.
+
+If you do add a secondary element (e.g. a chart plus an emoji accent), give it clearly different visual weight -- one primary, one small secondary -- not two equally-sized things competing for attention.
 
 === YOUR REQUIRED PROCESS, FOR EVERY BEAT ===
 1. Read the beat's text and data fields. Identify the SINGLE underlying concept.
@@ -1712,7 +1564,7 @@ def draw_beat(draw, t, w, h, np, math):
 
 - `draw` is a PIL ImageDraw.Draw object on a transparent RGBA layer already sized to the canvas. Use draw.line(...), draw.ellipse(...), draw.polygon(...), draw.rectangle(...), draw.rounded_rectangle(...), draw.text(...), draw.arc(...), draw.pieslice(...) -- anything PIL's ImageDraw supports EXCEPT draw.textsize() (removed from modern Pillow -- use the text_size() helper below instead).
 - `draw_emoji(emoji_char, cx, cy, size)` is also available in scope -- call it directly, don't redefine it.
-- `get_font(size)` returns a ready-to-use font object at the given pixel size -- call this whenever draw.text() needs a specific size. There is no other way to get a font: `ImageFont` is NOT available in scope (don't reference it), and there is no font file path you can load yourself -- get_font(size) is the only way.
+- `get_font(size, style="bold")` returns a ready-to-use font object. Two styles available: "bold" (clean modern sans, good for general numbers/labels) and "black" (a heavier, condensed, more dramatic display face -- good for hook-style headline words or high-intensity warning beats). Pick whichever weight matches this beat's tone, don't default to the same one every time. There is no other way to get a font: `ImageFont` is NOT available in scope.
 - `text_size(text, font)` returns (width, height) in pixels for a string rendered with a given font -- use this for centering/sizing text, not draw.textsize() which doesn't exist in this Pillow version.
 - `t` is the number of seconds elapsed since THIS beat started (0.0 at beat start). Use it to animate -- compute positions/sizes/opacity as a function of t.
 - `w`, `h` are the canvas pixel dimensions ({OUTPUT_WIDTH}x{OUTPUT_HEIGHT}).
@@ -1724,6 +1576,14 @@ No imports, no file/network access, no `open`, `exec`, `eval`, `os`, `sys`. Code
 
 === COMPLETENESS ===
 Every `for`, `if`, `while`, `else`, `elif` must have a real statement on the next line(s), properly indented -- never leave a block with only a comment and no code, and never leave a block empty. The ENTIRE function body must be one single, complete, syntactically valid Python function with nothing left unfinished -- this is checked mechanically before your code ever runs, and an incomplete block fails that check and the whole beat renders blank, wasting the beat entirely. If you're unsure a more complex composition will come out complete and correct, write a simpler one you're confident is fully correct instead.
+
+=== NO DOUBLE-DRAWING ===
+Each frame is a SINGLE independent call to your function at one value of t -- draw.text() and other draw calls do not "replace" what's at that position, they layer on top. If your code computes a displayed number/label at more than one point in the function and draws it more than once (e.g. once for a settling animation and again for a "final" state), both will be visible simultaneously and overlap into unreadable garbled text. Compute each value ONCE per call, decide its current state from t, and draw it exactly ONCE.
+
+=== COMMON MISTAKES THAT HAVE ACTUALLY HAPPENED -- AVOID THESE SPECIFICALLY ===
+- draw.text(xy, text, font, fill=color) -- font is already the 3rd POSITIONAL argument in PIL's signature; passing it positionally AND then also writing fill= is fine, but writing draw.text(xy, text, color) and ALSO font= afterward, or duplicating any argument, throws "got multiple values for argument". Pass each argument exactly once, in this order: draw.text((x, y), text, font=get_font(size), fill=(r,g,b,a)).
+- Pillow's drawing calls require integer pixel coordinates in many cases -- if you compute a coordinate with division (w / 2) it's a float; wrap coordinates in int(...) before passing them to draw.ellipse/rectangle/line/etc, especially anything derived from a fraction or a range/index.
+- For draw.ellipse/draw.rectangle, the box is [x0, y0, x1, y1] and REQUIRES x1 >= x0 and y1 >= y0. If you compute a box from a center point plus a radius/size that can shrink toward or past zero as t changes, clamp the radius/size to a minimum (e.g. max(1, size)) BEFORE computing x0/y0/x1/y1, so you never accidentally produce a box where the second corner is above/left of the first.
 
 === QUALITY BAR ===
 - Smooth animation: compute continuous functions of t (easing, sine waves, interpolation), not instant jumps, unless an instant snap is specifically the right feeling.
@@ -1747,10 +1607,6 @@ Return ONLY valid JSON:
 
 The "code" field is a STRING containing the full function definition, with \n for newlines, valid Python, nothing else in that string (no markdown fences, no commentary). If a beat genuinely warrants no visual (pure transition, no concrete content), set "code" to an empty string "" rather than inventing decoration -- this is a valid and often correct choice, not a failure."""
 
-    # Same dynamic scaling as Call 2, but with a lower max -- a full
-    # draw_beat function (real Python, often 20-60 lines) is more
-    # output tokens per beat than Call 2's compact element JSON, so a
-    # batch of 10 here risks the 16384 output-token ceiling sooner.
     BATCH_SIZE = dynamic_batch_size(len(beats), min_size=3, max_size=6)
     all_results = []
     batches = [beats[i:i+BATCH_SIZE] for i in range(0, len(beats), BATCH_SIZE)]
@@ -1839,10 +1695,6 @@ def validate_visual_code(beat_codes: list, beats: list) -> list:
     return beat_codes
 
 
-
-# ============================================================
-# VALIDATION PASS - validates scene compositions
-# ============================================================
 def _ensure_bright_color(hex_color: str, min_luminance: float = 130.0) -> str:
     """If a color is too dark to read against the near-black procedural
     background, brighten it. White and the brand yellow (#FBC02D) pass
@@ -1857,16 +1709,13 @@ def _ensure_bright_color(hex_color: str, min_luminance: float = 130.0) -> str:
     except Exception:
         return "#FFFFFF"
 
-    # Perceived luminance (standard weights)
     luminance = 0.299 * r + 0.587 * g + 0.114 * b
     if luminance >= min_luminance:
         return hex_color
 
     if luminance < 1.0:
-        # Pure/near black -- no hue to preserve, just go white
         return "#FFFFFF"
 
-    # Scale up toward white, preserving hue/ratio
     scale = min_luminance / luminance
     r = min(255, int(r * scale))
     g = min(255, int(g * scale))
@@ -1883,7 +1732,6 @@ def validate_decisions(scenes: list, beats: list) -> list:
             scenes[scene_pos] = {"beat_index": scene_pos, "elements": []}
             continue
 
-        # Use enumeration position -- ignore GPT's beat_index
         scene["beat_index"] = scene_pos
         beat = beats[scene_pos] if scene_pos < len(beats) else {}
         beat_text = beat.get("text", "").strip().lower()
@@ -1902,24 +1750,20 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 continue
             etype = el.get("type", "text")
 
-            # Validate TEXT content against beat text
             if etype == "text":
                 content = (el.get("content") or "").strip()
                 if not content:
                     continue
-                # Strip punctuation, lowercase for comparison
                 check_words = [w.strip('.,!?;:\'"()[]- ').lower()
                                for w in content.split()
                                if len(w.strip('.,!?;:\'"()[]- ')) > 2]
                 if check_words and beat_words:
                     matches = sum(1 for w in check_words if w in beat_words)
                     if matches == 0 and len(check_words) > 0:
-                        # Pure hallucination -- skip element
                         print(f"  ⚠ Scene {scene_pos}: dropped hallucinated text '{content[:30]}'")
                         fixed += 1
                         continue
 
-                # Default text properties
                 el.setdefault("x", 0.5)
                 el.setdefault("y", 0.5)
                 el.setdefault("anchor", "center")
@@ -1933,9 +1777,6 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el.setdefault("anim_duration", 0.15)
                 el.setdefault("effect", "none")
 
-                # Enforce minimum brightness -- against the dark procedural
-                # background, a muted/dark fill color (e.g. dark grey, olive)
-                # combined with a black outline becomes nearly invisible.
                 el["color"] = _ensure_bright_color(el["color"])
 
             elif etype == "line":
@@ -1976,9 +1817,6 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el.setdefault("anim_duration", 0.2)
 
             elif etype == "number_counter":
-                # target_value is required and must be numeric -- if GPT
-                # sent something unparseable, drop the element entirely
-                # rather than render garbage.
                 try:
                     el["target_value"] = float(el.get("target_value", 0))
                 except (TypeError, ValueError):
@@ -2008,7 +1846,7 @@ def validate_decisions(scenes: list, beats: list) -> list:
                     print(f"  ⚠ Scene {scene_pos}: dropped grid with empty glyph")
                     fixed += 1
                     continue
-                el["glyph"] = glyph[:3]  # keep cells readable -- short glyphs only
+                el["glyph"] = glyph[:3]
                 el.setdefault("rows", 4)
                 el.setdefault("cols", 10)
                 el.setdefault("cell_size", 60)
@@ -2020,7 +1858,6 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el.setdefault("start_offset", 0.0)
                 el.setdefault("duration", None)
                 el["color"] = _ensure_bright_color(el["color"])
-                # Cap total cells so the grid never becomes visual noise
                 rows = max(1, min(int(el.get("rows", 4)), 10))
                 cols = max(1, min(int(el.get("cols", 10)), 16))
                 while rows * cols > 80:
@@ -2031,23 +1868,19 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el["rows"], el["cols"] = rows, cols
 
             else:
-                # Unknown type, skip
                 continue
 
-            # Clamp coordinates to safe range
             for k in ("x", "y", "x1", "y1", "x2", "y2", "w", "h", "radius"):
                 if k in el and isinstance(el[k], (int, float)):
                     el[k] = max(0.0, min(1.0, float(el[k])))
 
             cleaned.append(el)
 
-        # HARD CAP: max 4 elements per scene
         if len(cleaned) > 4:
             print(f"  ⚠ Scene {scene_pos}: trimmed {len(cleaned)} elements to 4")
             cleaned = cleaned[:4]
             fixed += 1
 
-        # AUTO-STAGGER: if all text elements have start_offset 0.0, spread them out
         text_els = [e for e in cleaned if e.get("type", "text") == "text" and isinstance(e.get("content", ""), str)]
         all_zero = all(float(e.get("start_offset", 0.0)) < 0.05 for e in text_els)
         if all_zero and len(text_els) > 1:
@@ -2063,19 +1896,11 @@ def validate_decisions(scenes: list, beats: list) -> list:
     return scenes
 
 
-
-# ============================================================
-# SCENE-BASED RENDERER v5
-# GPT outputs scene compositions (lists of elements).
-# This renderer executes any combination of text/line/rect/circle
-# with per-element animation and timing.
-# ============================================================
 def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                                whisper_segments: list, output_path: str,
                                beat_visual_codes: list = None):
     print(f"🎨 Scene renderer v5: {len(scenes)} scenes...")
     beat_visual_codes = beat_visual_codes or []
-    # Quick lookup: beat_index -> generated code string (empty = nothing to render)
     _visual_code_by_beat = {}
     for entry in beat_visual_codes:
         if isinstance(entry, dict):
@@ -2094,9 +1919,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     if not os.path.exists(video_path):
         raise Exception(f"Video not found: {video_path}")
 
-    # ── basic helpers ──────────────────────────────────────────────
     def load_pil_font(path, size, weight="black"):
-        # weight selects between Black / ExtraBold / Bold
         try:
             if weight == "regular":
                 p = FONT_BOLD or path
@@ -2139,7 +1962,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         merged = Image.alpha_composite(pil, layer)
         return to_frame(merged)
 
-    # ── video metadata ─────────────────────────────────────────────
     def _ffprobe_dur(path):
         try:
             r = subprocess.run(['ffprobe','-v','error','-show_entries','format=duration',
@@ -2151,7 +1973,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     TARGET_FPS = 30.0
     vid_dur = _ffprobe_dur(video_path)
 
-    # Transcode to CFR for predictable frame timing
     cfr_video = output_path.replace(".mp4", "_cfr_tmp.mp4")
     subprocess.run(['ffmpeg','-y','-i',video_path,
                     '-vf',f'fps={TARGET_FPS:.0f}',
@@ -2159,7 +1980,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                     '-an', cfr_video],
                    capture_output=True, check=True)
 
-    # ── Build ordered Whisper word list — exact timestamps in speech order ──
     whisper_word_list = []
     for seg in whisper_segments:
         for we in seg.get('words', []):
@@ -2191,18 +2011,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
 
     def clamp(v, lo, hi): return max(lo, min(v, hi))
 
-    # ── Build flat timeline — pure Whisper, scoped per beat ─────────────────
-    #
-    # SINGLE-WORD BEAT: 1 text element → IMPACT mode
-    #   - Appears at exact Whisper word start
-    #   - Lasts up to 1.0s with bzzt flicker, but never overlaps the next beat
-    #
-    # MULTI-WORD BEAT: multiple text elements → CAPTION mode
-    #   - Each word appears at its Whisper timestamp
-    #   - Disappears when next word is spoken
-    #   - For multi-word content (e.g. "THE WORLD"), anim_end accounts for
-    #     the LAST word's end time, not just the first word's start
-    #
     timeline = []
     for scene_pos, scene in enumerate(scenes):
         beat = beats[scene_pos] if scene_pos < len(beats) else {}
@@ -2221,12 +2029,9 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         text_els  = [e for e in elements if e.get("type", "text") == "text"]
         other_els = [e for e in elements if e.get("type", "text") != "text"]
 
-        # Whisper words available in this beat's time window (beat-scoped to
-        # avoid matching the wrong occurrence of common words like THE/IS/A)
         beat_words = get_beat_whisper_words(beat_start, beat_end)
 
-        # Resolve each text element to Whisper timestamps within this beat
-        resolved = []  # [(whisper_start, whisper_end, el)]
+        resolved = []
         used_indices = set()
         for el in text_els:
             raw = (el.get("content") or "").strip()
@@ -2242,9 +2047,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                 el_start = first_match['start']
                 el_end   = first_match['end']
 
-                # If content has multiple words, extend el_end to cover the
-                # LAST word's Whisper end time too (so "THE WORLD" stays
-                # visible until "WORLD" is actually spoken, not just "THE")
                 if len(words_in_content) > 1:
                     available2 = [w for i, w in enumerate(beat_words) if i not in used_indices]
                     last_match = match_word_in_list(words_in_content[-1], available2)
@@ -2255,7 +2057,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
 
                 resolved.append((el_start, el_end, el))
             else:
-                # No Whisper match — fallback to beat_start
                 resolved.append((beat_start, beat_end, el))
 
         resolved.sort(key=lambda x: x[0])
@@ -2265,16 +2066,12 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
             anim_start = clamp(ws, 0.0, vid_dur - 0.1)
 
             if is_single_word:
-                # IMPACT: up to 1.0s with bzzt flicker, but never bleed into
-                # the next beat's start time
                 impact_end = anim_start + 1.0
                 if next_beat_start is not None:
                     impact_end = min(impact_end, next_beat_start)
                 anim_end = clamp(impact_end, anim_start + 0.1, vid_dur)
                 impact = True
             else:
-                # CAPTION: hold until next word's Whisper start, but at least
-                # until this element's own Whisper end time (covers multi-word content)
                 min_end = max(we_t, anim_start + 0.08)
                 if i + 1 < len(resolved):
                     anim_end = clamp(max(resolved[i + 1][0], min_end), anim_start + 0.08, vid_dur)
@@ -2302,10 +2099,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     timeline.sort(key=lambda x: x["start"])
     print(f"  📊 Timeline: {len(timeline)} elements")
 
-    # ── Visual-code timeline -- one entry per beat that has generated
-    # code, scoped to that beat's real audio window (start_time to the
-    # earlier of end_time / next beat's start). draw_beat receives t
-    # relative to the beat's own start (0.0 at beat start).
     visual_code_timeline = []
     for scene_pos, beat in enumerate(beats):
         code = _visual_code_by_beat.get(scene_pos, "")
@@ -2322,14 +2115,8 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     visual_code_timeline.sort(key=lambda x: x["start"])
     print(f"  🎬 Visual code timeline: {len(visual_code_timeline)} beats with generated visuals")
 
-    # Render every beat's generated-code frames UP FRONT, in parallel,
-    # before the main loop starts -- see prerender_all_beat_visuals.
-    # Returns {beat_index: numpy array of shape (n_frames, h, w, 4)} at
-    # INTERNAL_VISUAL_FPS; beats absent from this dict failed entirely
-    # and render blank in the main loop below.
     prerendered_beats = prerender_all_beat_visuals(visual_code_timeline, OUTPUT_WIDTH, OUTPUT_HEIGHT)
 
-    # ── Frame-by-frame render ─────────────────────────────────────
     cap = cv2.VideoCapture(cfr_video)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -2344,7 +2131,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     frame_idx = 0
     prev_pct = -1
 
-    # ── Element drawing functions ──────────────────────────────────
     def get_anim_progress(el_t, start, end, anim_dur):
         """Return (entrance_progress, exit_progress) both 0..1.
         entrance_progress: 0=not started, 1=fully appeared
@@ -2353,19 +2139,16 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         if anim_dur <= 0:
             anim_dur = 0.001
         entrance = clamp((el_t - start) / anim_dur, 0.0, 1.0)
-        # No exit fade by default - just snap out at end
         return entrance
 
     def draw_text_element(layer, el, el_t, anim_t):
         """Draw a TEXT element with animation."""
         draw = ImageDraw.Draw(layer)
-        content = el.get("content", "").upper().strip()  # Always uppercase for Anton
+        content = el.get("content", "").upper().strip()
         if not content:
             return
         x_pct = float(el.get("x", 0.5))
         y_pct = float(el.get("y", 0.5))
-        # Hard cap: 130px max for sentence words, 160px for single-word impact,
-        # 220px for number_counter values (numbers/currency need to read big)
         raw_size = int(el.get("size", 90))
         word_count = len(content.split())
         if el.get("_is_counter"):
@@ -2389,7 +2172,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
             tw = size * len(content) * 0.55
             th = size
 
-        # Compute base position
         target_x = int(OUTPUT_WIDTH * x_pct)
         target_y = int(OUTPUT_HEIGHT * y_pct)
         if anchor == "center":
@@ -2405,14 +2187,12 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
             base_x = target_x - tw // 2
             base_y = target_y - th // 2
 
-        # Clamp to screen with padding so text never goes off-edge
         pad = 30
         max_x = OUTPUT_WIDTH - tw - pad
         max_y = OUTPUT_HEIGHT - th - pad
         base_x = max(pad, min(base_x, max_x))
         base_y = max(pad, min(base_y, max_y))
 
-        # Apply entrance animation
         draw_x, draw_y = base_x, base_y
         alpha = 1.0
         scale = 1.0
@@ -2443,9 +2223,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         elif anim == "none":
             alpha = 1.0
 
-        # Effects (applied during display)
         if effect == "flicker":
-            # Blink during first 0.3s of element life
             if el_t - 0 < 0.3:
                 frame_no = int(el_t * 30)
                 if frame_no % 2 == 1:
@@ -2455,7 +2233,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
             draw_x += _r.randint(-3, 3)
             draw_y += _r.randint(-3, 3)
 
-        # Re-render text at scaled size if scale != 1.0
         render_font = font
         if abs(scale - 1.0) > 0.02:
             new_size = max(20, int(size * scale))
@@ -2468,7 +2245,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                 draw_y = base_y + (th - th2) // 2
             except: pass
 
-        # Clamp draw position AFTER animation offsets (slide/shake can push text off-screen)
         draw_x = max(pad, min(draw_x, OUTPUT_WIDTH - tw - pad))
         draw_y = max(pad, min(draw_y, OUTPUT_HEIGHT - th - pad))
 
@@ -2476,7 +2252,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         if a_int < 5:
             return
 
-        # Draw outline (multiple offsets for thick outline)
         if outline > 0:
             for ox in range(-outline, outline + 1):
                 for oy in range(-outline, outline + 1):
@@ -2485,7 +2260,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                             continue
                         draw.text((draw_x + ox, draw_y + oy), content,
                                   font=render_font, fill=(0, 0, 0, a_int))
-        # Draw fill
         draw.text((draw_x, draw_y), content, font=render_font,
                   fill=(color[0], color[1], color[2], a_int))
 
@@ -2603,7 +2377,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         suffix = el.get("suffix", "")
 
         progress = clamp(el_t / count_dur, 0.0, 1.0)
-        # Ease-out so the count settles rather than stopping abruptly
         eased = 1.0 - (1.0 - progress) ** 3
         current_value = count_from + (target - count_from) * eased
         content = _format_counter_value(current_value, decimals, prefix, suffix)
@@ -2611,8 +2384,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         synthetic = dict(el)
         synthetic["type"] = "text"
         synthetic["content"] = content
-        # Counter elements should not be re-uppercased/word-counted like
-        # spoken captions -- force single-word sizing path (no cap at 110px)
         synthetic["_is_counter"] = True
         draw_text_element(layer, synthetic, el_t, 1.0 if progress > 0 else anim_t)
 
@@ -2689,7 +2460,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         frame = apply_vignette(frame)
         frame = apply_warm_grade(frame)
 
-        # Generated visual code -- pre-rendered, just a dict lookup now.
         active_code_item = next((item for item in visual_code_timeline
                                   if item["start"] <= t < item["end"]), None)
         if active_code_item is not None:
@@ -2698,13 +2468,9 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                 code_layer = Image.fromarray(arr)
                 frame = composite_layer(frame, code_layer)
 
-        # Find all elements active at time t
         raw_active = [item for item in timeline
                       if item["start"] <= t < item["end"]]
 
-        # Deduplicate: if two elements share the same content + near-same x/y position,
-        # keep only the one whose start time is closest to t (most recently activated).
-        # This prevents "WE WE" doubles when GPT repeats a word across adjacent beats.
         seen_keys = {}
         for item in sorted(raw_active, key=lambda x: x["start"], reverse=True):
             el = item["el"]
@@ -2719,15 +2485,13 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         active = list(seen_keys.values())
 
         if active:
-            # Slight darkening overlay when text is on screen
             frame = cv2.addWeighted(frame, 0.82, np.zeros_like(frame), 0.18, 0)
 
-            # Build composite layer
             layer = Image.new('RGBA', (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
 
             for item in active:
                 el    = item["el"]
-                el_t  = t - item["start"]   # seconds since element appeared
+                el_t  = t - item["start"]
                 el_dur = max(item["end"] - item["start"], 0.01)
                 impact = item.get("impact", False)
                 etype  = el.get("type", "text")
@@ -2740,7 +2504,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                     )
                     in_off = (0.08 <= el_t < 0.16) or (0.24 <= el_t < 0.32)
                     if in_off:
-                        continue  # skip drawing — element is "off"
+                        continue
                     if el_t >= 0.40:
                         fade_window = 0.15
                         time_left = el_dur - el_t
@@ -2749,7 +2513,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                         else:
                             anim_t = 1.0
                     else:
-                        anim_t = 1.0  # instant full alpha during flashes
+                        anim_t = 1.0
                     try:
                         draw_text_element(layer, el, el_t, anim_t)
                     except Exception as e:
@@ -2883,7 +2647,6 @@ class FinanceGenerator:
         sorted_cats = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         top = [self.broll_dirs[c] for c, s in sorted_cats if s > 0 and c in self.broll_dirs]
 
-        # FIX 2: Filter to only folders that actually exist and have clips
         valid_top = []
         for folder in top:
             files = self.get_all_files_from_dir(folder)
@@ -2893,7 +2656,6 @@ class FinanceGenerator:
                 print(f"  ⚠ Skipping empty/missing broll folder: {folder}")
 
         if not valid_top:
-            # Fallback: scan ALL configured broll dirs and use any that have clips
             print(f"  ⚠ No keyword-matched folders had clips -- scanning all broll dirs...")
             for folder in self.broll_dirs.values():
                 files = self.get_all_files_from_dir(folder)
@@ -2912,7 +2674,6 @@ class FinanceGenerator:
 
     def create_segment_plan(self, duration: float, beats: list, top_categories: list) -> list:
         segments = []
-        # Build complete pool of all folders that have clips
         all_folders = []
         for folder in self.broll_dirs.values():
             if self.get_all_files_from_dir(folder):
@@ -2920,12 +2681,10 @@ class FinanceGenerator:
         if not all_folders:
             raise Exception("No broll clips found in any folder.")
 
-        # Per-folder clip pools with used tracking
         folder_pools = {}
         for folder in all_folders:
             folder_pools[folder] = list(self.get_all_files_from_dir(folder))
 
-        # Beat category → preferred folder (best-effort, falls back to rotation)
         broll_cat_to_folder = {
             'space':   self.broll_dirs.get('space',   'space_vids'),
             'ancient': self.broll_dirs.get('ancient', 'ancient_ruins_vids'),
@@ -2934,7 +2693,6 @@ class FinanceGenerator:
             'temple':  self.broll_dirs.get('temple',  'temple_vids'),
         }
 
-        # Per-folder shuffle indices so we cycle without repeating
         folder_idx = {f: 0 for f in all_folders}
         for f in all_folders:
             random.shuffle(folder_pools[f])
@@ -2945,11 +2703,9 @@ class FinanceGenerator:
 
         for i in range(n_segs):
             seg_dur = float(beats[i].get('clip_duration', base_dur)) if i < len(beats) else base_dur
-            # Pure round-robin across all folders -- guaranteed variety
             target_folder = all_folders[folder_rot % len(all_folders)]
             folder_rot += 1
 
-            # Pick next clip from folder, cycling
             pool = folder_pools[target_folder]
             idx  = folder_idx[target_folder]
             if idx >= len(pool):
@@ -3009,7 +2765,6 @@ class FinanceGenerator:
             vf += [f"scale=-2:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase",
                    f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}"]
 
-        # fps=30 MUST come first to convert VFR → CFR before any other filter
         vf = [f"fps={fps}"] + vf
         vf += ["eq=brightness=0.02:contrast=1.05:saturation=1.1", "format=yuv420p"]
         cmd += ['-vf', ','.join(vf), '-c:v', 'libx264', '-preset', 'ultrafast',
@@ -3112,8 +2867,6 @@ class FinanceGenerator:
         try:
             beat_visual_codes = generate_visual_code(beats, topic)
         except Exception as e:
-            # If the whole call fails, fall back to no generated visuals
-            # rather than failing the entire video.
             print(f"  ⚠ Visual code generation failed, continuing without it: {e}")
             beat_visual_codes = []
 
