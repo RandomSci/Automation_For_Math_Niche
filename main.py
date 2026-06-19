@@ -3283,7 +3283,14 @@ MANIM_FORBIDDEN_NAMES = {
     "os", "sys", "subprocess", "socket", "requests", "shutil",
     "globals", "locals", "vars", "input", "breakpoint", "exit", "quit",
     "MathTex", "Tex", "SingleStringMathTex", "DecimalNumber",
+    "MarkupText", "Integer", "Variable", "BulletedList", "Title", "Paragraph",
+    "BarChart",
 }
+MANIM_FORBIDDEN_PATTERNS = [
+    r'\bMathTex\b', r'\bTex\b', r'\bSingleStringMathTex\b', r'\bDecimalNumber\b',
+    r'\bMarkupText\b', r'\bInteger\b', r'\bVariable\b', r'\bBulletedList\b',
+    r'\bTitle\b', r'\bParagraph\b', r'\bBarChart\b',
+]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
 
 
@@ -3312,6 +3319,11 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
     Rejecting these names here is instant and free, instead of paying
     for a manim subprocess spin-up just to watch it crash on a class
     GPT was never going to be able to use successfully anyway."""
+    for pattern in MANIM_FORBIDDEN_PATTERNS:
+        if re.search(pattern, code):
+            bare = pattern.replace(r'\b', '')
+            return False, f"regex pre-scan: forbidden name '{bare}' found in code"
+
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -3681,7 +3693,8 @@ def generate_manim_chunk_code(chunks: list, topic: str) -> list:
 - The ONLY imports allowed in your own code are `manim`, `numpy`, `math` -- nothing else, ever.
 - Never reference: open, exec, eval, compile, __import__, os, sys, subprocess, socket, requests, shutil, globals, locals, vars, input, breakpoint, exit, quit, or any dunder attribute.
 - Never use MathTex, Tex, SingleStringMathTex, or DecimalNumber -- this environment has no working LaTeX toolchain and all four route through it, which crashes the render every time. For ALL text and numbers, including ones that animate or count up, use only `Text(...)`. For a number that needs to animate (counting up/down, or tracking a ValueTracker), do NOT use DecimalNumber -- instead use `always_redraw`: `counter = always_redraw(lambda: Text(f"${tracker.get_value():,.0f}", font_size=120, color="#F5F7FA"))`, `self.add(counter)`, then `self.play(tracker.animate.set_value(34000), run_time=2)`. This gives the same live-updating effect with zero LaTeX dependency.
-- Total run_time across your self.play()/self.wait() calls should sum to approximately the chunk's given duration -- a downstream step retimes the clip to land on the exact target regardless, but the closer your own timing is, the less that retiming has to compress or stretch your animation.
+- Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart. Use Text() and the fm_* library instead.
+- HARD TIMING RULE: the sum of ALL self.play(run_time=X) + self.wait(X) values in your construct() must equal the chunk's given duration. Chunks that render more than 45% longer than target are rejected and replaced with a blank filler. The most common cause of rejection is calling an fm_animate_* function (which already consumes the full duration internally) AND THEN also adding self.wait() or another self.play() on top -- this doubles the length and guarantees rejection. One fm_animate_* call = the entire construct(). If you use raw Manim instead, your play/wait budget is the chunk duration, spend it all, do not go over.
 
 === FRAME, ASPECT RATIO, SAFE MARGINS ===
 Output is 16:9, 1920x1080, 30fps. Always read `config.frame_width` and `config.frame_height` at runtime instead of hardcoding numbers -- they are already configured correctly for this aspect ratio. Keep every object's resting position within roughly `config.frame_width * 0.42` of horizontal center and `config.frame_height * 0.42` of vertical center; anything closer to the true edge risks clipping on some players/crops. ORIGIN is frame center.

@@ -88,7 +88,10 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
     counter = always_redraw(_num)
     lbl = Text(label_text, font_size=label_size, color=accent_color)
     lbl.next_to(position, DOWN, buff=0.55)
-    scene.add(fm_glow_around(counter, accent_color), lbl)
+    glow_bg = Circle(radius=1.1, fill_opacity=0.07, stroke_width=0)
+    glow_bg.set_fill(accent_color)
+    glow_bg.move_to(position)
+    scene.add(glow_bg, counter, lbl)
 
     anim_t = max(min(duration * 0.78, duration - 0.25), 0.1)
     hold_t = max(duration - anim_t, 0.05)
@@ -99,47 +102,70 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
 
 def fm_animate_bar_chart(scene, values, names, colors=None,
                           duration=3.5, title_text=""):
-    """Professional BarChart using Manim's built-in (real tick marks + axes).
-    Auto-ranges y-axis. Handles all animation."""
+    """Manual bar chart: Rectangle + Text only, zero BarChart/Tex dependency.
+    Real baseline + y-axis. Auto-ranges. Handles all animation."""
     if colors is None:
         colors = [BRAND_GREEN, BRAND_GOLD, BRAND_RED, BRAND_WHITE]
     bar_colors = [colors[i % len(colors)] for i in range(len(values))]
 
+    n       = len(values)
     max_v   = max(abs(v) for v in values) if values else 1
-    y_step  = max(max_v / 4, 1)
-    y_top   = max_v * 1.28
+    chart_h = 4.2
+    bar_w   = min(1.6, 9.5 / max(n, 1))
+    spacing = bar_w * 1.62
+    total_w = (n - 1) * spacing
+    y_scale = chart_h / max(max_v * 1.28, 1.0)
+    base_y  = -chart_h / 2 - 0.15
 
-    chart = BarChart(
-        values=values,
-        bar_names=names,
-        y_range=[0, y_top, y_step],
-        bar_colors=bar_colors,
-        y_length=4.6,
-        x_length=min(len(values) * 1.9 + 0.8, 11.5),
-        bar_width=0.68,
-    )
-    chart.move_to(ORIGIN + UP * 0.25)
+    baseline = Line([-total_w / 2 - 0.45, base_y, 0], [total_w / 2 + 0.45, base_y, 0])
+    baseline.set_stroke(color=BRAND_GRAY, width=2.0, opacity=0.48)
+    y_axis = Line([-total_w / 2 - 0.45, base_y, 0],
+                   [-total_w / 2 - 0.45, base_y + chart_h + 0.35, 0])
+    y_axis.set_stroke(color=BRAND_GRAY, width=2.0, opacity=0.48)
+
+    bars       = VGroup()
+    val_labels = VGroup()
+    cat_labels = VGroup()
+
+    for i, (v, name, c) in enumerate(zip(values, names, bar_colors)):
+        x     = -total_w / 2 + i * spacing
+        bar_h = max(abs(v) * y_scale, 0.06)
+        bar   = Rectangle(width=bar_w, height=bar_h)
+        bar.set_fill(c, opacity=0.92)
+        bar.set_stroke(c, width=1.5, opacity=0.55)
+        bar.move_to([x, base_y + bar_h / 2, 0])
+        bars.add(bar)
+
+        val_str = f"{int(v):,}" if isinstance(v, int) else f"{v:.1f}"
+        val_lbl = Text(val_str, font_size=26, color=c, weight=BOLD)
+        val_lbl.next_to(bar, UP, buff=0.1)
+        val_labels.add(val_lbl)
+
+        cat_lbl = Text(name, font_size=20, color=BRAND_GRAY)
+        cat_lbl.next_to(bar, DOWN, buff=0.15)
+        cat_labels.add(cat_lbl)
+
+    chart_group = VGroup(baseline, y_axis, bars, val_labels, cat_labels)
+    chart_group.move_to(ORIGIN + UP * 0.18)
 
     if title_text:
-        title = Text(title_text, font_size=30, color=BRAND_GRAY)
-        title.next_to(chart, UP, buff=0.28)
-        scene.add(title)
+        ttl = Text(title_text, font_size=30, color=BRAND_GRAY)
+        ttl.next_to(chart_group, UP, buff=0.22)
+        scene.add(ttl)
 
-    val_labels = VGroup()
-    for bar, v, c in zip(chart.bars, values, bar_colors):
-        lbl = Text(
-            f"{int(v):,}" if isinstance(v, int) else f"{v:.1f}",
-            font_size=26, color=c, weight=BOLD,
-        )
-        lbl.next_to(bar, UP, buff=0.1)
-        val_labels.add(lbl)
-
-    grow_t = max(min(duration * 0.72, duration - 0.35), 0.1)
-    hold_t = max(duration - grow_t, 0.1)
-    scene.play(Create(chart), run_time=grow_t * 0.45, rate_func=smooth)
-    scene.play(Write(val_labels), run_time=grow_t * 0.55, rate_func=smooth)
+    scene.add(baseline, y_axis, cat_labels)
+    grow_t = max(min(duration * 0.70, duration - 0.38), 0.1)
+    hold_t = max(duration - grow_t, 0.05)
+    scene.play(
+        LaggedStart(*[GrowFromEdge(b, DOWN) for b in bars], lag_ratio=0.14),
+        run_time=grow_t * 0.62, rate_func=smooth,
+    )
+    scene.play(
+        LaggedStart(*[FadeIn(l) for l in val_labels], lag_ratio=0.1),
+        run_time=grow_t * 0.38, rate_func=smooth,
+    )
     scene.wait(hold_t)
-    return chart, val_labels
+    return bars, val_labels
 
 
 def fm_animate_gauge(scene, value, max_val, label_text,
