@@ -993,7 +993,7 @@ Return ONLY valid JSON:
     def _run_batch(batch_idx, batch_lines):
         print(f"  🎭 Call 1 chunk {batch_idx+1}/{len(batches)}: {len(batch_lines)} segments...")
         response = _call_with_retry(lambda: gpt4o_call(client,
-            model="gpt-4o",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": _build_beats_batch_prompt(topic_hint, batch_lines, batch_idx == 0)}
@@ -1260,7 +1260,7 @@ Return ONLY valid JSON:
         start_beat = batch_idx * BATCH_SIZE
         print(f"  🎨 Batch {batch_idx+1}/{len(batches)}: beats {start_beat}-{start_beat+len(batch)-1}...")
         response = _call_with_retry(lambda: gpt4o_call(client,
-            model="gpt-4o",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": _build_batch_prompt(topic, batch)}
@@ -1856,7 +1856,7 @@ The "code" field is a STRING containing the full function definition, with \n fo
         start_beat = batch_idx * BATCH_SIZE
         print(f"  🎬 Visual-code batch {batch_idx+1}/{len(batches)}: beats {start_beat}-{start_beat+len(batch)-1}...")
         response = _call_with_retry(lambda: gpt4o_call(client,
-            model="gpt-4o",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": _build_visual_code_batch_prompt(batch)}
@@ -3284,12 +3284,13 @@ MANIM_FORBIDDEN_NAMES = {
     "globals", "locals", "vars", "input", "breakpoint", "exit", "quit",
     "MathTex", "Tex", "SingleStringMathTex", "DecimalNumber",
     "MarkupText", "Integer", "Variable", "BulletedList", "Title", "Paragraph",
-    "BarChart",
+    "BarChart", "Axes", "NumberLine", "NumberPlane", "SVGMobject", "ComplexPlane", "PolarPlane",
 }
 MANIM_FORBIDDEN_PATTERNS = [
     r'\bMathTex\b', r'\bTex\b', r'\bSingleStringMathTex\b', r'\bDecimalNumber\b',
     r'\bMarkupText\b', r'\bInteger\b', r'\bVariable\b', r'\bBulletedList\b',
     r'\bTitle\b', r'\bParagraph\b', r'\bBarChart\b',
+    r'\bAxes\b', r'\bNumberLine\b', r'\bNumberPlane\b', r'\bSVGMobject\b', r'\bComplexPlane\b', r'\bPolarPlane\b',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
 
@@ -3693,7 +3694,10 @@ def generate_manim_chunk_code(chunks: list, topic: str) -> list:
 - The ONLY imports allowed in your own code are `manim`, `numpy`, `math` -- nothing else, ever.
 - Never reference: open, exec, eval, compile, __import__, os, sys, subprocess, socket, requests, shutil, globals, locals, vars, input, breakpoint, exit, quit, or any dunder attribute.
 - Never use MathTex, Tex, SingleStringMathTex, or DecimalNumber -- this environment has no working LaTeX toolchain and all four route through it, which crashes the render every time. For ALL text and numbers, including ones that animate or count up, use only `Text(...)`. For a number that needs to animate (counting up/down, or tracking a ValueTracker), do NOT use DecimalNumber -- instead use `always_redraw`: `counter = always_redraw(lambda: Text(f"${tracker.get_value():,.0f}", font_size=120, color="#F5F7FA"))`, `self.add(counter)`, then `self.play(tracker.animate.set_value(34000), run_time=2)`. This gives the same live-updating effect with zero LaTeX dependency.
-- Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart. Use Text() and the fm_* library instead.
+- Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, Axes, NumberLine, NumberPlane, SVGMobject, ComplexPlane, PolarPlane. Use Text() and the fm_* library instead. For line charts use fm_animate_line_chart, for bar charts use fm_animate_bar_chart. For ANY icon or symbol (house, person, clock, dollar sign, warning triangle, checkmark) use fm_icon(name, size, color) — never SVGMobject, never ImageMobject, never any class that loads external files.
+- RESTRUCTURE_MOBJECTS WARNING: never call self.add() on a fm_* result AND ALSO animate its submobjects separately. The returned VGroup must be treated as an atomic unit. Wrong: `card = fm_card(...); self.add(card); self.play(FadeIn(card[0]))`. Correct: `card = fm_card(...); self.play(FadeIn(card))`. Accessing submobjects of fm_* returns (card[0], cards[1], etc.) and adding them separately to the scene causes Manim's restructure_mobjects crash.
+- GAUGE RULE: for ANY visual showing a meter, dial, speedometer, runway, or sweep-arc gauge, you MUST use fm_animate_gauge. Never build a custom Line needle or Arrow pointer that rotates from center — these always overlap the value text and look broken. fm_animate_gauge handles the arc fill, the value text position, and the label correctly.
+- CONCEPT BEAT RULE: when a beat names a concept but has no data yet (e.g. "Passive Income", "Side Hustle", "Emergency Fund"), use fm_animate_glow_reveal or fm_animate_single_value with a "?" as the value string. Never draw arbitrary decorative shapes (waves, spirals, random arcs) — they communicate nothing.
 - HARD TIMING RULE: the sum of ALL self.play(run_time=X) + self.wait(X) values in your construct() must equal the chunk's given duration. Chunks that render more than 45% longer than target are rejected and replaced with a blank filler. The most common cause of rejection is calling an fm_animate_* function (which already consumes the full duration internally) AND THEN also adding self.wait() or another self.play() on top -- this doubles the length and guarantees rejection. One fm_animate_* call = the entire construct(). If you use raw Manim instead, your play/wait budget is the chunk duration, spend it all, do not go over.
 
 === FRAME, ASPECT RATIO, SAFE MARGINS ===
@@ -3740,9 +3744,26 @@ ANIMATION functions (handle ALL self.play/self.wait for their duration, call onc
   fm_animate_stacked_cards(scene, items, duration=4.0, spacing=0.26)
     items = [(label, value_str, color), ...]. Cards slide in from right sequentially. Returns stacked VGroup.
     Example: fm_animate_stacked_cards(self, [("Rent","$1,400",BRAND_RED),("Car","$480",BRAND_RED),("Food","$320",BRAND_GOLD)], duration=3.8)
+  fm_animate_comparison_bars(scene, items, duration=4.0, title_text="", show_net=True)
+    Clean income-vs-expense bars: positive values go UP, negative go DOWN from a zero baseline. Auto-appends a net bar. No axis-line-through-bars problem. items = [(label, value_float, color), ...]. Pass RAW signed values (not abs).
+    Example: fm_animate_comparison_bars(self, [("Passive Income", 600, BRAND_GREEN), ("Rent + Bills", -1800, BRAND_RED)], duration=3.8, title_text="Monthly Cashflow")
+    Use this INSTEAD of fm_animate_bar_chart whenever comparing income vs expenses, gains vs losses, or any mix of positive and negative values.
   fm_animate_bullet_chart(scene, actual, target, range_low, range_high, label_text, accent_color=BRAND_GREEN, duration=3.0, position=None, bar_length=8.0)
     Gray range band + target tick + growing actual bar. For "hitting the target?" beats. Returns (tracker, bar, actual_lbl).
     Example: fm_animate_bullet_chart(self, 500, 1000, 0, 1500, "Monthly Side Income vs Target", BRAND_GOLD, duration=3.5)
+  fm_icon(name, size=1.0, color=BRAND_GOLD)
+    Pure geometry finance icon — NO SVGMobject. Returns a VGroup. Position with .move_to() then self.play(FadeIn(icon)).
+    name options: 'dollar', 'coin', 'house', 'person', 'clock', 'arrow_up', 'arrow_down', 'warning', 'checkmark', 'fire'.
+    Example: icon = fm_icon("warning", size=1.2, color=BRAND_RED); icon.move_to(ORIGIN + LEFT * 3); self.play(FadeIn(icon))
+  fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE, duration=3.0, font_size=88, subtitle=None, subtitle_color=None)
+    Dramatic text with expanding glow rings — chapter titles, major reveals, hook moments. Returns (text_mob, rings).
+    Example: fm_animate_glow_reveal(self, "Corporate Paycheck", BRAND_RED, duration=3.0, subtitle="The Only Source")
+  fm_animate_timeline(scene, events, accent_color=BRAND_GOLD, duration=4.0, show_index=False)
+    Horizontal timeline: dots on a line, labels alternating above/below (no overlapping text). events = list of str. Returns (dots, labels).
+    Example: fm_animate_timeline(self, ["Start", "Checkpoint", "Breakdown", "Warning Sign"], BRAND_GOLD, duration=4.0)
+  fm_animate_single_value(scene, value_str, label_text, accent_color=BRAND_GOLD, duration=3.0, value_size=140, label_size=38, sublabel=None)
+    Single hero number with label — for beats with one key figure and no comparison needed. Returns (value_mob, label_mob).
+    Example: fm_animate_single_value(self, "$500/mo", "Monthly Side Income", BRAND_GREEN, duration=3.2)
 
 When a library function exists for what the beat needs, use it -- it is crash-proof and professionally tuned. For beats the library doesn't cover well, use raw Manim primitives as before. The library is a starting point and covers the most common beat types; it is not a cage.
 
@@ -3798,6 +3819,116 @@ Each chunk renders as an independent clip with no memory of the chunk before or 
 
 Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_name": "Chunk0", "code": "from manim import *\\n\\nclass Chunk0(FinanceDashboardScene):\\n    def construct(self):\\n        ..."}, ...]}. The "code" field must be the complete, final Python source for that chunk as a single string with real newlines escaped as \\n."""
 
+    def _build_user_prompt(batch_items):
+        lines = []
+        for global_idx, chunk in batch_items:
+            chunk_text = " ".join(b.get("text", "") for b in chunk["beats"])
+            duration = round(chunk["end_time"] - chunk["start_time"], 2)
+            lines.append(
+                f'Chunk {global_idx}: duration={duration}s, class_name="Chunk{global_idx}", '
+                f'narration="{chunk_text}"'
+            )
+        return f"Topic: {topic}\n\n" + "\n".join(lines)
+
+    def _gpt_call_for_prompt(user_prompt):
+        def _do():
+            return gpt4o_call(
+                client,
+                model="gpt-4.1",
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "manim_chunks",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "chunks": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "chunk_index": {"type": "integer"},
+                                            "class_name":  {"type": "string"},
+                                            "code":        {"type": "string"},
+                                        },
+                                        "required": ["chunk_index", "class_name", "code"],
+                                        "additionalProperties": False,
+                                    },
+                                }
+                            },
+                            "required": ["chunks"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+        return _call_with_retry(_do, label="Manim chunk call")
+
+    def _parse_chunks_from_raw(raw_text: str) -> list:
+        """Three-layer output parser. Layer 1: clean json.loads. Layer 2:
+        JSONDecoder.raw_decode walk through the chunks array, extracting
+        each object individually and stopping at the first one that fails
+        rather than discarding everything. Layer 3: give up and return
+        whatever was salvaged so the caller can retry missing indices."""
+        raw = raw_text.strip()
+
+        try:
+            return json.loads(raw).get("chunks", [])
+        except json.JSONDecodeError:
+            pass
+
+        chunks_out = []
+        arr_start = raw.find('"chunks"')
+        if arr_start < 0:
+            return chunks_out
+        bracket = raw.find('[', arr_start)
+        if bracket < 0:
+            return chunks_out
+
+        decoder = json.JSONDecoder()
+        pos = bracket + 1
+        while pos < len(raw):
+            stripped = raw[pos:]
+            lstripped = stripped.lstrip(' \t\n\r,')
+            if not lstripped or lstripped[0] in (']', '}'):
+                break
+            offset = len(stripped) - len(lstripped)
+            try:
+                obj, end = decoder.raw_decode(lstripped)
+                if isinstance(obj, dict) and "code" in obj and "class_name" in obj:
+                    chunks_out.append(obj)
+                pos += offset + end
+                while pos < len(raw) and raw[pos] in (' ', '\t', '\n', '\r', ','):
+                    pos += 1
+            except json.JSONDecodeError:
+                break
+
+        return chunks_out
+
+    def _slot_items(returned_items, batch_global_indices):
+        """Rename classes and slot parsed items into all_results by position."""
+        for i, item in enumerate(returned_items):
+            if i >= len(batch_global_indices):
+                break
+            global_idx = batch_global_indices[i]
+            if global_idx >= len(chunks):
+                continue
+            expected_class_name = f"Chunk{global_idx}"
+            raw_code = item.get("code", "") or ""
+            renamed_code, _ = re.subn(
+                r'^class\s+\w+\(', f'class {expected_class_name}(',
+                raw_code, count=1, flags=re.MULTILINE,
+            )
+            item["code"] = renamed_code
+            item["class_name"] = expected_class_name
+            item["chunk_index"] = global_idx
+            all_results[global_idx] = item
+
     chunk_batch_size = dynamic_batch_size(len(chunks), min_size=2, max_size=4)
     n_batches = max(1, math.ceil(len(chunks) / chunk_batch_size))
     print(f"  🎬 Manim chunks: {n_batches} batch(es) of ~{chunk_batch_size} chunks each...")
@@ -3807,51 +3938,36 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
         batch = chunks[batch_idx * chunk_batch_size: (batch_idx + 1) * chunk_batch_size]
         if not batch:
             continue
+
+        batch_global_indices = [batch_idx * chunk_batch_size + i for i in range(len(batch))]
         print(f"  🎬 Manim chunk batch {batch_idx + 1}/{n_batches}: {len(batch)} chunks...")
 
-        batch_lines = []
-        for i, chunk in enumerate(batch):
-            global_idx = batch_idx * chunk_batch_size + i
-            chunk_text = " ".join(b.get("text", "") for b in chunk["beats"])
-            duration = round(chunk["end_time"] - chunk["start_time"], 2)
-            batch_lines.append(
-                f'Chunk {global_idx}: duration={duration}s, class_name="Chunk{global_idx}", '
-                f'narration="{chunk_text}"'
-            )
-        user_prompt = f"Topic: {topic}\n\n" + "\n".join(batch_lines)
-
-        def _do_call():
-            return gpt4o_call(
-                client,
-                model="gpt-4o",
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-
         try:
-            response = _call_with_retry(_do_call, label=f"Manim chunk batch {batch_idx + 1}")
-            parsed = json.loads(response.choices[0].message.content)
-            returned_chunks = parsed.get("chunks", [])
-            for i, item in enumerate(returned_chunks):
-                global_idx = batch_idx * chunk_batch_size + i
-                if global_idx >= len(chunks):
-                    continue
-                expected_class_name = f"Chunk{global_idx}"
-                raw_code = item.get("code", "") or ""
-                renamed_code, _n_subs = re.subn(
-                    r'^class\s+\w+\(', f'class {expected_class_name}(',
-                    raw_code, count=1, flags=re.MULTILINE,
-                )
-                item["code"] = renamed_code
-                item["class_name"] = expected_class_name
-                item["chunk_index"] = global_idx
-                all_results[global_idx] = item
-            print(f"  ✅ Manim chunk batch {batch_idx + 1} done: {len(returned_chunks)} chunks")
+            response = _gpt_call_for_prompt(_build_user_prompt(list(zip(batch_global_indices, batch))))
+            returned = _parse_chunks_from_raw(response.choices[0].message.content)
+            _slot_items(returned, batch_global_indices)
+            missing = [idx for idx in batch_global_indices if idx not in all_results]
+            if missing:
+                print(f"  ⚠ Batch {batch_idx + 1}: parser recovered {len(returned)}/{len(batch)} chunks, retrying {len(missing)} individually...")
+                for idx in missing:
+                    local_i = batch_global_indices.index(idx)
+                    try:
+                        r2 = _gpt_call_for_prompt(_build_user_prompt([(idx, batch[local_i])]))
+                        recovered = _parse_chunks_from_raw(r2.choices[0].message.content)
+                        _slot_items(recovered, [idx])
+                    except Exception as e2:
+                        print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
+            n_done = sum(1 for idx in batch_global_indices if idx in all_results)
+            print(f"  ✅ Manim chunk batch {batch_idx + 1} done: {n_done}/{len(batch)} chunks")
         except Exception as e:
-            print(f"  ⚠ Manim chunk batch {batch_idx + 1} failed, those chunks will be skipped: {e}")
+            print(f"  ⚠ Manim chunk batch {batch_idx + 1} failed entirely ({e}), retrying one by one...")
+            for idx, chunk in zip(batch_global_indices, batch):
+                try:
+                    r = _gpt_call_for_prompt(_build_user_prompt([(idx, chunk)]))
+                    recovered = _parse_chunks_from_raw(r.choices[0].message.content)
+                    _slot_items(recovered, [idx])
+                except Exception as e2:
+                    print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
 
     ordered = [all_results.get(i) for i in range(len(chunks))]
     print(f"  ✅ {sum(1 for r in ordered if r)} / {len(chunks)} total manim chunks generated")
