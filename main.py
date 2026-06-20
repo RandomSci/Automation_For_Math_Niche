@@ -3282,12 +3282,12 @@ MANIM_FORBIDDEN_NAMES = {
     "open", "exec", "eval", "compile", "__import__",
     "os", "sys", "subprocess", "socket", "requests", "shutil",
     "globals", "locals", "vars", "input", "breakpoint", "exit", "quit",
-    "MathTex", "Tex", "SingleStringMathTex", "DecimalNumber",
+    "DecimalNumber",
     "MarkupText", "Integer", "Variable", "BulletedList", "Title", "Paragraph",
     "BarChart", "SVGMobject", "ComplexPlane", "PolarPlane",
 }
 MANIM_FORBIDDEN_PATTERNS = [
-    r'\bMathTex\b', r'\bTex\b', r'\bSingleStringMathTex\b', r'\bDecimalNumber\b',
+    r'\bDecimalNumber\b',
     r'\bMarkupText\b', r'\bInteger\b', r'\bVariable\b', r'\bBulletedList\b',
     r'\bTitle\b', r'\bParagraph\b', r'\bBarChart\b',
     r'\bSVGMobject\b', r'\bComplexPlane\b', r'\bPolarPlane\b',
@@ -3310,16 +3310,14 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
     even with stray unsafe top-level statements alongside the real
     class definition.
 
-    MANIM_FORBIDDEN_NAMES also bans MathTex/Tex/SingleStringMathTex/
-    DecimalNumber specifically: a real run showed the overwhelming
-    majority of chunk failures were Manim's LaTeX/SVG pipeline
-    (init_svg_mobject, _get_modified_expression, _handle_tex_errors in
-    the traceback), meaning this environment has no working LaTeX
-    toolchain and anything routing through it -- DecimalNumber
-    included, not just literal MathTex/Tex calls -- fails outright.
-    Rejecting these names here is instant and free, instead of paying
-    for a manim subprocess spin-up just to watch it crash on a class
-    GPT was never going to be able to use successfully anyway."""
+    MANIM_FORBIDDEN_NAMES bans DecimalNumber specifically: it has its
+    own update-cycle quirks unrelated to LaTeX and reliably misbehaves
+    in this codebase, so it stays banned even though LaTeX itself is
+    now installed and working -- MathTex/Tex/SingleStringMathTex were
+    REMOVED from this list once LaTeX (texlive) was confirmed properly
+    installed on the render machine, since they no longer crash.
+    Rejecting the remaining names here is instant and free, instead of
+    paying for a manim subprocess spin-up just to watch it crash."""
     for pattern in MANIM_FORBIDDEN_PATTERNS:
         if re.search(pattern, code):
             bare = pattern.replace(r'\b', '')
@@ -3416,10 +3414,18 @@ def _finance_dashboard_background_group():
     return VGroup(grid, axis, ticker)
 
 
+_FDB_MIN_WAIT = 0.04
+
+
 class FinanceDashboardScene(Scene):
     def setup(self):
         self.camera.background_color = "#0B111A"
         self.add(_finance_dashboard_background_group())
+
+    def wait(self, duration=1.0, stop_condition=None, frozen_frame=None):
+        if duration < _FDB_MIN_WAIT:
+            duration = _FDB_MIN_WAIT
+        return super().wait(duration, stop_condition=stop_condition, frozen_frame=frozen_frame)
 
 
 class FinanceDashboard3DScene(ThreeDScene):
@@ -3427,6 +3433,11 @@ class FinanceDashboard3DScene(ThreeDScene):
         self.camera.background_color = "#0B111A"
         self.set_camera_orientation(phi=0 * DEGREES, theta=-90 * DEGREES)
         self.add_fixed_in_frame_mobjects(_finance_dashboard_background_group())
+
+    def wait(self, duration=1.0, stop_condition=None, frozen_frame=None):
+        if duration < _FDB_MIN_WAIT:
+            duration = _FDB_MIN_WAIT
+        return super().wait(duration, stop_condition=stop_condition, frozen_frame=frozen_frame)
 
 
 ''' + _FUNCTIONS_MANIM_CODE + '\n\n'
@@ -3492,7 +3503,10 @@ def _make_dashboard_filler(out_path: str, duration: float, w: int = 1920,
     crashes, times out, or drifts past MANIM_CHUNK_MAX_DRIFT_RATIO --
     uses the bare dashboard background color rather than black, since
     the whole video already sits on this color and a navy frame reads
-    as a quiet beat rather than a visible error flash."""
+    as a quiet beat rather than a visible error flash. This is the
+    last-resort fallback only -- see _make_held_frame_filler for the
+    preferred fallback used for short silence gaps, which holds the
+    previous chunk's actual final frame instead of cutting to blank."""
     cmd = [
         'ffmpeg', '-y',
         '-f', 'lavfi', '-i', f'color=c=0x0B111A:s={w}x{h}:r={fps}:d={duration}',
@@ -3503,6 +3517,35 @@ def _make_dashboard_filler(out_path: str, duration: float, w: int = 1920,
     result = subprocess.run(cmd, capture_output=True)
     if result.returncode != 0:
         raise Exception(f"dashboard filler failed: {result.stderr.decode(errors='replace')[-200:]}")
+    return out_path
+
+
+def _make_held_frame_filler(prev_clip_path: str, out_path: str, duration: float,
+                             w: int = 1920, h: int = 1080, fps: int = 30) -> str:
+    """Fills a short silence-gap chunk by freezing the previous content
+    chunk's actual final frame for the gap's duration, instead of
+    cutting to blank background. This is what real editors do for a
+    natural speech pause -- the visual holds, it doesn't vanish.
+    Falls back to a plain dashboard filler if the previous clip can't
+    be read for any reason."""
+    frame_path = os.path.join(os.path.dirname(out_path), f"_lastframe_{os.path.basename(out_path)}.png")
+    extract_cmd = ['ffmpeg', '-y', '-sseof', '-0.1', '-i', prev_clip_path, '-vframes', '1', frame_path]
+    result = subprocess.run(extract_cmd, capture_output=True)
+    if result.returncode != 0 or not os.path.exists(frame_path):
+        return None
+    cmd_loop = [
+        'ffmpeg', '-y', '-loop', '1', '-i', frame_path, '-t', str(duration),
+        '-vf', f'scale={w}:{h}', '-r', str(fps),
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
+        '-pix_fmt', 'yuv420p', '-an', out_path,
+    ]
+    result2 = subprocess.run(cmd_loop, capture_output=True)
+    try:
+        os.remove(frame_path)
+    except Exception:
+        pass
+    if result2.returncode != 0:
+        return None
     return out_path
 
 
@@ -3627,14 +3670,33 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
             pass
 
 
+GAP_CHUNK_MIN_SECONDS = 0.35
+
+
 def group_beats_into_manim_chunks(beats: list, target_chunk_seconds: float = 4.5) -> list:
     """Groups consecutive beats into chunks of roughly target_chunk_seconds
     each, without splitting any single beat across two chunks -- a
     chunk boundary always falls between beats, never inside one, since
     each chunk becomes its own independent Manim Scene/clip. A beat
     longer than target_chunk_seconds on its own still gets its own
-    whole chunk (never truncated)."""
-    chunks = []
+    whole chunk (never truncated).
+
+    CRITICAL: every chunk is rendered and concatenated back-to-back
+    with zero gap between clips (see concat_manim_clips), but real
+    narration always has silence between sentences -- natural speech
+    pauses between Whisper segments. If those gaps are not represented
+    as their own chunks, the concatenated video's internal clock runs
+    fractions of a second fast relative to the audio track every time
+    a gap is skipped, and that loss compounds across the whole video:
+    by minute one this can total several seconds, which is exactly
+    why visuals appear to fire earlier and earlier as a video runs
+    on -- they are not actually drifting, the silent gaps between them
+    were simply never given their own screen time. Whenever there is
+    a real gap between one chunk's end_time and the next chunk's
+    start_time, an explicit silent gap chunk (is_gap=True, no beats)
+    is inserted to occupy exactly that duration, so the video timeline
+    always matches the audio timeline beat-for-beat, gap-for-gap."""
+    raw_chunks = []
     current = []
     current_start = None
     current_end = None
@@ -3642,7 +3704,7 @@ def group_beats_into_manim_chunks(beats: list, target_chunk_seconds: float = 4.5
         b_start = beat.get("start_time", 0.0)
         b_end = beat.get("end_time", b_start + 1.0)
         if current and (b_end - current_start) > target_chunk_seconds:
-            chunks.append({"beats": current, "start_time": current_start, "end_time": current_end})
+            raw_chunks.append({"beats": current, "start_time": current_start, "end_time": current_end})
             current = []
             current_start = None
         if not current:
@@ -3650,7 +3712,17 @@ def group_beats_into_manim_chunks(beats: list, target_chunk_seconds: float = 4.5
         current.append(beat)
         current_end = b_end
     if current:
-        chunks.append({"beats": current, "start_time": current_start, "end_time": current_end})
+        raw_chunks.append({"beats": current, "start_time": current_start, "end_time": current_end})
+
+    chunks = []
+    prev_end = None
+    for c in raw_chunks:
+        if prev_end is not None:
+            gap = c["start_time"] - prev_end
+            if gap >= GAP_CHUNK_MIN_SECONDS:
+                chunks.append({"beats": [], "start_time": prev_end, "end_time": c["start_time"], "is_gap": True})
+        chunks.append(c)
+        prev_end = c["end_time"]
     return chunks
 
 
@@ -3693,6 +3765,11 @@ def generate_manim_chunk_code(chunks: list, topic: str) -> list:
 Every financial concept has a physical visual that IS the concept. Your job is to find that visual and animate it. The audio already says the words. You show the REALITY.
 
 The pattern: audio names the concept → you animate the physical thing that concept represents → viewer understands without reading a single word.
+
+=== THE 3BLUE1BROWN STANDARD — CHARTS AND DATA STRUCTURES ARE THE DEFAULT, NOT ICONS ===
+The visual language of this channel is the visual language of 3blue1brown: axes, plotted lines, bars, arcs, donuts, waterfalls, growing numbers, geometric proof-style diagrams. Almost nothing in a 3blue1brown video is a literal pictogram of an object -- it is the STRUCTURE of the idea made visible (a curve bending, a bar growing, a region filling, a value ticking up). That is the standard here. Default to a chart, graph, gauge, donut, waterfall, bar comparison, or counter for every beat that has a number, a trend, a proportion, or a comparison -- which is the vast majority of beats on this channel.
+fm_icon (a literal pictogram: a house, a coin, a clock, a person) is a SMALL ACCENT, not a primary visual. Reach for it only to label or anchor a chart that's already doing the real work (a tiny house icon next to a "Rent" axis label), or for the rare beat that is genuinely about a single concrete object with no number or trend attached at all. If you notice you are about to make an icon the LARGEST or ONLY element in a chunk, stop -- ask whether this beat actually has a number, a comparison, a trend, or a proportion hiding in it that a chart would show instead. Nearly every finance beat does.
+When in doubt between an icon-based visual and a chart-based visual for the same beat, choose the chart.
 
 === VARIETY IS A HARD REQUIREMENT, NOT A NICE-TO-HAVE ===
 You are one of several parallel calls generating chunks for the SAME video. If every chunk about money reaches for the same coin-stack or dollar-icon-and-arrow visual, the finished video repeats one image dozens of times and looks broken even though each individual chunk technically passed every rule. Coins are ONE option among many for "income" or "money flowing" beats — not the default. Before settling on a coin visual, actively consider whether the beat is better served by: a bar chart, a counter ticking up, a comparison, a card, a gauge, a donut, a waterfall, a timeline, an icon grid, or a line chart. Treat coin-stacking as a visual you reach for occasionally, never as the safe default for "money" in general.
@@ -3745,12 +3822,19 @@ If your construct() has more than 2 Text() objects that are not numbers or 1-2 w
 - FinanceDashboardScene and FinanceDashboard3DScene are already defined for you before your code runs. Do not redefine them, do not set self.camera.background_color yourself, do not draw your own grid or background -- setup() on both base classes already paints the dark navy dashboard background, grid, and ticker texture. Your construct() goes straight to the chunk's actual content.
 - The ONLY imports allowed in your own code are `manim`, `numpy`, `math` -- nothing else, ever.
 - Never reference: open, exec, eval, compile, __import__, os, sys, subprocess, socket, requests, shutil, globals, locals, vars, input, breakpoint, exit, quit, or any dunder attribute.
-- Never use MathTex, Tex, SingleStringMathTex, or DecimalNumber -- this environment has no working LaTeX toolchain and all four route through it, which crashes the render every time. For ALL text and numbers, including ones that animate or count up, use only `Text(...)`. For a number that needs to animate (counting up/down, or tracking a ValueTracker), do NOT use DecimalNumber -- instead use `always_redraw`: `counter = always_redraw(lambda: Text(f"${tracker.get_value():,.0f}", font_size=120, color="#F5F7FA"))`, `self.add(counter)`, then `self.play(tracker.animate.set_value(34000), run_time=2)`. This gives the same live-updating effect with zero LaTeX dependency.
+- Triangle() takes NO vertex arguments -- it is a fixed equilateral shape, only accepts styling kwargs (color, fill_color, fill_opacity) plus standard Mobject methods like .scale()/.rotate()/.move_to(). A real failure: `Triangle([-0.18,1.5,0],[0.18,1.5,0],[0,1.9,0], color=BRAND_RED)` crashed with "takes 1 positional argument but 4 were given". For a custom 3-point shape with specific vertices, use `Polygon(p1, p2, p3, color=..., fill_color=..., fill_opacity=...)` instead, or build a plain Triangle then `.scale()`/`.stretch()`/`.rotate()` it into the shape you need.
+- Line, Arc, and other VMobject-family shapes do NOT accept a generic `opacity=` kwarg in their constructor -- a real failure: `Line(p1, p2, color=BRAND_GRAY, stroke_width=2, opacity=0.35)` crashed with "Mobject.__init__() got an unexpected keyword argument 'opacity'". Set opacity via `.set_stroke(color=..., width=..., opacity=...)` or `.set_fill(color=..., opacity=...)` AFTER construction, never as a constructor kwarg: `ln = Line(p1, p2); ln.set_stroke(color=BRAND_GRAY, width=2, opacity=0.35)`.
+- LaTeX (texlive) IS installed and working in this environment, so MathTex and Tex are now SAFE and ENCOURAGED for actual mathematical notation -- a compound interest formula, a percentage calculation shown as an equation, a fraction, an exponent, a summation. Use them when a beat is genuinely about a formula or equation: `MathTex(r"A = P(1 + r)^t", font_size=64, color=BRAND_WHITE)`. This is real 3blue1brown-style territory -- lean into it for any beat where seeing the actual math notation clarifies the idea better than just a number.
+- Still avoid DecimalNumber specifically (it has its own unrelated update-cycle quirks in this codebase) -- for a number that needs to animate (counting up/down, or tracking a ValueTracker), use `always_redraw` with plain `Text()` instead: `counter = always_redraw(lambda: Text(f"${tracker.get_value():,.0f}", font_size=120, color="#F5F7FA"))`, `self.add(counter)`, then `self.play(tracker.animate.set_value(34000), run_time=2)`. This gives the same live-updating effect with zero DecimalNumber dependency. If you need a live-updating value INSIDE a MathTex formula, rebuild the whole MathTex string each frame via always_redraw instead, e.g. `always_redraw(lambda: MathTex(f"{tracker.get_value():,.0f}", font_size=64, color=BRAND_WHITE))`.
 - Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, Axes, NumberLine, NumberPlane, SVGMobject, ComplexPlane, PolarPlane. Use Text() and the fm_* library instead. For line charts prefer fm_animate_line_chart (consistent styling), for bar charts use fm_animate_bar_chart. Axes, NumberLine, and NumberPlane are now fully supported — LaTeX is installed in this environment, so you may use them directly when the library functions do not cover the chart you need. For ANY icon or symbol (house, person, clock, dollar sign, warning triangle, checkmark) use fm_icon(name, size, color) — never SVGMobject, never ImageMobject, never any class that loads external files.
 - RESTRUCTURE_MOBJECTS WARNING: never call self.add() on a fm_* result AND ALSO animate its submobjects separately. The returned VGroup must be treated as an atomic unit. Wrong: `card = fm_card(...); self.add(card); self.play(FadeIn(card[0]))`. Correct: `card = fm_card(...); self.play(FadeIn(card))`. Accessing submobjects of fm_* returns (card[0], cards[1], etc.) and adding them separately to the scene causes Manim's restructure_mobjects crash.
+- NO GUESSING SUBMOBJECT INDICES: never index into a VGroup (card[1], card_show[2], etc.) unless you personally built that exact group in this same construct() and know precisely how many Mobjects you added to it, in what order. A real failure: indexing card_show[1] and card_show[2] on a group that only had 1 submobject, which crashes with IndexError: list index out of range. fm_* library functions do not document or guarantee submobject count/order as part of their contract -- never index into an fm_* return value's internals. If you need to reference a specific piece of something later (a label, an icon, a bar), keep it as its own separate named variable when you build it (e.g. `icon = fm_icon(...); label = Text(...); group = VGroup(icon, label)`), then refer to that original variable directly instead of re-deriving it by indexing the group afterward.
+- NO SELF-CONTAINING GROUPS: never add a VGroup (or a card/group built from one) into itself, into a copy of itself, or into another group that already (directly or through a shared variable) contains it. A real failure: building `card_real` and `card_show` from overlapping pieces, then calling FadeOut/animate on one while it still shares submobjects with the other -- when Manim's set_z_index walks the submobject family on a group with a circular reference, it recurses forever and crashes with RecursionError: maximum recursion depth exceeded. If two named groups in your construct() are meant to be visually related (e.g. one fading while the other glows), build each from its OWN independent VGroup() with its OWN Mobjects -- never have one variable's group literally contain the other variable's group, and never call VGroup(*existing_group) to wrap something that is already itself a VGroup.
+- NEVER BUILD A CUSTOM always_redraw GAUGE: a real failure built its own live-updating gauge with `gauge = always_redraw(lambda: make_gauge()[0])` then crashed trying to VGroup() a ValueTracker that got mixed in -- this happened because fm_animate_gauge already handles its OWN internal ValueTracker, its OWN animation, and already calls scene.add() on everything itself before it returns. It does not return a drawable visual to wrap in your own always_redraw -- it returns (tracker, val_lbl, cat_lbl) for reference only, after the gauge is already on screen and already animated. If a beat needs a gauge, call fm_animate_gauge once with the final target value and let it run -- never build your own ValueTracker/always_redraw scaffolding around it or any other fm_animate_* function, they are not building blocks to wrap, they are the complete animation.
 - GAUGE RULE: gauges are for PROPORTIONS only (a value that is meaningfully full/empty against a max, e.g. "half your emergency fund," "67% of capacity"). A small raw count like "1 month of runway" is NOT a proportion and must NOT become a gauge -- see the primitive-selection table above, use fm_animate_single_value instead. Once you have genuinely decided a beat is a proportion-of-a-whole and a gauge is the right call, you MUST use fm_animate_gauge to build it rather than a custom Line needle or Arrow pointer that rotates from center — these always overlap the value text and look broken. fm_animate_gauge handles the arc fill, the value text position, and the label correctly.
 - CONCEPT BEAT RULE: when a beat names a concept but has no data yet (e.g. "Passive Income", "Side Hustle", "Emergency Fund"), use fm_animate_glow_reveal or fm_animate_single_value with a "?" as the value string. Never draw arbitrary decorative shapes (waves, spirals, random arcs) — they communicate nothing.
 - HARD TIMING RULE: the sum of ALL self.play(run_time=X) + self.wait(X) values in your construct() must equal the chunk's given duration. Chunks that render more than 45% longer than target are rejected and replaced with a blank filler. The most common cause of rejection is calling an fm_animate_* function (which already consumes the full duration internally) AND THEN also adding self.wait() or another self.play() on top -- this doubles the length and guarantees rejection. One fm_animate_* call = the entire construct(). If you use raw Manim instead, your play/wait budget is the chunk duration, spend it all, do not go over.
+- NEVER WRITE INLINE SUBTRACTION INSIDE wait(): a real failure was `self.wait(4.5-0.5-1.0-2.2-0.8)`, which looks like it sums to exactly 0 but float rounding actually lands it at a hair below zero, and Manim raises ValueError for any non-positive wait duration. Compute your full time budget as named variables FIRST (e.g. `t_intro = 0.5`, `t_build = 1.0`, `t_hold = 2.2`, `t_fade = 0.8`), confirm the remainder makes sense, and pass the final remaining wait as a plain literal number you've already calculated, never as a live subtraction expression inside the wait() call itself.
 
 === FRAME, ASPECT RATIO, SAFE MARGINS ===
 Output is 16:9, 1920x1080, 30fps. Always read `config.frame_width` and `config.frame_height` at runtime instead of hardcoding numbers -- they are already configured correctly for this aspect ratio. Keep every object's resting position within roughly `config.frame_width * 0.42` of horizontal center and `config.frame_height * 0.42` of vertical center; anything closer to the true edge risks clipping on some players/crops. ORIGIN is frame center.
@@ -3819,6 +3903,8 @@ ANIMATION functions (handle ALL self.play/self.wait for their duration, call onc
 
 When a library function exists for what the beat needs, use it -- it is crash-proof and professionally tuned. For beats the library doesn't cover well, use raw Manim primitives as before. The library is a starting point and covers the most common beat types; it is not a cage.
 
+RETURN-VALUE UNPACKING IS A REAL, RECURRING CRASH SOURCE: every ANIMATION function above states its exact return tuple in its description (e.g. "Returns (tracker, pct_lbl, cat_lbl)"). A confirmed real failure: calling `(tracker, pct_lbl) = fm_animate_donut(...)` against a function documented as returning THREE values, not two -- `ValueError: too many values to unpack`. Before writing any line that unpacks an fm_animate_* call into named variables, re-read that exact function's "Returns (...)" text above and count the names in your unpacking statement against the count in that line. If you do not need the returned values at all (most calls), do not unpack them -- just call the function as a bare statement: `fm_animate_donut(self, 67, "Label", BRAND_RED, duration=3.2)` with no assignment, which is always safe regardless of arity.
+
 === NUMBERS ARE REQUIRED DATA, NOT BANNED "TEXT" ===
 Be precise about what "near-zero text" actually means, because getting this wrong produces charts with nothing on them. BANNED: restating the narration's sentence as a caption, or a label that just repeats what the visual already shows. REQUIRED, ALWAYS: the actual value on every data-bearing visual -- a bar with no number next to it, a gauge with no value near the needle, a card with no dollar amount, a comparison with no figures on either side, is a decoration, not a chart, and is a failure regardless of how nicely it animates. If a visual represents a quantity, that quantity must appear on screen as a Text or short Text -- this is data, never optional, never something "near-zero text" excuses you from. A 1-2 word category tag (e.g. "Inflation", "Earnings", "Rent") under a value is also required whenever you're comparing two or more things, since two unlabeled shapes side by side communicate nothing.
 
@@ -3839,7 +3925,7 @@ This is a documentary finance dashboard. The items below are examples of the tec
 - Cashflow waterfall: a starting bar at the top (gross income, labeled with its number), then smaller bars stepping down (each one labeled with what it subtracts and its amount), ending in a highlighted final net bar with its number. Reach for this one often -- it is one of the most useful primitives on this channel, and every step needs its number.
 - Funnel: a sequence of trapezoids or progressively narrower bars top to bottom, each stage labeled with its count or percentage -- never an unlabeled funnel shape.
 - Bill / paycheck / rent invoice / utility bill / emergency expense / bank balance card: a RoundedRectangle styled like a card (a colored top strip, a 1-3 word label, and the dollar amount as Text -- the amount is mandatory, a card with no number on it is just a rounded rectangle), built as one VGroup so it can slide in, stack, or get crossed out as a unit. Stack 2-4 of these vertically for "bills add up" beats, each with its own visible amount. To size any card or pill correctly around its own text instead of guessing a fixed box size that might not fit (text overflowing the edges, or a box that ends up empty because nothing was sized to match it), build the Text first, then wrap it with `SurroundingRectangle(text_mobject, buff=0.4, color=..., fill_color=..., fill_opacity=1)` so the box is always exactly the right size for what's inside it.
-- Concept-introduction beat with no number yet (e.g. naming two things being set up for later comparison, before any data has been given): do not leave the card empty just because there is no value to show yet. Fill the card body with a solid or semi-solid brand color (not a bare white outline) and give each side its own distinct color identity, optionally with a small simple icon shape (a coin, a faucet, a clock) so the two sides read as visually distinct concepts, not two identical empty templates. A number becomes mandatory the moment the narration actually gives one for that thing.
+- Concept-introduction beat with no number yet (e.g. naming two things being set up for later comparison, before any data has been given): do not leave the card empty just because there is no value to show yet. Fill the card body with a solid or semi-solid brand color (not a bare white outline) and give each side its own distinct color identity so the two sides read as visually distinct concepts, not two identical empty templates. Prefer a distinct SHAPE or chart-style treatment per side (a small bar stub, a partial arc, a different geometric silhouette) over an icon -- icons should be the exception here, not the default. A number becomes mandatory the moment the narration actually gives one for that thing.
 - Icon-grid / crowd grid / necessity heatmap: a grid of small Circle or Square mobjects, a portion recolored in a vivid brand color to represent a percentage of people, with that percentage shown as a Text beside the grid -- the right tool for population statistics, not a donut.
 - Calendar / timeline: a horizontal Line with tick marks for time units, a marker or flag at a specific point labeled with what it marks (e.g. "Month 18"), a shaded region before/after that point.
 - Treadmill / moving-backward metaphor: a flat or rising baseline Line with a value label, a second element animated moving backward or failing to keep pace -- communicates "running in place" without needing a human figure.
@@ -4002,17 +4088,26 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
             item["chunk_index"] = global_idx
             all_results[global_idx] = item
 
-    chunk_batch_size = dynamic_batch_size(len(chunks), min_size=2, max_size=4)
-    n_batches = max(1, math.ceil(len(chunks) / chunk_batch_size))
+    gap_indices = {i for i, c in enumerate(chunks) if c.get("is_gap")}
+    codegen_chunks = [c for i, c in enumerate(chunks) if i not in gap_indices]
+    codegen_to_global = [i for i in range(len(chunks)) if i not in gap_indices]
+
+    all_results = {i: {"is_gap": True} for i in gap_indices}
+    if gap_indices:
+        print(f"  ⏸  {len(gap_indices)} silence gap chunk(s) skip codegen entirely")
+
+    chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=4)
+    n_batches = max(1, math.ceil(len(codegen_chunks) / chunk_batch_size)) if codegen_chunks else 0
     print(f"  🎬 Manim chunks: {n_batches} batch(es) of ~{chunk_batch_size} chunks each...")
 
-    all_results = {}
     for batch_idx in range(n_batches):
-        batch = chunks[batch_idx * chunk_batch_size: (batch_idx + 1) * chunk_batch_size]
-        if not batch:
+        local_batch = codegen_chunks[batch_idx * chunk_batch_size: (batch_idx + 1) * chunk_batch_size]
+        if not local_batch:
             continue
+        local_indices = list(range(batch_idx * chunk_batch_size, batch_idx * chunk_batch_size + len(local_batch)))
+        batch = local_batch
+        batch_global_indices = [codegen_to_global[i] for i in local_indices]
 
-        batch_global_indices = [batch_idx * chunk_batch_size + i for i in range(len(batch))]
         print(f"  🎬 Manim chunk batch {batch_idx + 1}/{n_batches}: {len(batch)} chunks...")
 
         try:
@@ -4096,13 +4191,20 @@ def _render_or_fill_one_chunk(chunk_index: int, chunk: dict, item, w: int, h: in
 
 def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
                              h: int = 1080, fps: int = 30, max_workers: int = None) -> list:
-    """Renders every chunk's Manim code in parallel via a process pool,
-    each chunk being its own independent `manim` CLI subprocess. Any
-    chunk that fails safety check, crashes, times out, or drifts past
-    MANIM_CHUNK_MAX_DRIFT_RATIO gets a dashboard-color filler of its
-    exact target duration instead, so total video length always
-    matches the audio regardless of how many chunks failed -- the same
-    'blank beats over crashes' philosophy as the old per-beat renderer.
+    """Renders every CONTENT chunk's Manim code in parallel via a
+    process pool, each chunk being its own independent `manim` CLI
+    subprocess. Any content chunk that fails safety check, crashes,
+    times out, or drifts past MANIM_CHUNK_MAX_DRIFT_RATIO gets a
+    dashboard-color filler of its exact target duration instead, so
+    total video length always matches the audio regardless of how
+    many chunks failed.
+
+    Gap (silence) chunks are deliberately excluded from this parallel
+    pass and handled afterward in a sequential second pass (see the
+    end of this function) -- a gap chunk needs to read the ACTUAL
+    final frame of the content chunk immediately before it, which is
+    only guaranteed to exist once the parallel pass above has fully
+    finished, since parallel workers can complete in any order.
 
     Default worker count is deliberately smaller than
     prerender_all_beat_visuals' cpu_count()-1 pattern: each worker here
@@ -4115,14 +4217,16 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
     if max_workers is None:
         max_workers = max(1, multiprocessing.cpu_count() // 2)
     clip_paths = [None] * n
-    print(f"  🎬 Rendering {n} Manim chunk(s) across up to {max_workers} parallel workers...")
+    content_indices = [i for i in range(n) if not chunks[i].get("is_gap")]
+    gap_indices = [i for i in range(n) if chunks[i].get("is_gap")]
+    print(f"  🎬 Rendering {len(content_indices)} content chunk(s) across up to {max_workers} parallel workers...")
 
     done = 0
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(_render_or_fill_one_chunk, i, chunks[i],
                         chunk_code_list[i] if i < len(chunk_code_list) else None, w, h, fps): i
-            for i in range(n)
+            for i in content_indices
         }
         for future in as_completed(futures):
             i = futures[future]
@@ -4137,9 +4241,28 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
             clip_paths[idx] = path
             done += 1
             if err:
-                print(f"  ⚠ Chunk {idx}: {err[:160]} -- filled with dashboard background [{done}/{n}]")
-            if done % 10 == 0 or done == n:
-                print(f"  ⚙️  Manim chunk progress: {done}/{n}")
+                print(f"  ⚠ Chunk {idx}: {err[:160]} -- filled with dashboard background [{done}/{len(content_indices)}]")
+            if done % 10 == 0 or done == len(content_indices):
+                print(f"  ⚙️  Manim chunk progress: {done}/{len(content_indices)}")
+
+    if gap_indices:
+        print(f"  ⏸  Filling {len(gap_indices)} silence gap(s) by holding the previous frame...")
+        held = 0
+        for i in gap_indices:
+            target_duration = round(max(chunks[i]["end_time"] - chunks[i]["start_time"], 0.05), 3)
+            gap_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"gap_{i:04d}_{target_duration:.3f}.mp4")
+            prev_path = clip_paths[i - 1] if i > 0 else None
+            held_path = None
+            if prev_path and os.path.exists(prev_path):
+                held_path = _make_held_frame_filler(prev_path, gap_path, target_duration, w, h, fps)
+            if held_path:
+                clip_paths[i] = held_path
+                held += 1
+            else:
+                fallback_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"filler_{i:04d}_{target_duration:.3f}.mp4")
+                _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+                clip_paths[i] = fallback_path
+        print(f"  ✅ {held}/{len(gap_indices)} silence gap(s) held on previous frame, {len(gap_indices) - held} used blank fallback")
 
     print(f"  ✅ All {n} chunks accounted for ({sum(1 for p in clip_paths if p)} clips ready)")
     return clip_paths

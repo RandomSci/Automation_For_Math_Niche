@@ -307,9 +307,13 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
 
     end_dot = Dot(axes.c2p(n - 1, y_values[-1]), color=accent_color, radius=0.13)
     end_lbl = Text(end_value_label, font_size=38, color=accent_color, weight=BOLD)
+    _dot_x = axes.c2p(n - 1, y_values[-1])[0]
     _safe_right = config.frame_width * 0.38
-    _lbl_dir = UR if axes.c2p(n - 1, y_values[-1])[0] < _safe_right else UL
+    _lbl_dir = UR if _dot_x < _safe_right else UL
     end_lbl.next_to(end_dot, _lbl_dir, buff=0.15)
+    _frame_right_edge = config.frame_width / 2 - 0.25
+    if end_lbl.get_right()[0] > _frame_right_edge:
+        end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
 
     if title_text:
         ttl = Text(title_text, font_size=30, color=BRAND_GRAY)
