@@ -2805,6 +2805,9 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     print(f"  ✅ Render complete: {output_path}")
 
 
+FINANCE_EXPLAINER_CTA_TEXT = "Subscribe for More"
+
+
 class FinanceGenerator:
     def __init__(self, audio_path: str, output_path: str = "output.mp4", niche_config: dict = None):
         self.audio_path  = audio_path
@@ -3047,7 +3050,7 @@ class FinanceGenerator:
     def _add_cta_overlay(self, video_input: str, output_path: str, duration: float):
         end_time = round(max(duration - 4, 1), 3)
         vf = (
-            f"drawtext=text='Subscribe for more!':"
+            f"drawtext=text='{FINANCE_EXPLAINER_CTA_TEXT}'"
             f":fontcolor=yellow:fontsize=42:font=Arial"
             f":borderw=2:bordercolor=black:shadowx=2:shadowy=2"
             f":x=(w-text_w)/2:y=h*0.91:enable='gt(t\\,{end_time})'"
