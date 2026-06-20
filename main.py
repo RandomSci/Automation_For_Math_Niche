@@ -3284,13 +3284,13 @@ MANIM_FORBIDDEN_NAMES = {
     "globals", "locals", "vars", "input", "breakpoint", "exit", "quit",
     "MathTex", "Tex", "SingleStringMathTex", "DecimalNumber",
     "MarkupText", "Integer", "Variable", "BulletedList", "Title", "Paragraph",
-    "BarChart", "Axes", "NumberLine", "NumberPlane", "SVGMobject", "ComplexPlane", "PolarPlane",
+    "BarChart", "SVGMobject", "ComplexPlane", "PolarPlane",
 }
 MANIM_FORBIDDEN_PATTERNS = [
     r'\bMathTex\b', r'\bTex\b', r'\bSingleStringMathTex\b', r'\bDecimalNumber\b',
     r'\bMarkupText\b', r'\bInteger\b', r'\bVariable\b', r'\bBulletedList\b',
     r'\bTitle\b', r'\bParagraph\b', r'\bBarChart\b',
-    r'\bAxes\b', r'\bNumberLine\b', r'\bNumberPlane\b', r'\bSVGMobject\b', r'\bComplexPlane\b', r'\bPolarPlane\b',
+    r'\bSVGMobject\b', r'\bComplexPlane\b', r'\bPolarPlane\b',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
 
@@ -3465,8 +3465,9 @@ def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
 
     drift = abs(actual - target_duration) / target_duration
     if drift > MANIM_CHUNK_MAX_DRIFT_RATIO:
-        return None, (f"rendered duration {actual:.2f}s drifted {drift*100:.0f}% "
-                       f"from target {target_duration:.2f}s")
+        import sys
+        print(f"  ⚠ duration drift {drift*100:.0f}% exceeds {MANIM_CHUNK_MAX_DRIFT_RATIO*100:.0f}% limit — rejecting chunk, falling back to filler", file=sys.stderr)
+        return None, f"rendered duration drifted {drift*100:.0f}% from target ({actual:.2f}s vs {target_duration:.2f}s)"
 
     speed_ratio = target_duration / actual
     vf = f"setpts=PTS*{speed_ratio:.6f}"
@@ -3688,15 +3689,66 @@ def generate_manim_chunk_code(chunks: list, topic: str) -> list:
 
     system_prompt = """You are a generative motion graphics engineer using Manim (Manim Community edition) for a premium long-form finance explainer channel. For each chunk of narration (a few seconds, sometimes one beat, sometimes several consecutive beats grouped together) you write ONE complete Manim Scene class that animates that chunk's visual. This is a documentary-grade finance/data show, not an AI caption video -- the visual itself should carry the idea, not a wall of words.
 
+=== THINK IN VISUAL METAPHORS — NOT TEXT LABELS ===
+Every financial concept has a physical visual that IS the concept. Your job is to find that visual and animate it. The audio already says the words. You show the REALITY.
+
+The pattern: audio names the concept → you animate the physical thing that concept represents → viewer understands without reading a single word.
+
+=== VARIETY IS A HARD REQUIREMENT, NOT A NICE-TO-HAVE ===
+You are one of several parallel calls generating chunks for the SAME video. If every chunk about money reaches for the same coin-stack or dollar-icon-and-arrow visual, the finished video repeats one image dozens of times and looks broken even though each individual chunk technically passed every rule. Coins are ONE option among many for "income" or "money flowing" beats — not the default. Before settling on a coin visual, actively consider whether the beat is better served by: a bar chart, a counter ticking up, a comparison, a card, a gauge, a donut, a waterfall, a timeline, an icon grid, or a line chart. Treat coin-stacking as a visual you reach for occasionally, never as the safe default for "money" in general.
+
+=== MATCH THE PRIMITIVE TO WHAT KIND OF NUMBER THE BEAT ACTUALLY HAS ===
+Before picking a primitive, identify what kind of value this beat is about, then use this table — do not pattern-match on keywords alone (e.g. the word "runway" does not automatically mean gauge):
+- A PROPORTION or PERCENTAGE of a whole (0-100%, "half your paycheck," "67% of workers") -> fm_animate_donut or fm_animate_gauge. These primitives exist to show fullness/completeness, never a raw count.
+- A SMALL RAW COUNT (a count of months, items, or units, e.g. "1 month of runway," "3 missed payments") -> fm_animate_single_value or fm_animate_counter, with a 1-2 word label under it. NEVER use a gauge for a raw count -- a gauge with "1" inside it communicates nothing because there is no visible sense of how full or empty that "1" is relative to anything.
+- A DOLLAR AMOUNT on its own -> fm_animate_single_value or fm_animate_counter, huge font_size (130+).
+- TWO OR MORE COMPARABLE AMOUNTS (income vs rent, side hustle vs job) -> fm_animate_comparison_bars or fm_animate_bullet_chart, never two separate disconnected visuals -- they must share one baseline so the eye can compare heights directly.
+- A SEQUENCE OF DEDUCTIONS from a starting amount down to a net (gross pay minus rent minus bills equals net) -> fm_animate_waterfall, one continuous chart, never separate unconnected bars for each line item.
+- A VALUE CHANGING OVER TIME (growth, decline, trend) -> fm_animate_line_chart.
+- A CONCEPT NAMED BEFORE ANY NUMBER EXISTS YET ("side hustle," "emergency fund" as an idea, not yet a value) -> fm_animate_glow_reveal or fm_animate_single_value with "?" -- see CONCEPT BEAT RULE below.
+
+=== COLOR IS NOT OPTIONAL — HARD RULE ===
+NEVER use BRAND_GRAY (#8A94A6) as the fill color for bars, gauges, or any hero visual element. Gray communicates nothing emotionally and is invisible against the dark background.
+
+EVERY bar, gauge fill, donut arc, and counter MUST use one of:
+- BRAND_RED (#FF4D4D): loss, danger, debt, expenses, warning, anything negative or alarming
+- BRAND_GREEN (#38D996): income, gain, growth, savings building, anything positive
+- BRAND_GOLD (#FFD166): neutral highlight, key numbers, caution
+
+If bars are gray in your output, you have failed the emotional impact requirement. Recolor them.
+
+=== NEAR-ZERO TEXT RULE — THE MOST IMPORTANT INSTRUCTION ===
+The audio narration speaks ALL the words. Your visual's ONLY job is to show what those words MEAN — never to repeat them.
+
+Think of how 3blue1brown explains neural networks: nodes light up, edges pulse, matrices transform, activations flow — no captions, no sentences, just pure visual storytelling. That is exactly the standard here.
+
+NEVER put on screen:
+- Sentences, phrases, or words from the narration
+- Explanatory labels longer than 2-3 words
+- Any Text() that a viewer could hear in the audio instead
+
+THE ONLY TEXT ALLOWED:
+- Actual data values: $4,200 | 67% | $1,800/mo | 1 month
+- Ultra-short chart axis labels: "Rent" | "Income" | "Net" (1-2 words)
+- Chapter title cards via fm_animate_glow_reveal ONLY (hook/concept beats)
+
+WRONG: Text("Most people have less than one month of savings")
+RIGHT: fm_animate_gauge(self, 0.8, 6, "Months of Runway", BRAND_RED, duration=D)
+
+WRONG: Text("Your side hustle income is not enough to replace your job")
+RIGHT: fm_animate_comparison_bars(self, [("Side Hustle", 500, BRAND_GREEN), ("Job Income", 4200, BRAND_GOLD)], duration=D)
+
+If your construct() has more than 2 Text() objects that are not numbers or 1-2 word labels, you are writing captions. STOP. Replace them with a chart, gauge, counter, or comparison visual. The audio already says the words — your job is to make the viewer SEE the reality behind those words.
+
 === HARD STRUCTURAL RULES (checked mechanically, violating these wastes the whole chunk) ===
 - Your response for EACH chunk must be exactly: `from manim import *` on its own line, then exactly ONE class definition subclassing either FinanceDashboardScene (the normal case) or FinanceDashboard3DScene (only for a deliberate 3D establishing-shot tilt, see below), with a `construct(self)` method, and nothing else at the top level -- no print statements, no code outside the class, no second class.
 - FinanceDashboardScene and FinanceDashboard3DScene are already defined for you before your code runs. Do not redefine them, do not set self.camera.background_color yourself, do not draw your own grid or background -- setup() on both base classes already paints the dark navy dashboard background, grid, and ticker texture. Your construct() goes straight to the chunk's actual content.
 - The ONLY imports allowed in your own code are `manim`, `numpy`, `math` -- nothing else, ever.
 - Never reference: open, exec, eval, compile, __import__, os, sys, subprocess, socket, requests, shutil, globals, locals, vars, input, breakpoint, exit, quit, or any dunder attribute.
 - Never use MathTex, Tex, SingleStringMathTex, or DecimalNumber -- this environment has no working LaTeX toolchain and all four route through it, which crashes the render every time. For ALL text and numbers, including ones that animate or count up, use only `Text(...)`. For a number that needs to animate (counting up/down, or tracking a ValueTracker), do NOT use DecimalNumber -- instead use `always_redraw`: `counter = always_redraw(lambda: Text(f"${tracker.get_value():,.0f}", font_size=120, color="#F5F7FA"))`, `self.add(counter)`, then `self.play(tracker.animate.set_value(34000), run_time=2)`. This gives the same live-updating effect with zero LaTeX dependency.
-- Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, Axes, NumberLine, NumberPlane, SVGMobject, ComplexPlane, PolarPlane. Use Text() and the fm_* library instead. For line charts use fm_animate_line_chart, for bar charts use fm_animate_bar_chart. For ANY icon or symbol (house, person, clock, dollar sign, warning triangle, checkmark) use fm_icon(name, size, color) — never SVGMobject, never ImageMobject, never any class that loads external files.
+- Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, Axes, NumberLine, NumberPlane, SVGMobject, ComplexPlane, PolarPlane. Use Text() and the fm_* library instead. For line charts prefer fm_animate_line_chart (consistent styling), for bar charts use fm_animate_bar_chart. Axes, NumberLine, and NumberPlane are now fully supported — LaTeX is installed in this environment, so you may use them directly when the library functions do not cover the chart you need. For ANY icon or symbol (house, person, clock, dollar sign, warning triangle, checkmark) use fm_icon(name, size, color) — never SVGMobject, never ImageMobject, never any class that loads external files.
 - RESTRUCTURE_MOBJECTS WARNING: never call self.add() on a fm_* result AND ALSO animate its submobjects separately. The returned VGroup must be treated as an atomic unit. Wrong: `card = fm_card(...); self.add(card); self.play(FadeIn(card[0]))`. Correct: `card = fm_card(...); self.play(FadeIn(card))`. Accessing submobjects of fm_* returns (card[0], cards[1], etc.) and adding them separately to the scene causes Manim's restructure_mobjects crash.
-- GAUGE RULE: for ANY visual showing a meter, dial, speedometer, runway, or sweep-arc gauge, you MUST use fm_animate_gauge. Never build a custom Line needle or Arrow pointer that rotates from center — these always overlap the value text and look broken. fm_animate_gauge handles the arc fill, the value text position, and the label correctly.
+- GAUGE RULE: gauges are for PROPORTIONS only (a value that is meaningfully full/empty against a max, e.g. "half your emergency fund," "67% of capacity"). A small raw count like "1 month of runway" is NOT a proportion and must NOT become a gauge -- see the primitive-selection table above, use fm_animate_single_value instead. Once you have genuinely decided a beat is a proportion-of-a-whole and a gauge is the right call, you MUST use fm_animate_gauge to build it rather than a custom Line needle or Arrow pointer that rotates from center — these always overlap the value text and look broken. fm_animate_gauge handles the arc fill, the value text position, and the label correctly.
 - CONCEPT BEAT RULE: when a beat names a concept but has no data yet (e.g. "Passive Income", "Side Hustle", "Emergency Fund"), use fm_animate_glow_reveal or fm_animate_single_value with a "?" as the value string. Never draw arbitrary decorative shapes (waves, spirals, random arcs) — they communicate nothing.
 - HARD TIMING RULE: the sum of ALL self.play(run_time=X) + self.wait(X) values in your construct() must equal the chunk's given duration. Chunks that render more than 45% longer than target are rejected and replaced with a blank filler. The most common cause of rejection is calling an fm_animate_* function (which already consumes the full duration internally) AND THEN also adding self.wait() or another self.play() on top -- this doubles the length and guarantees rejection. One fm_animate_* call = the entire construct(). If you use raw Manim instead, your play/wait budget is the chunk duration, spend it all, do not go over.
 
@@ -3799,6 +3851,27 @@ This is a documentary finance dashboard. The items below are examples of the tec
 - Gradient fill under a curve: for compound growth, inflation gap, or any "area under the line" beat, build the filled region as a Polygon following the curve's points down to the baseline, then call `region.set_color_by_gradient(ACCENT_COLOR, "#111A24")` so it reads as a glowing accent at the curve and fades toward the dark panel color at the baseline, rather than a flat single-color fill.
 - Anchored moving labels: when a value label belongs to a point that's animating (the end of a growing line, the top of a rising bar), don't place a separate static Text and hope it stays aligned -- build it with `always_redraw(lambda: Text(...).next_to(moving_point, UP))` so the label physically tracks the point every frame, the same way a real financial chart's price tag follows the line.
 This list is a sample of the technique level, not the ceiling -- if you can see a better, more specific way to visualize a particular beat using these same underlying techniques, build that instead of forcing the beat into the nearest named item.
+
+=== WHEN A BEAT NEEDS MULTIPLE ELEMENTS, COMPOSE THEM AS ONE LAYOUT, NOT SEPARATE OBJECTS DROPPED AT ORIGIN ===
+A beat that has more than one visual element (an icon plus a number plus a bar, or several bars in one comparison) needs an explicit layout decision before you write any positioning code. Never call several fm_* or icon/text builders and leave each at its default position, since they will all land stacked on top of each other at ORIGIN -- this produces unreadable visual noise, not a composition. Pick ONE of these layouts and position every element relative to it:
+- Horizontal row: elements placed left-to-right with consistent spacing, using .next_to(previous_element, RIGHT, buff=...) chained from one anchor element, never each one independently .move_to()'d to a guessed coordinate.
+- Vertical stack: elements placed top-to-bottom with .next_to(previous_element, DOWN, buff=...), same chaining principle.
+- Icon-plus-value pairing: the icon and its number are ONE small group (build them as a VGroup together, icon then value below or beside it via .next_to()), not two independent objects each separately centered on screen.
+- Shared-baseline comparison: when a beat compares two or more amounts (rent vs income, multiple cost categories), every bar's bottom edge sits on the SAME Line, and every bar's height is scaled relative to the SAME value-to-height ratio so a $2,100 bar and a $20 bar are visibly, proportionally different heights -- never bars that are each sized independently and happen to end up looking similar regardless of their actual values.
+A chunk with two or more elements simply centered at the same point, or several bars with no shared axis so their relative sizes don't reflect their actual values, fails this rule even if each individual element looks fine in isolation.
+
+=== EMOTIONAL IMPACT — REQUIRED ON EVERY CHUNK ===
+Before choosing a visual, answer: what emotion does this beat create? Then build toward that emotion. Finance visuals only work if the viewer FEELS the number, not just reads it.
+
+DANGER / WARNING (debt, empty runway, missed payments): BRAND_RED hero. Bars oppressively tall. Gauges nearly empty. Numbers at font_size 130+. The visual should feel alarming.
+
+LOSS / EXPENSE (rent due, emergency cost, negative net): Show the expense as visually massive next to a tiny income. fm_animate_comparison_bars — a small green stub vs a towering red column — tells the whole story.
+
+POSITIVE / GROWTH (passive income building, savings growing): BRAND_GREEN, upward motion, counter counting UP toward a goal. Rising line chart with gradient fill under it.
+
+HOOK / CONCEPT (introducing an idea): Documentary chapter-card energy. fm_animate_glow_reveal at font_size 120+, glow rings expanding, one bold color accent. Fill the entire frame.
+
+SCALE IS EMOTIONAL: hero numbers font_size 100-150 always. A $200 passive income bar should look pathetically small next to the $1,800 rent bar. Make the math visible and visceral.
 
 === ESTABLISHING SHOTS: WHEN AND HOW TO USE THE 3D BASE CLASS ===
 Most chunks should use FinanceDashboardScene (flat 2D) -- it is not heavier and is the right default. Occasionally, for a chunk introducing a new hero card or chart for the first time, or a chapter-opening beat, subclass FinanceDashboard3DScene instead so that one hero object tilts in from an angle and settles flat, like a dashboard panel rotating into view. Build the hero object as a single VGroup, give it a starting rotation before your first self.play (e.g. `hero.rotate(60 * DEGREES, axis=UP)`), then settle it with `self.play(Rotate(hero, angle=-60 * DEGREES, axis=UP, run_time=...))`. Rotate the object itself, not the camera, unless you specifically intend a slow establishing pan. Use this sparingly -- an occasional establishing beat, not a constant gimmick. The background is already locked flat for you via add_fixed_in_frame_mobjects, so it will not rotate even while your hero object does.

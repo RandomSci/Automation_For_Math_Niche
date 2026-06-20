@@ -359,7 +359,6 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
         [-total_w / 2 - 0.4, base_y - 0.45, 0],
         [ total_w / 2 + 0.4, base_y - 0.45, 0],
     ).set_stroke(color=BRAND_GRAY, opacity=0.38, width=1.5)
-    scene.add(baseline)
 
     bars   = VGroup()
     labels = VGroup()
@@ -393,6 +392,15 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
         cat_lbl.next_to(bar, DOWN, buff=0.5 if v >= 0 else 0.9)
         labels.add(VGroup(val_lbl, cat_lbl))
 
+    all_elements = VGroup(baseline, bars, labels)
+    safe_bottom = -(config.frame_height * 0.44)
+    actual_bottom = all_elements.get_bottom()[1]
+    if actual_bottom < safe_bottom:
+        shift_up = safe_bottom - actual_bottom
+        all_elements.shift(UP * shift_up)
+        baseline.shift(UP * shift_up)
+
+    scene.add(baseline)
     anim_t  = max(min(duration * 0.70, duration - 0.6), 0.1)
     hold_t  = max(duration - anim_t - 0.15, 0.05)
     per_bar = anim_t / n
@@ -563,6 +571,9 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
         subtitle_color = accent_color
 
     text = Text(text_str, font_size=font_size, color=BRAND_WHITE, weight=BOLD)
+    safe_w = config.frame_width * 0.84
+    if text.width > safe_w:
+        text.scale(safe_w / text.width)
     text.move_to(ORIGIN if subtitle is None else ORIGIN + UP * 0.35)
 
     rings = VGroup()
