@@ -1,32 +1,20 @@
-# ============================================================
-# FINANCE EXPLAINER - AI Video Generator v1
-# New niche, character-free. Reuses the Vaults v3 architecture:
-# Two-call GPT (Story Beats -> Render Decisions), OpenCV + Pillow
-# renderer, Whisper word-timestamp-driven timing, validation pass.
-#
-# What's NEW vs Vaults: the render decision vocabulary adds
-# number_counter (animated count-up/down) and grid (repeated-glyph
-# walls, e.g. a column of zeros) element types, suited to numbers/
-# stats/comparisons instead of dramatic single-word captions. Topic
-# styles, music map, and GPT prompts are finance-specific. No
-# recurring character, no procedural illustration shapes (planet/
-# brain/etc) -- this niche is character-free by design.
-# ============================================================
-
 import subprocess
 import os
 import json
 import random
 import math
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import requests
 import traceback
 import glob
+import tempfile
 import numpy as np
 from datetime import datetime
 from dotenv import load_dotenv
 import cv2
 from PIL import Image
+import shutil
 
 load_dotenv()
 
@@ -35,7 +23,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Finance Explainer v1")
+app = FastAPI(title="Finance Explainer v2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 current_job = {"status": "idle", "progress": 0, "output": None, "error": None, "started_at": None}
@@ -44,29 +32,45 @@ OUTPUT_WIDTH  = 1920
 OUTPUT_HEIGHT = 1080
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-# ── Shared GPT-4o rate limiter (adaptive) ────────────────────────────
-# Call 1, Call 2, and Call 3 all batch against gpt-4o with their own
-# ThreadPoolExecutors. Those pools have no idea about each other, but
-# they share the SAME org-level tokens-per-minute ceiling -- batches
-# from different calls were colliding mid-window and getting 429'd.
-#
-# This throttle is adaptive, not a blind fixed gap: every response
-# carries OpenAI's real x-ratelimit-remaining-tokens header, which is
-# the actual ground truth for how much budget is left in the current
-# window. When plenty of budget remains, calls go out close to
-# back-to-back; as the remaining-token count drops, the gap between
-# call starts widens automatically. If the header isn't present for
-# any reason (older SDK behavior, network proxy stripping it, etc),
-# this falls back to a conservative fixed gap rather than guessing.
+
+def safe_int(d, key, default):
+    """Like dict.get(key, default), but ALSO falls back to default
+    when the key is present with an explicit None/null value, not just
+    when the key is absent. Plain .get(key, default) only applies its
+    default for a MISSING key -- if a GPT call's JSON ever returns
+    {"decimals": null} (a completely normal way to express "not
+    applicable"), .get() happily returns None, and int(None) crashes.
+    This was a real, repeated production bug across multiple element
+    types in both validate_decisions and the renderer."""
+    v = d.get(key, default)
+    return int(v) if v is not None else int(default)
+
+
+def safe_float(d, key, default):
+    """Same fix as safe_int, for float fields."""
+    v = d.get(key, default)
+    return float(v) if v is not None else float(default)
+
+
+def safe_set_default(d, key, default):
+    """Like dict.setdefault(key, default), but ALSO overwrites an
+    existing explicit None value with default -- plain setdefault only
+    fills in a MISSING key, so {"size": None} survives setdefault
+    untouched and still crashes downstream at the first int()/float()
+    call on it."""
+    if d.get(key) is None:
+        d[key] = default
+    return d[key]
+
 import threading
 import time as _time
 
-_GPT4O_CONCURRENCY = threading.Semaphore(3)   # max simultaneous gpt-4o requests, any caller
+_GPT4O_CONCURRENCY = threading.Semaphore(3)
 _GPT4O_LOCK = threading.Lock()
 _GPT4O_LAST_CALL_TS = [0.0]
-_GPT4O_TPM_LIMIT = 30000          # org's tokens-per-minute ceiling (used as the fallback reference)
-_GPT4O_REMAINING_TOKENS = [_GPT4O_TPM_LIMIT]   # last known remaining-tokens reading from headers
-_GPT4O_FALLBACK_GAP_SECONDS = 1.5  # used only if rate-limit headers are unavailable
+_GPT4O_TPM_LIMIT = 30000
+_GPT4O_REMAINING_TOKENS = [_GPT4O_TPM_LIMIT]
+_GPT4O_FALLBACK_GAP_SECONDS = 1.5
 
 def _adaptive_gap_seconds():
     """Scale the minimum gap between call starts based on the most
@@ -77,7 +81,6 @@ def _adaptive_gap_seconds():
     if remaining is None:
         return _GPT4O_FALLBACK_GAP_SECONDS
     headroom_frac = max(0.0, min(1.0, remaining / _GPT4O_TPM_LIMIT))
-    # headroom_frac=1.0 (full budget) -> ~0.1s gap; headroom_frac=0.0 (exhausted) -> 4s gap
     return 0.1 + (4.0 - 0.1) * (1.0 - headroom_frac)
 
 def gpt4o_call(client, **kwargs):
@@ -100,7 +103,7 @@ def gpt4o_call(client, **kwargs):
                 with _GPT4O_LOCK:
                     _GPT4O_REMAINING_TOKENS[0] = int(remaining_hdr)
         except (TypeError, ValueError):
-            pass  # header missing/malformed -- keep using the last known value
+            pass
         return raw.parse()
 
 
@@ -140,18 +143,14 @@ def dynamic_batch_size(n_beats: int, min_size: int = 3, max_size: int = 10) -> i
     if n_beats <= 20:
         size = min_size
     elif n_beats <= 60:
-        # Linear scale from 3 at 20 beats to 6 at 60 beats
         size = round(min_size + (6 - min_size) * (n_beats - 20) / 40)
     else:
-        # Linear scale from 6 at 60 beats to max_size at 150+ beats
         size = round(6 + (max_size - 6) * min(1.0, (n_beats - 60) / 90))
     return max(min_size, min(max_size, size))
 
 if not OPENAI_API_KEY:
     print("⚠  WARNING: OPENAI_API_KEY not set.")
 
-# Toggle: True = generate animated background procedurally (no broll, no
-# clip failures, zero cost). False = use the old broll-clip pipeline.
 USE_PROCEDURAL_BACKGROUND = True
 
 MUSIC_MAP = {
@@ -168,18 +167,21 @@ FONT_BLACK_CANDIDATES = [
     os.path.join(FONTS_DIR, "Anton-Regular.ttf"),
     os.path.join(FONTS_DIR, "Montserrat-Black.ttf"),
     os.path.join(FONTS_DIR, "Montserrat-ExtraBold.ttf"),
+    os.path.join(FONTS_DIR, "Poppins-Bold.ttf"),
     "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
 FONT_BOLD_CANDIDATES = [
     os.path.join(FONTS_DIR, "Montserrat-ExtraBold.ttf"),
     os.path.join(FONTS_DIR, "Montserrat-Bold.ttf"),
+    os.path.join(FONTS_DIR, "Poppins-Bold.ttf"),
     "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
 ]
 FONT_REGULAR_CANDIDATES = [
     os.path.join(FONTS_DIR, "Montserrat-Bold.ttf"),
+    os.path.join(FONTS_DIR, "Poppins-Bold.ttf"),
     "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
@@ -194,6 +196,15 @@ def find_font(candidates):
 FONT_BLACK   = find_font(FONT_BLACK_CANDIDATES)
 FONT_BOLD    = find_font(FONT_BOLD_CANDIDATES)
 FONT_REGULAR = find_font(FONT_REGULAR_CANDIDATES)
+
+_FUNCTIONS_MANIM_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "functions_manim.py")
+try:
+    with open(_FUNCTIONS_MANIM_PATH) as _fmf:
+        _FUNCTIONS_MANIM_CODE = _fmf.read()
+    print(f"  ✅ functions_manim.py loaded ({len(_FUNCTIONS_MANIM_CODE)} chars)")
+except FileNotFoundError:
+    _FUNCTIONS_MANIM_CODE = ""
+    print(f"  ⚠ functions_manim.py not found at {_FUNCTIONS_MANIM_PATH} -- fm_* library unavailable")
 
 def get_primary_font_path(bold: bool = True) -> str:
     """Return best available font: Black > ExtraBold > Bold > anything."""
@@ -228,7 +239,6 @@ def _probe_clip_health(filepath: str) -> tuple[bool, str]:
 @app.on_event("startup")
 async def startup_event():
     print("🚀 Vaults of History v3 starting...")
-    # Audit broll folders so missing clips are immediately visible
     broll_dirs = ['space_vids','ancient_ruins_vids','cosmic_vids',
                   'dark_sky_vids','temple_vids']
     print("📁 Broll folder audit:")
@@ -238,7 +248,6 @@ async def startup_event():
             files = [f for f in os.listdir(d) if f.lower().endswith(('.mp4','.mov','.avi'))]
             status = f"✅ {len(files)} clips" if files else "❌ EMPTY -- add Seedance clips here"
             print(f"  {d}: {status}")
-            # Health-check each clip so broken files are caught before a run
             for f in files:
                 fpath = os.path.join(d, f)
                 healthy, reason = _probe_clip_health(fpath)
@@ -256,28 +265,22 @@ async def startup_event():
         print("  ✅ All clips passed health check")
 
 
-
-# ============================================================
-# PROCEDURAL BACKGROUND GENERATOR
-# Replaces broll entirely. No clip failures, no black fillers,
-# zero cost, and a visual identity matching a finance/numbers
-# explainer channel -- clean, data-forward, not cinematic-horror.
-#
-# One primary animated style per topic, with intensity (from
-# GPT Call 1's per-beat "intensity" field) smoothly driving
-# animation speed/density/glow over the course of the video.
-# ============================================================
-
 def _bgr(r, g, b):
     """Convenience: define colors in RGB, return BGR for OpenCV."""
     return (b, g, r)
 
 
 TOPIC_STYLES = {
+    'finance': {
+        'bg':      _bgr(7, 16, 24),
+        'accent':  _bgr(138, 148, 166),
+        'accent2': _bgr(56, 217, 150),
+        'styles':  ['dashboard_grid', 'dashboard_ticker'],
+    },
     'markets': {
         'bg':      _bgr(8, 10, 14),
-        'accent':  _bgr(120, 230, 170),    # market green
-        'accent2': _bgr(255, 215, 130),    # gold/currency
+        'accent':  _bgr(120, 230, 170),
+        'accent2': _bgr(255, 215, 130),
         'styles':  ['particles', 'geometric'],
     },
     'growth': {
@@ -288,13 +291,13 @@ TOPIC_STYLES = {
     },
     'warning': {
         'bg':      _bgr(10, 6, 6),
-        'accent':  _bgr(230, 90, 80),       # warning red
+        'accent':  _bgr(230, 90, 80),
         'accent2': _bgr(255, 200, 90),
         'styles':  ['particles', 'geometric'],
     },
     'history': {
         'bg':      _bgr(10, 10, 14),
-        'accent':  _bgr(255, 215, 130),     # gold
+        'accent':  _bgr(255, 215, 130),
         'accent2': _bgr(170, 175, 190),
         'styles':  ['geometric', 'particles'],
     },
@@ -362,7 +365,7 @@ def _draw_geometric(frame, t, intensity, color):
     cx, cy = w // 2, h // 2
     base_r = int(min(w, h) * 0.32)
     n_shapes = 3
-    speed = 4 + intensity * 1.2  # degrees/sec
+    speed = 4 + intensity * 1.2
     for i in range(n_shapes):
         angle0 = math.radians(t * speed * (1 if i % 2 == 0 else -1) + i * 40)
         r = base_r - i * int(base_r * 0.22)
@@ -417,26 +420,86 @@ def _draw_particles(frame, t, intensity, color, seed=21, n=70):
     return frame
 
 
+def _draw_dashboard_grid(frame, t, intensity, color):
+    """Subtle low-opacity grid lines, a couple of faint chart-axis
+    lines, plus a slowly drifting line-chart silhouette -- evoking a
+    financial dashboard background -- never bright or busy, just
+    enough structure and life to feel 'finance', not decorative."""
+    h, w = frame.shape[:2]
+    overlay = frame.copy()
+    spacing = max(40, int(min(w, h) * 0.07))
+    grid_alpha = 0.05 + 0.005 * min(intensity, 6)
+    for x in range(0, w, spacing):
+        cv2.line(overlay, (x, 0), (x, h), color, 1, lineType=cv2.LINE_AA)
+    for y in range(0, h, spacing):
+        cv2.line(overlay, (0, y), (w, y), color, 1, lineType=cv2.LINE_AA)
+    frame = cv2.addWeighted(overlay, grid_alpha, frame, 1 - grid_alpha, 0)
+
+    axis_overlay = frame.copy()
+    axis_y = int(h * 0.82)
+    axis_x = int(w * 0.08)
+    cv2.line(axis_overlay, (axis_x, int(h * 0.15)), (axis_x, axis_y), color, 2, lineType=cv2.LINE_AA)
+    cv2.line(axis_overlay, (axis_x, axis_y), (int(w * 0.92), axis_y), color, 2, lineType=cv2.LINE_AA)
+    axis_alpha = 0.07 + 0.004 * min(intensity, 6)
+    frame = cv2.addWeighted(axis_overlay, axis_alpha, frame, 1 - axis_alpha, 0)
+
+    chart_overlay = frame.copy()
+    n_pts = 40
+    pts = []
+    scroll = t * 12
+    for i in range(n_pts):
+        px = w * (i / (n_pts - 1))
+        wobble = (
+            18 * math.sin((i * 0.4) + scroll * 0.05) +
+            10 * math.sin((i * 0.9) + scroll * 0.09 + 1.7) +
+            6 * math.sin((i * 1.7) + scroll * 0.14 + 3.1)
+        )
+        py = int(h * 0.62 + wobble)
+        pts.append((int(px), py))
+    pts_arr = np.array(pts, dtype=np.int32)
+    cv2.polylines(chart_overlay, [pts_arr], False, color, 2, lineType=cv2.LINE_AA)
+    fill_pts = pts + [(w, h), (0, h)]
+    fill_arr = np.array(fill_pts, dtype=np.int32)
+    cv2.fillPoly(chart_overlay, [fill_arr], color, lineType=cv2.LINE_AA)
+    chart_alpha = 0.035 + 0.003 * min(intensity, 6)
+    frame = cv2.addWeighted(chart_overlay, chart_alpha, frame, 1 - chart_alpha, 0)
+    return frame
+
+
+def _draw_dashboard_ticker(frame, t, intensity, color):
+    """Small moving ticker-like numbers drifting slowly across the
+    background, very low alpha -- pure texture, never legible content,
+    never distracting from the foreground visual."""
+    h, w = frame.shape[:2]
+    rng_seed_rows = 5
+    overlay = frame.copy()
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    for row in range(rng_seed_rows):
+        y = int(h * (0.08 + row * 0.21))
+        speed = 14 + row * 6
+        direction = 1 if row % 2 == 0 else -1
+        offset = (t * speed * direction) % (w + 400) - 200
+        rng = random.Random(row * 97)
+        x = offset
+        while x < w + 100:
+            val = rng.choice(["+0.4%", "-0.2%", "+1.1%", "-0.6%", "+2.3%", "-1.4%"])
+            cv2.putText(overlay, val, (int(x), y), font, 0.55, color, 1, cv2.LINE_AA)
+            x += rng.randint(220, 340)
+    alpha = 0.045 + 0.003 * min(intensity, 6)
+    frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+    return frame
+
+
 _BG_DRAW_FNS = {
     'starfield': lambda frame, t, intensity, color, sf: sf.draw(frame, t, intensity, color),
     'nebula':    lambda frame, t, intensity, color, sf: _draw_nebula(frame, t, intensity, color),
     'geometric': lambda frame, t, intensity, color, sf: _draw_geometric(frame, t, intensity, color),
     'aurora':    lambda frame, t, intensity, color, sf: _draw_aurora(frame, t, intensity, color),
     'particles': lambda frame, t, intensity, color, sf: _draw_particles(frame, t, intensity, color),
+    'dashboard_grid':   lambda frame, t, intensity, color, sf: _draw_dashboard_grid(frame, t, intensity, color),
+    'dashboard_ticker': lambda frame, t, intensity, color, sf: _draw_dashboard_ticker(frame, t, intensity, color),
 }
 
-
-# ============================================================
-# PROCEDURAL ILLUSTRATIONS -- "drawing" system
-#
-# A small library of line-art subjects, each defined as a list of
-# STROKES (point paths in 0-1 normalized space). When a beat's
-# content clearly evokes one of these (GPT Call 1 sets
-# beat["visual_subject"]), the renderer progressively "draws" the
-# shape -- a pen-reveal animation -- then holds it with a gentle
-# pulse for the rest of the beat. Sits centered, low-opacity,
-# beneath the text layer.
-# ============================================================
 
 def _circle_pts(cx, cy, r, n=36, a0=0.0, a1=2*math.pi):
     return [(cx + r*math.cos(a0 + (a1-a0)*i/(n-1)),
@@ -466,7 +529,6 @@ def _lumpy_circle_pts(cx, cy, r, bumps=5, bump_amt=0.15, n=48):
 def _build_illustration_shapes():
     shapes = {}
 
-    # UPTREND: rising line + arrowhead, classic "stock going up" glyph
     line_pts = [(0.18, 0.78), (0.36, 0.58), (0.50, 0.66), (0.82, 0.24)]
     arrow_tip = line_pts[-1]
     ang = math.atan2(line_pts[-1][1] - line_pts[-2][1], line_pts[-1][0] - line_pts[-2][0])
@@ -481,7 +543,6 @@ def _build_illustration_shapes():
         [left, arrow_tip, right],
     ]
 
-    # DOWNTREND: mirror of uptrend
     dline_pts = [(0.18, 0.24), (0.36, 0.46), (0.50, 0.38), (0.82, 0.78)]
     dang = math.atan2(dline_pts[-1][1] - dline_pts[-2][1], dline_pts[-1][0] - dline_pts[-2][0])
     dback_x = dline_pts[-1][0] - head_len * math.cos(dang)
@@ -494,7 +555,6 @@ def _build_illustration_shapes():
         [dleft, dline_pts[-1], dright],
     ]
 
-    # COIN STACK: 3 stacked ellipses (top view edge), side rim lines
     shapes['coin_stack'] = [
         _ellipse_pts(0.5, 0.70, 0.22, 0.07, n=28),
         _ellipse_pts(0.5, 0.58, 0.22, 0.07, n=28),
@@ -503,7 +563,6 @@ def _build_illustration_shapes():
         [(0.72, 0.46), (0.72, 0.70)],
     ]
 
-    # CLOCK: circle face + two hands (time value of money / countdown)
     hour_ang = math.radians(-60)
     min_ang  = math.radians(60)
     shapes['clock'] = [
@@ -512,7 +571,6 @@ def _build_illustration_shapes():
         [(0.5, 0.5), (0.5 + 0.22 * math.cos(min_ang),  0.5 + 0.22 * math.sin(min_ang))],
     ]
 
-    # PERCENT: two circles + diagonal slash, the % glyph as line art
     diag = [(0.24, 0.76), (0.76, 0.24)]
     shapes['percent'] = [
         _circle_pts(0.30, 0.30, 0.10, n=22),
@@ -520,7 +578,6 @@ def _build_illustration_shapes():
         diag,
     ]
 
-    # SCALE: balance/comparison glyph -- center post + tilted beam + two pans
     tilt = math.radians(-8)
 
     def _rot(px, py, cx, cy, a):
@@ -531,15 +588,14 @@ def _build_illustration_shapes():
     beam_l = _rot(0.22, 0.32, 0.5, 0.32, tilt)
     beam_r = _rot(0.78, 0.32, 0.5, 0.32, tilt)
     shapes['scale'] = [
-        [(0.5, 0.20), (0.5, 0.82)],          # center post
-        [(0.34, 0.82), (0.66, 0.82)],        # base
-        [beam_l, beam_r],                     # beam
-        _ellipse_pts(beam_l[0], beam_l[1] + 0.10, 0.09, 0.035, n=18),  # left pan
-        _ellipse_pts(beam_r[0], beam_r[1] + 0.10, 0.09, 0.035, n=18),  # right pan
+        [(0.5, 0.20), (0.5, 0.82)],
+        [(0.34, 0.82), (0.66, 0.82)],
+        [beam_l, beam_r],
+        _ellipse_pts(beam_l[0], beam_l[1] + 0.10, 0.09, 0.035, n=18),
+        _ellipse_pts(beam_r[0], beam_r[1] + 0.10, 0.09, 0.035, n=18),
     ]
 
     return shapes
-
 
 
 ILLUSTRATION_SHAPES = _build_illustration_shapes()
@@ -634,7 +690,6 @@ def _build_subject_timeline(beats, total_duration, fps):
     return out
 
 
-
 def _build_intensity_curve(beats, total_duration, fps):
     """Per-frame intensity (1-10), linearly interpolated between beat
     midpoints and smoothed slightly so it drifts rather than jumps."""
@@ -656,7 +711,6 @@ def _build_intensity_curve(beats, total_duration, fps):
         control_t, control_v,
         left=control_v[0], right=control_v[-1]
     )
-    # Light smoothing (moving average) so intensity drifts, not snaps
     if len(curve) > 5:
         kernel = np.ones(5) / 5
         curve = np.convolve(curve, kernel, mode='same')
@@ -686,9 +740,6 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
     if n_with_subject:
         print(f"  ✏️  Illustrations active on {n_with_subject}/{n_frames} frames")
 
-    # Render at half-resolution then upscale -- the background is intentionally
-    # soft/abstract (it sits behind text), so this is ~4x faster with no
-    # visible quality loss after upscale + video compression.
     rw, rh = width // 2, height // 2
     starfield = _Starfield(rw, rh, n_stars=220, seed=hash(topic) & 0xffff)
 
@@ -696,7 +747,6 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter(raw_path, fourcc, fps, (width, height))
 
-    # Precompute a subtle vignette mask once (multiplicative, darkens edges)
     yv, xv = np.mgrid[0:rh, 0:rw].astype(np.float32)
     cx, cy = rw / 2, rh / 2
     dist = np.sqrt(((xv - cx) / (rw / 2)) ** 2 + ((yv - cy) / (rh / 2)) ** 2)
@@ -709,23 +759,16 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
 
         frame = np.full((rh, rw, 3), bg_color, dtype=np.uint8)
 
-        # Primary style at full strength
         frame = _BG_DRAW_FNS[style_names[0]](frame, t, intensity, accent, starfield)
-        # Secondary style as subtle accent layer
         if len(style_names) > 1:
             frame = _BG_DRAW_FNS[style_names[1]](frame, t, intensity * 0.7, accent2, starfield)
 
-        # Content-aware illustration (drawing system) -- if this beat
-        # evokes a known subject (planet, brain, dna, etc.), draw it with
-        # a pen-reveal animation, centered, beneath the text layer
         subj, b_start, b_dur = subject_timeline[f]
         if subj in ILLUSTRATION_SHAPES:
             frame = _draw_illustration(frame, t, b_start, b_dur, subj, accent)
 
-        # Vignette
         frame = (frame.astype(np.float32) * vignette3).astype(np.uint8)
 
-        # Upscale to final output resolution
         frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
 
         writer.write(frame)
@@ -736,7 +779,6 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
     writer.release()
     print(f"    {n_frames}/{n_frames} frames... done")
 
-    # Re-encode to H.264 yuv420p for downstream ffmpeg compatibility
     r = subprocess.run([
         'ffmpeg', '-y', '-i', raw_path,
         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
@@ -750,12 +792,6 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
     return output_path
 
 
-
-# ============================================================
-# GPT CALL 1 -- STORY BEAT ANALYZER
-# Sends Whisper segments (with timestamps) to GPT so it can
-# produce accurate timing without word-level lookup
-# ============================================================
 def build_whisper_word_list(whisper_segments: list) -> list:
     """Flatten Whisper segments into an ordered word list with timestamps."""
     words = []
@@ -879,7 +915,6 @@ def analyze_story_beats(transcript_text: str, whisper_segments: list,
     print(f"  🎭 Call 1: Story beats ({len(transcript_text)} chars, {total_duration:.1f}s)...")
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    # Build timed lines -- each Whisper segment as its own line with [start - end]
     timed_lines = []
     for seg in whisper_segments:
         s = float(seg.get('start', 0))
@@ -951,13 +986,6 @@ Return ONLY valid JSON:
   ]
 }}"""
 
-    # Batch by Whisper segment count, not a single giant call -- a long
-    # script (100+ segments) asking for one uncapped JSON response with
-    # every beat in it can take a very long time to generate (or run
-    # into the output-token ceiling) before anything is returned, which
-    # looks identical to "stuck" with no progress output in between.
-    # Splitting into chunks gives fast, visible per-chunk progress, the
-    # same pattern already used for Call 2 and Call 3.
     SEGMENTS_PER_BATCH = dynamic_batch_size(len(timed_lines), min_size=15, max_size=40)
     batches = [timed_lines[i:i+SEGMENTS_PER_BATCH] for i in range(0, len(timed_lines), SEGMENTS_PER_BATCH)]
     print(f"  🎭 Call 1: {len(batches)} chunk(s) of ~{SEGMENTS_PER_BATCH} segments each...")
@@ -965,7 +993,7 @@ Return ONLY valid JSON:
     def _run_batch(batch_idx, batch_lines):
         print(f"  🎭 Call 1 chunk {batch_idx+1}/{len(batches)}: {len(batch_lines)} segments...")
         response = _call_with_retry(lambda: gpt4o_call(client,
-            model="gpt-4o",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": _build_beats_batch_prompt(topic_hint, batch_lines, batch_idx == 0)}
@@ -996,21 +1024,17 @@ Return ONLY valid JSON:
     for r in results:
         all_beats.extend(r.get('beats', []))
 
-    # topic/music_mood come from the first chunk only -- they describe
-    # the whole video, not a per-chunk property.
     first_result = results[0] if results else {}
+    detected_tone = first_result.get("topic", "default")
     final_result = {
-        "topic": first_result.get("topic", "default"),
+        "topic": "finance",
+        "detected_tone": detected_tone,
         "music_mood": first_result.get("music_mood", "neutral"),
         "beats": all_beats,
     }
-    print(f"  ✅ {len(all_beats)} beats total, topic={final_result['topic']}")
+    print(f"  ✅ {len(all_beats)} beats total, topic=finance (detected tone: {detected_tone})")
     return final_result
 
-
-# ============================================================
-# GPT CALL 2 -- RENDER DECISION GENERATOR
-# ============================================================
 
 def _build_batch_prompt(topic: str, batch: list) -> str:
     """Build the GPT Call 2 user prompt, annotating each beat with its real duration
@@ -1019,7 +1043,7 @@ def _build_batch_prompt(topic: str, batch: list) -> str:
     for b in batch:
         dur = round(float(b.get("end_time", 0)) - float(b.get("start_time", 0)), 2)
         entry = dict(b)
-        entry["_duration_seconds"] = dur  # injected so GPT knows the real budget
+        entry["_duration_seconds"] = dur
         annotated.append(entry)
     return (
         f"Topic: {topic}\n\n"
@@ -1228,12 +1252,6 @@ Return ONLY valid JSON:
   ]
 }}"""
 
-    # Batch size scales with script length (see dynamic_batch_size) --
-    # short scripts keep small batches, long scripts use bigger batches
-    # so total request count doesn't balloon and queue behind the
-    # shared throttle. Capped at 10/batch to stay safely under GPT-4o's
-    # 16384 output-token limit even for dense scenes (~1-1.2k tokens/beat
-    # worst case observed -> 10 beats is ~10-12k, still under the cap).
     BATCH_SIZE = dynamic_batch_size(len(beats))
     all_scenes = []
     batches = [beats[i:i+BATCH_SIZE] for i in range(0, len(beats), BATCH_SIZE)]
@@ -1242,7 +1260,7 @@ Return ONLY valid JSON:
         start_beat = batch_idx * BATCH_SIZE
         print(f"  🎨 Batch {batch_idx+1}/{len(batches)}: beats {start_beat}-{start_beat+len(batch)-1}...")
         response = _call_with_retry(lambda: gpt4o_call(client,
-            model="gpt-4o",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": _build_batch_prompt(topic, batch)}
@@ -1255,10 +1273,6 @@ Return ONLY valid JSON:
         result = json.loads(response.choices[0].message.content)
         batch_scenes = result.get('scenes', [])
         if len(batch_scenes) > len(batch):
-            # GPT split a beat into 2 scenes -- if we keep the extra,
-            # EVERY subsequent scene shifts by +1 relative to its beat,
-            # causing cascading "hallucination" drops in the validator.
-            # Trim to guarantee scenes[i] always corresponds to beats[i].
             print(f"  ⚠️  Batch {batch_idx+1}: expected {len(batch)} scenes, got {len(batch_scenes)} -- trimming extras")
             batch_scenes = batch_scenes[:len(batch)]
         elif len(batch_scenes) < len(batch):
@@ -1268,9 +1282,6 @@ Return ONLY valid JSON:
         print(f"  ✅ Batch {batch_idx+1} done: {len(batch_scenes)} scenes")
         return batch_idx, batch_scenes
 
-    # Concurrency is bounded by the shared _GPT4O_CONCURRENCY semaphore
-    # (process-wide, shared with Call 3), not by this pool size -- the
-    # pool just needs enough workers to keep the semaphore saturated.
     results = [None] * len(batches)
     MAX_WORKERS = 3
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -1291,40 +1302,12 @@ Return ONLY valid JSON:
     return all_scenes
 
 
-# ============================================================
-# ============================================================
-# GPT CALL 3 -- PER-BEAT VISUAL CODE GENERATOR
-#
-# Replaces the old fixed-primitive freeform system (dot/path_shape/
-# label_pill/card) entirely. GPT now reasons from CONTENT to MEANING
-# to VISUAL, then writes real Python drawing code for that one beat --
-# no pre-named shape menu, no "pick from these 4 things". Full
-# creative range: anything Pillow's ImageDraw (or numpy/cv2, both
-# available) can express.
-#
-# Safety model, since GPT-authored code has no built-in math
-# guarantees: each beat's generated code runs in its OWN subprocess
-# with a hard wall-clock timeout and a restricted execution
-# namespace (no filesystem/network access exposed). If generation,
-# parsing, execution, or rendering fails for any reason, that single
-# beat renders blank and the failure is logged -- never crashes the
-# render, never takes down other beats. This is a crash guard, not
-# an aesthetics gate -- a beat that "works" but looks mediocre still
-# renders; only beats that are actually broken get dropped.
-# ============================================================
-
 import ast
 import multiprocessing
 import traceback as _traceback
 
 VISUAL_CODE_TIMEOUT_SECONDS = 8
 
-# Names the generated code is allowed to use. Deliberately excludes
-# anything filesystem/network/process related (open, os, sys, import,
-# eval, exec, __import__, etc). The function signature it must define
-# is draw_beat(draw, t, w, h, np, math) -- draw is a PIL ImageDraw on a
-# transparent RGBA layer already sized to the canvas, t is seconds
-# since this beat started, w/h are canvas pixel dimensions.
 _SAFE_BUILTINS = {
     "abs": abs, "min": min, "max": max, "round": round, "len": len,
     "range": range, "enumerate": enumerate, "zip": zip, "sum": sum,
@@ -1343,7 +1326,19 @@ _FORBIDDEN_NAMES = {
 def _static_safety_check(code: str) -> tuple[bool, str]:
     """Parse the generated code and reject anything that references a
     forbidden name, imports a module, or otherwise tries to step
-    outside pure drawing logic -- BEFORE it ever executes."""
+    outside pure drawing logic -- BEFORE it ever executes.
+
+    Also verifies draw_beat structurally via the AST, not a substring
+    match on the raw text. A substring check like `"def draw_beat(" in
+    code` passes even when the string ALSO contains top-level
+    executable statements outside any function (e.g. stray code before
+    or after the real def, or a malformed response with two defs) --
+    those run immediately on exec() and crash with errors like "name
+    'draw' is not defined" since they're not inside the function scope
+    that actually receives that argument. Real failure seen in
+    production: GPT's JSON response contained extra top-level
+    statements alongside `def draw_beat`, which `"def draw_beat(" in
+    code` happily let through."""
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -1357,151 +1352,334 @@ def _static_safety_check(code: str) -> tuple[bool, str]:
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             return False, f"references dunder attribute '{node.attr}'"
 
-    if "def draw_beat(" not in code:
-        return False, "missing required draw_beat(...) function definition"
+    top_level_defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "draw_beat"]
+    if not top_level_defs:
+        return False, "missing required top-level draw_beat(...) function definition"
+    if len(tree.body) > 1:
+        other_kinds = sorted({type(n).__name__ for n in tree.body
+                              if not (isinstance(n, ast.FunctionDef) and n.name == "draw_beat")})
+        return False, f"unexpected top-level statement(s) outside draw_beat: {', '.join(other_kinds)}"
 
     return True, ""
 
 
-def _beat_worker_loop(code: str, w: int, h: int, conn):
-    """Runs inside ONE subprocess for the lifetime of a single beat.
-    Execs the generated code ONCE, then sits in a loop receiving
-    individual `t` values from the parent and rendering one frame per
-    request -- avoids paying interpreter startup + numpy/PIL import
-    cost on every single frame, which is what made the old per-frame-
-    spawn version slow at 30fps. The parent sends None to signal it's
-    done with this beat, which ends the loop and the process exits."""
+import hashlib
+
+_PRERENDER_CACHE_DIR = os.path.join(tempfile.gettempdir(), "finance_explainer_beat_cache")
+INTERNAL_VISUAL_FPS = 15
+
+
+def _beat_cache_key(code: str, duration: float, fps: int, w: int, h: int) -> str:
+    raw = f"{code}|{duration:.3f}|{fps}|{w}|{h}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
+_EMOJI_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/truetype/noto-color-emoji/NotoColorEmoji.ttf",
+    "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
+]
+_EMOJI_NATIVE_STRIKE_SIZE = 109
+
+ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icons")
+KNOWN_ICONS = {
+    "trending-up", "trending-down", "chart-line", "chart-bar", "chart-pie",
+    "cash-banknote", "coins", "credit-card", "receipt", "invoice",
+    "building-bank", "percentage", "gauge", "calendar", "clock", "scale",
+    "alert-triangle", "moneybag", "home", "car", "stethoscope", "stairs", "wallet",
+}
+
+
+def _load_emoji_font():
+    """Returns a loaded ImageFont, or None if no usable emoji font is
+    found on this machine -- callers must treat None as 'just skip
+    drawing the emoji', never as a hard failure."""
+    from PIL import ImageFont as _ImageFont
+    for path in _EMOJI_FONT_CANDIDATES:
+        if not os.path.exists(path):
+            continue
+        try:
+            return _ImageFont.truetype(path, _EMOJI_NATIVE_STRIKE_SIZE)
+        except Exception:
+            continue
+    return None
+
+
+def _render_beat_frames_worker(code: str, duration: float, fps: int, w: int, h: int, cache_path: str):
+    """Runs inside ONE pool worker process for ONE beat. Execs the
+    generated code once, then renders every frame this beat needs at
+    the reduced internal fps in a tight loop, writes the whole stack
+    to a single .npz file, and returns the cache path (or None on
+    total failure) plus an error string (empty on success).
+
+    Per-frame failures inside the loop don't abort the whole beat --
+    a single bad frame is written as fully transparent and the loop
+    continues, since draw_beat might behave correctly at most t values
+    and only misbehave at one edge case (e.g. t=0 specifically)."""
     try:
         import numpy as _np
         import math as _math
-        from PIL import Image as _Image, ImageDraw as _ImageDraw
+        from PIL import Image as _Image, ImageDraw as _ImageDraw, ImageFont as _ImageFont
 
-        namespace = {"__builtins__": _SAFE_BUILTINS}
+        _emoji_font = _load_emoji_font()
+        _emoji_cache_local = {}
+
+        def _make_draw_emoji(get_layer):
+            def draw_emoji(emoji_char, cx, cy, size):
+                if _emoji_font is None:
+                    return
+                try:
+                    cache_key = (emoji_char, int(size))
+                    glyph = _emoji_cache_local.get(cache_key)
+                    if glyph is None:
+                        tmp = _Image.new("RGBA", (160, 160), (0, 0, 0, 0))
+                        _ImageDraw.Draw(tmp).text((20, 20), emoji_char, font=_emoji_font, embedded_color=True)
+                        bbox = tmp.getbbox()
+                        cropped = tmp.crop(bbox) if bbox else tmp
+                        glyph = cropped.resize((max(1, int(size)), max(1, int(size))), _Image.LANCZOS)
+                        _emoji_cache_local[cache_key] = glyph
+                    layer = get_layer()
+                    gw, gh = glyph.size
+                    layer.alpha_composite(glyph, (int(cx - gw / 2), int(cy - gh / 2)))
+                except Exception:
+                    pass
+            return draw_emoji
+
+        _current_layer_box = [None]
+        draw_emoji = _make_draw_emoji(lambda: _current_layer_box[0])
+
+        _font_cache_local = {}
+
+        def get_font(size, style="bold"):
+            size = max(1, int(size))
+            style = style if style in ("bold", "black") else "bold"
+            cache_key = (size, style)
+            font = _font_cache_local.get(cache_key)
+            if font is None:
+                try:
+                    if style == "black":
+                        font_path = FONT_BLACK or FONT_BOLD
+                    else:
+                        font_path = FONT_BOLD or FONT_BLACK
+                    font = _ImageFont.truetype(font_path, size) if font_path else _ImageFont.load_default()
+                except Exception:
+                    font = _ImageFont.load_default()
+                _font_cache_local[cache_key] = font
+            return font
+
+        def text_size(text, font):
+            try:
+                tmp = _Image.new("RGBA", (10, 10))
+                bbox = _ImageDraw.Draw(tmp).textbbox((0, 0), text, font=font)
+                return (bbox[2] - bbox[0], bbox[3] - bbox[1])
+            except Exception:
+                return (len(text) * 10, 14)
+
+        def safe_box(cx, cy, half_w, half_h):
+            """Returns a guaranteed-valid [x0, y0, x1, y1] box for
+            draw.ellipse/draw.rectangle, given a center point and
+            half-width/half-height. ALWAYS produces x1 >= x0 and
+            y1 >= y0, even if half_w/half_h come in as zero, negative,
+            or a float that rounds awkwardly -- this makes the
+            'y1 must be greater than or equal to y0' crash structurally
+            impossible to produce via this helper, since the absolute
+            value is taken and a minimum of 1 pixel is enforced before
+            the corners are ever computed. Use this INSTEAD OF manually
+            computing [cx-r, cy-r, cx+r, cy+r] yourself, especially for
+            any shape whose size shrinks toward zero as t changes."""
+            cx = float(cx)
+            cy = float(cy)
+            half_w = max(1.0, abs(float(half_w)))
+            half_h = max(1.0, abs(float(half_h)))
+            x0 = int(cx - half_w)
+            y0 = int(cy - half_h)
+            x1 = int(cx + half_w)
+            y1 = int(cy + half_h)
+            if x1 < x0:
+                x0, x1 = x1, x0
+            if y1 < y0:
+                y0, y1 = y1, y0
+            if x1 == x0:
+                x1 = x0 + 1
+            if y1 == y0:
+                y1 = y0 + 1
+            return [x0, y0, x1, y1]
+
+        _icon_cache_local = {}
+
+        def _load_and_tint_icon(name, size, color):
+            cache_key = (name, int(size), tuple(color[:3]))
+            cached = _icon_cache_local.get(cache_key)
+            if cached is not None:
+                return cached
+            path = os.path.join(ICONS_DIR, f"{name}.png")
+            if not os.path.exists(path):
+                return None
+            try:
+                src = _Image.open(path).convert("RGBA")
+                bbox = src.getbbox()
+                if bbox:
+                    src = src.crop(bbox)
+                r, g, b = color[0], color[1], color[2]
+                alpha = src.split()[3]
+                tinted = _Image.new("RGBA", src.size, (r, g, b, 0))
+                tinted.putalpha(alpha)
+                side = max(1, int(size))
+                sw, sh = src.size
+                if sw >= sh:
+                    new_w, new_h = side, max(1, int(side * sh / sw))
+                else:
+                    new_h, new_w = side, max(1, int(side * sw / sh))
+                resized = tinted.resize((new_w, new_h), _Image.LANCZOS)
+                _icon_cache_local[cache_key] = resized
+                return resized
+            except Exception:
+                return None
+
+        def _make_draw_icon(get_layer):
+            def draw_icon(name, cx, cy, size, color=(245, 247, 250, 255)):
+                """Draws one of the bundled finance icons (Tabler Icons,
+                MIT licensed), tinted to the given RGB(A) color, centered
+                at (cx, cy), sized to fit within a `size`x`size` box
+                (aspect ratio preserved). Available names: trending-up,
+                trending-down, chart-line, chart-bar, chart-pie,
+                cash-banknote, coins, credit-card, receipt, invoice,
+                building-bank, percentage, gauge, calendar, clock, scale,
+                alert-triangle, moneybag, home, car, stethoscope, stairs,
+                wallet. If the name isn't recognized or the file is
+                missing, this silently does nothing -- never crashes the
+                beat. Use this instead of trying to hand-draw a finance
+                icon glyph yourself from primitive shapes."""
+                glyph = _load_and_tint_icon(name, size, color)
+                if glyph is None:
+                    return
+                layer = get_layer()
+                gw, gh = glyph.size
+                layer.alpha_composite(glyph, (int(cx - gw / 2), int(cy - gh / 2)))
+            return draw_icon
+
+        draw_icon = _make_draw_icon(lambda: _current_layer_box[0])
+
+        namespace = {"__builtins__": _SAFE_BUILTINS, "draw_emoji": draw_emoji,
+                     "get_font": get_font, "text_size": text_size, "safe_box": safe_box,
+                     "draw_icon": draw_icon}
         exec(code, namespace)
         draw_beat_fn = namespace.get("draw_beat")
         if draw_beat_fn is None:
-            conn.send(("error", "draw_beat not found after exec"))
-            conn.close()
-            return
+            return None, "draw_beat not found after exec"
 
-        while True:
-            t = conn.recv()
-            if t is None:
-                break
+        n_frames = max(1, int(math.ceil(duration * fps)))
+        frames = _np.zeros((n_frames, h, w, 4), dtype="uint8")
+        any_ok = False
+        first_error = None
+
+        for i in range(n_frames):
+            t = i / fps
             try:
                 layer = _Image.new("RGBA", (w, h), (0, 0, 0, 0))
+                _current_layer_box[0] = layer
                 draw = _ImageDraw.Draw(layer)
                 draw_beat_fn(draw, t, w, h, _np, _math)
-
                 arr = _np.array(layer)
-                if arr.shape != (h, w, 4):
-                    conn.send(("error", f"draw_beat produced wrong layer shape {arr.shape}"))
+                if arr.shape != (h, w, 4) or not _np.isfinite(arr.astype(_np.float32)).all():
+                    if first_error is None:
+                        first_error = f"frame {i} (t={t:.2f}) produced invalid pixel data (wrong shape or non-finite values)"
                     continue
-                if not _np.isfinite(arr.astype(_np.float32)).all():
-                    conn.send(("error", "draw_beat produced non-finite pixel values"))
-                    continue
-                conn.send(("ok", arr.astype("uint8").tobytes()))
+                frames[i] = arr.astype("uint8")
+                any_ok = True
             except Exception as e:
-                conn.send(("error", f"{e}\n{_traceback.format_exc()[-300:]}"))
+                if first_error is None:
+                    first_error = f"frame {i} (t={t:.2f}): {e}"
+                continue
+
+        if not any_ok:
+            return None, f"every frame in this beat failed to render -- first failure: {first_error}"
+
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        _np.savez_compressed(cache_path, frames=frames)
+        return cache_path, ""
     except Exception as e:
+        return None, f"{e}\n{_traceback.format_exc()[-300:]}"
+
+
+def prerender_all_beat_visuals(visual_code_timeline: list, w: int, h: int,
+                                 fps: int = INTERNAL_VISUAL_FPS) -> dict:
+    """Renders every beat's full generated-code frame sequence UP FRONT,
+    in parallel across a process pool, before the main video loop
+    starts. Returns {beat_index: numpy array of shape (n_frames, h, w, 4)}
+    -- beats that fail entirely (timeout, crash, or pre-existing static
+    safety rejection) are simply absent from the dict, and the caller
+    renders those beats blank.
+
+    Disk-cached by content hash -- re-running the same beat code at the
+    same duration/resolution skips straight to loading the cached
+    frames instead of re-rendering."""
+    if not visual_code_timeline:
+        return {}
+
+    print(f"  🎬 Pre-rendering {len(visual_code_timeline)} beats' visual code "
+          f"(parallel pool, {INTERNAL_VISUAL_FPS}fps internal)...")
+    os.makedirs(_PRERENDER_CACHE_DIR, exist_ok=True)
+
+    tasks = []
+    for item in visual_code_timeline:
+        duration = max(0.05, item["end"] - item["start"])
+        key = _beat_cache_key(item["code"], duration, fps, w, h)
+        cache_path = os.path.join(_PRERENDER_CACHE_DIR, f"{key}.npz")
+        tasks.append((item["beat_index"], cache_path, not os.path.exists(cache_path),
+                      item["code"], duration))
+
+    results = {}
+    to_render = [t for t in tasks if t[2]]
+    cached = [t for t in tasks if not t[2]]
+    loaded_from_cache = 0
+
+    for beat_index, cache_path, _, _, _ in cached:
         try:
-            conn.send(("error", f"worker setup failed: {e}\n{_traceback.format_exc()[-300:]}"))
-        except Exception:
-            pass
-    finally:
-        conn.close()
-
-
-class BeatCodeRenderer:
-    """Manages one long-lived subprocess per beat's generated code.
-    Call get_frame(t) repeatedly for successive frames within the same
-    beat -- the subprocess stays warm between calls. Call close() when
-    done with this beat (or let it be garbage collected -- close() is
-    also called defensively in __del__). A fresh instance per beat
-    keeps beats fully isolated from each other, same as before; the
-    only change is reusing the process across that beat's frames
-    instead of spawning new ones."""
-
-    def __init__(self, code: str, w: int, h: int):
-        self.w = w
-        self.h = h
-        self._proc = None
-        self._parent_conn = None
-        self._dead = False
-        self._start(code)
-
-    def _start(self, code):
-        self._parent_conn, child_conn = multiprocessing.Pipe()
-        self._proc = multiprocessing.Process(
-            target=_beat_worker_loop, args=(code, self.w, self.h, child_conn))
-        self._proc.start()
-
-    def get_frame(self, t: float):
-        """Returns (arr, error_string). arr is None on ANY failure
-        (timeout, crash, malformed output) -- caller treats None as
-        'render nothing for this frame'."""
-        if self._dead:
-            return None, "worker already dead from a previous failure"
-
-        try:
-            self._parent_conn.send(t)
-        except (BrokenPipeError, EOFError) as e:
-            self._dead = True
-            return None, f"pipe broken sending t: {e}"
-
-        if not self._parent_conn.poll(VISUAL_CODE_TIMEOUT_SECONDS):
-            # Worker hung on this frame -- kill it. This beat renders
-            # blank for the rest of its duration rather than spending
-            # the full timeout on every remaining frame.
-            self._dead = True
-            self._terminate()
-            return None, "timed out"
-
-        try:
-            status, payload = self._parent_conn.recv()
-        except (EOFError, OSError) as e:
-            self._dead = True
-            return None, f"worker exited unexpectedly: {e}"
-
-        if status != "ok":
-            return None, payload
-
-        try:
-            arr = np.frombuffer(payload, dtype="uint8").reshape(self.h, self.w, 4)
-            return arr, None
+            with np.load(cache_path) as data:
+                results[beat_index] = data["frames"]
+            loaded_from_cache += 1
         except Exception as e:
-            return None, f"failed to reconstruct frame: {e}"
+            print(f"  ⚠ Beat {beat_index}: cached frames unreadable ({e}), will re-render")
+            to_render.append(next(t for t in tasks if t[0] == beat_index))
 
-    def _terminate(self):
-        if self._proc and self._proc.is_alive():
-            self._proc.terminate()
-            self._proc.join(timeout=2)
+    if loaded_from_cache:
+        print(f"  💾 {loaded_from_cache} beat(s) loaded from cache")
 
-    def close(self):
-        if self._dead:
-            self._terminate()
-            return
-        try:
-            if self._parent_conn:
-                self._parent_conn.send(None)  # polite shutdown signal
-        except (BrokenPipeError, EOFError):
-            pass
-        if self._proc:
-            self._proc.join(timeout=2)
-            if self._proc.is_alive():
-                self._proc.terminate()
-                self._proc.join(timeout=2)
+    if to_render:
+        n_workers = max(1, multiprocessing.cpu_count() - 1)
+        print(f"  ⚙️  Rendering {len(to_render)} beat(s) across {n_workers} parallel workers...")
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {
+                pool.submit(_render_beat_frames_worker, code, duration, fps, w, h, cache_path):
+                    (beat_index, cache_path)
+                for beat_index, cache_path, _, code, duration in to_render
+            }
+            done_count = 0
+            for future in as_completed(futures):
+                beat_index, cache_path = futures[future]
+                done_count += 1
+                try:
+                    result_path, err = future.result(timeout=VISUAL_CODE_TIMEOUT_SECONDS * 30)
+                except Exception as e:
+                    result_path, err = None, f"worker exception: {e}"
 
-    def __del__(self):
-        try:
-            self.close()
-        except Exception:
-            pass
+                if result_path is None:
+                    print(f"  ⚠ Beat {beat_index}: pre-render failed ({err}) -- will render blank "
+                          f"[{done_count}/{len(to_render)}]")
+                    continue
+                try:
+                    with np.load(result_path) as data:
+                        results[beat_index] = data["frames"]
+                except Exception as e:
+                    print(f"  ⚠ Beat {beat_index}: failed to load rendered frames ({e})")
+                if done_count % 10 == 0 or done_count == len(to_render):
+                    print(f"  ⚙️  Pre-render progress: {done_count}/{len(to_render)}")
 
+    print(f"  ✅ Pre-render complete: {len(results)}/{len(visual_code_timeline)} beats have usable frames")
+    return results
 
-# ============================================================
-# GPT CALL 3 -- system prompt + batching
-# ============================================================
 
 def _build_visual_code_batch_prompt(batch: list) -> str:
     annotated = []
@@ -1518,8 +1696,13 @@ def _build_visual_code_batch_prompt(batch: list) -> str:
         f"a moment of surprise, a process taking time, a tradeoff). THEN write code whose visual "
         f"behavior expresses that specific idea. Two beats about different ideas must look "
         f"visually different from each other -- do not reuse the same composition shape across "
-        f"beats with different meanings. `t` ranges from 0 to _duration_seconds for that beat; "
-        f"your code must look correct at every t in that range, including t=0 and t=_duration_seconds."
+        f"beats with different meanings. Each beat's `_duration_seconds` field above tells you "
+        f"how long THAT beat lasts -- use it only to PLAN your animation's pacing (e.g. a 0.6s "
+        f"beat needs faster motion than a 3s beat). It is NOT a variable available inside your "
+        f"draw_beat code -- your function only receives draw, t, w, h, np, math as arguments. "
+        f"`t` will range from 0 up to that beat's duration when your code actually runs; write "
+        f"code that looks correct across that whole range without ever referencing "
+        f"_duration_seconds (or any other field name from the JSON above) directly in the code."
     )
 
 
@@ -1530,27 +1713,78 @@ def generate_visual_code(beats: list, topic: str) -> list:
     print(f"  🎬 Call 3: Per-beat visual code generation for {len(beats)} beats...")
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    system_prompt = f"""You are a generative motion graphics engineer for a finance/numbers explainer channel. For each beat of narration you write a Python function that draws that beat's visual directly -- there is no menu of shapes to choose from. You decide what should appear on screen by reasoning from what the beat MEANS, then you write the actual drawing code for it.
+    system_prompt = f"""You are a generative motion graphics engineer for a finance/numbers explainer channel. For each beat of narration you write a Python function that draws that beat's visual directly. You decide what should appear on screen by reasoning from what the beat MEANS, then you write the actual drawing code for it.
 
-Captions are handled by YouTube itself. Do not draw sentences or captions. A short numeric label (a price, a percent, a count) is fine when it IS the visual subject, not when it's restating the narration.
+Captions are handled by YouTube itself. NEVER draw the beat's sentence as text. The biggest quality failure in this system has been beats rendering as a wall of words instead of an actual visual -- you must actively fight that tendency.
 
-=== THE FAILURE MODE YOU MUST AVOID ===
-The most common way this goes wrong: drawing SOMETHING just because some shape is allowed -- a line because lines are available, a circle because circles are easy, with no real connection to what the beat is about. A line that exists because "a beat needs a visual" is worse than no visual at all. Every single shape, color, and motion you write must trace back to a specific reason rooted in this beat's actual content. If you can't articulate that reason in one sentence, delete the shape.
-Concretely banned: decorative lines/circles/rectangles with no representational meaning, generic "pulsing dot in the corner" filler, the same composition shape reused beat after beat regardless of content, motion that exists only to "have some movement happening."
+=== TEXT SHOULD BE ALMOST NEVER USED ===
+The narration audio and YouTube's own captions already deliver every word of this beat to the viewer -- on-screen text was never necessary for understanding what's being said, and was never your job. Drawing text that restates or parallels the narration is redundant by definition, not just "too much": the viewer already has the words. Your job is the visual the words don't already provide -- the thing you SEE that makes the number/idea land, not a second copy of the dialogue.
+
+Default to NO text at all. The only narrow exception: when a specific numeric value genuinely needs to be visually legible as part of a chart/counter/comparison (e.g. the "$34,000" inside a growing bar, the "60%" inside a donut fill) -- because seeing the exact digits adds something the visual shape alone can't (precision), not because the sentence needs repeating. Even then, it's the number only, never a label restating what was said, never a phrase, never more than a couple of words. If you're not rendering a chart/counter that needs its value displayed, there should usually be ZERO draw.text() calls in your code for that beat.
+
+If you draw text in more than maybe one out of every four or five beats across a whole script, you are almost certainly drawing it too often -- the large majority of beats should have no text at all, just the visual itself.
+
+=== YOUR PRIMARY TOOL: A RICH FINANCE VISUAL VOCABULARY, NOT JUST BARS ===
+This is a premium finance dashboard explainer, not a generic chart-of-the-day video. Most beats have a real number (has_data, data_value, data_unit, data_label, compare_value) or a real financial concept -- reach for the SPECIFIC visual metaphor that matches the idea, not the easiest shape to draw. A flat bar or donut works, but using the same one or two chart types for every beat across a whole video is exactly the "simple shapes" failure to avoid. Below is a menu of finance-specific visual primitives, each with enough concrete construction guidance to actually build it -- pick whichever matches the beat's real meaning:
+
+- Bar comparison: two or more rectangles, heights proportional to their values, short label under each. Use for any direct "X vs Y" beat.
+- Progress / fill meter: a rounded rectangle or circular ring that fills from 0 toward a target proportion, with the number growing alongside it. Use for "how much of X has happened" beats.
+- Gauge / dial: an arc (draw.arc or a manually computed arc path) from one extreme to another (e.g. DANGER to SAFE), with a needle line rotating to the current value, the number below it. Use for risk/security/runway beats.
+- Donut / pie percentage: draw.pieslice or two arcs, percent filled, number centered inside. Use for "X% of Y" beats.
+- Trend / line chart: 4-8 computed points sloping to match data_direction, end value labeled, optionally with a subtle filled area under the line. Use for any "growing/shrinking over time" beat.
+- Compound growth curve: like a line chart but with a deliberately accelerating curve (use an exponential or power easing on the y-values, not a straight slope) -- small deposit marks entering periodically along the bottom, the curve bending upward late. Use specifically for compound interest / investing-over-time beats.
+- Cashflow waterfall: a starting bar at the top (e.g. gross income), then a sequence of smaller bars stepping down (each subtracting a cost -- taxes, expenses, fees), ending in a final highlighted bar for the net/take-home amount. Use for "here's what's actually left after costs" beats -- this is one of the most useful primitives for this channel, reach for it often when a beat mentions multiple deductions/costs.
+- Funnel: a sequence of horizontal bars or trapezoids, each narrower than the last, top to bottom, with a count or percentage at each stage. Use for "out of N people, only a few succeed" beats.
+- Bill / expense card: a simple rounded rectangle styled like a card (a colored top strip or icon, a label like "RENT" or "UTILITIES", an amount). Stack 2-4 of these vertically or slide them in sequentially for "recurring bills" or "costs add up" beats.
+- Bank balance / income card: similar card style, but showing a running number that can visibly drop or rise (animate the displayed number, not just a static label) -- use for "paycheck arrives/disappears" or "balance changes" beats.
+- Icon-grid / crowd grid: a grid of small circles or squares, a portion filled/colored to represent a percentage of people/cases, the rest left as outlines. Use for "X% of people do this" beats -- this is the right tool for population-style statistics, not a donut.
+- Calendar / timeline: a horizontal line or row of tick marks representing time units (months/years), with a marker or flag at a specific point, and optionally a region shaded differently before/after that point. Use for any beat referencing a specific duration or "by month X".
+- Treadmill / moving-backward metaphor: a flat horizontal line representing a baseline (e.g. expenses), with a second line that's supposed to be progress but is animated moving backward or staying flat while the baseline rises -- communicates "running in place" or "falling behind" without needing a human figure.
+- Leaky bucket / faucet: a container shape (rounded rectangle or simple bucket outline) with a fill level, plus small animated drips leaving through a gap or bottom opening faster than the fill rises (or a thin stream entering from a faucet shape above) -- use for "money in doesn't keep up with money out" beats.
+- Portfolio stack: a stack of rectangles or coins of varying size representing a total, with a small percentage/yield indicator beside it. Use for "portfolio size produces X income" beats.
+
+Pick whichever of these (or a reasonable variation) actually matches what the beat is about -- a percentage is not a bar, a trend is not a pie, a "costs eat into income" beat is a waterfall, not a generic comparison bar. Across a whole video, vary which primitive you reach for; repeatedly defaulting to the same one or two regardless of content is a real, previously-observed failure mode.
+
+=== THE FIGURE IS DISABLED FOR NOW -- DO NOT USE IT AS A MAIN VISUAL ===
+Do not draw a person/character as the hero or focal point of any beat. This explainer should look like a premium finance dashboard, not an animated character video -- a stick figure or silhouette filling a large part of the frame reads as unprofessional and amateurish for this content, and is explicitly banned as a primary visual.
+
+If, and only if, a beat is fundamentally about human behavior in a way that's hard to express any other way (panic-selling, burnout, a crowd of people), you may include a SMALL, simple silhouette -- no more than about 12% of frame height -- positioned in a corner or edge of the frame (e.g. bottom-right, well within the safe margin), acting as a small supporting accent to a chart or number that remains the actual hero of the beat. Never let it be larger than, or compete with, the main data visual. In the large majority of beats, there should be no figure at all -- reach for a chart, card, gauge, or icon metaphor instead (see the visual primitives list below), since those communicate the finance concept far more clearly than a human figure does.
+
+=== EMOJI ===
+A helper function `draw_emoji(emoji_char, cx, cy, size)` is available (already defined, just call it) -- use it instead of trying to draw emoji via draw.text() yourself, since raw emoji font rendering is unreliable at arbitrary sizes. Good for adding tone/color to a beat (💰 📉 😰 ⚠️ 🏠 💸 📊) alongside a chart or number, sparingly -- one emoji accent per beat at most, never the whole visual on its own.
+
+=== REAL FINANCE ICONS (use these instead of hand-drawing icon shapes) ===
+A helper function `draw_icon(name, cx, cy, size, color=(r,g,b,a))` is available -- it draws a real, professionally-designed icon (from a licensed open icon set), tinted to whatever color you pass, centered at (cx, cy), sized to fit within a `size`x`size` box with aspect ratio preserved. This is a MUCH better choice than hand-drawing an icon shape from primitive lines/circles, since these are clean, consistent, recognizable glyphs. Exact available names (any other name silently draws nothing, so only use these): trending-up, trending-down, chart-line, chart-bar, chart-pie, cash-banknote, coins, credit-card, receipt, invoice, building-bank, percentage, gauge, calendar, clock, scale, alert-triangle, moneybag, home, car, stethoscope, stairs, wallet. Use the brand palette colors from the QUALITY BAR section for the color argument. Good uses: a small `wallet` or `cash-banknote` icon accenting a paycheck/income card, `building-bank` for a bank/institution reference, `alert-triangle` for a warning card's corner accent, `gauge` alongside a meter you're also drawing numerically, `trending-up`/`trending-down` as a small directional accent next to a chart. Like emoji, use sparingly as an accent to a chart/card/number, not as the entire visual on its own -- one icon per beat at most unless building an icon-grid (e.g. several small `home` or `coins` icons to represent a population/count).
+
+=== NOTICING LIST STRUCTURE ===
+Some scripts count through a numbered list ("the first warning sign...", "warning sign number two...", "here's the fourth..."). If THIS beat is the one introducing a new numbered item, it's worth reflecting that (e.g. a small "03" badge in a corner, an outlined number), but only on the beat that actually introduces the item -- not on every beat that elaborates on it afterward. Most beats in a list-style script are elaboration, not new-item beats; don't force a counter onto beats that don't need one.
+
+=== THE OPENING BEAT IS CRITICAL -- THIS HAS FAILED BEFORE, TREAT IT SERIOUSLY ===
+If this is beat_index 0, a blank or text-only first 1-2 seconds has been a real, observed problem in actual output -- viewers see nothing but background for the opening moment, which reads as broken, not premium. This is not optional polish, it's a hard requirement: beat_index 0 MUST have a real, fully-formed visual active from t=0, not fading in from nothing, not a placeholder, not "just text." If the beat's content doesn't obviously suggest a number or chart, default to a simple, immediate dashboard-style element -- e.g. a glowing card outline, a single bold icon, a meter at a starting position -- anything that is unmistakably a real graphic on screen at t=0, not an empty frame waiting for content. Treat "the opening beat renders nothing" as a failed beat, the same severity as a crash.
+
+=== 16:9 COMPOSITION ===
+Canvas is {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} (always compute from w/h, never hardcode). Keep all content within a safe margin of roughly 8% of w/h from every edge -- nothing should touch or crowd the frame edge. This means BOTH position AND size: before drawing any rectangle/card/bar, check that its full extent (its position PLUS its width/height) still fits inside that safe margin -- a shape positioned correctly but sized too large will still bleed off-frame, which has been an observed real bug (a card or bar extending past the bottom/side of the visible frame). When in doubt, compute the maximum allowed size first (e.g. max_height = h * 0.84 for a vertically-stacked element), then size your shape as a fraction of that maximum, never as a fixed pixel count that could exceed it.
+
+Favor ONE clear underlying idea per beat -- but a single idea rendered as a bare, undecorated shape (one flat rectangle, one plain circle, nothing else) reads as empty and unfinished, not clean. A good beat usually has 3-5 small details supporting its one idea, not 3-5 unrelated competing ideas. For example: a bar chart's "one idea" still includes the bar itself, a baseline/axis line, the value label, and a subtle highlight or motion on the bar -- that's one coherent composition with real detail, not clutter. A gauge's one idea includes the arc, the needle or fill, the number, and a small tick mark or two. Think of it as "one hero element, fully realized with supporting detail" rather than "one hero element floating alone." If your code only calls 1-2 drawing operations total, it is almost certainly too sparse -- add the supporting detail that makes the one idea feel complete and considered, not more competing ideas.
+
+Avoid reusing the same overall composition shape across different beats -- if you've described several beats in a row as "a rectangle with a label," vary it: try a circular/radial layout, a growing line, a grid, a gauge, concentric shapes, instead of defaulting back to the same rectangle-plus-line pattern every time.
+
+If you do add a secondary element (e.g. a chart plus an emoji accent), give it clearly different visual weight -- one primary, one small secondary -- not two equally-sized things competing for attention.
 
 === YOUR REQUIRED PROCESS, FOR EVERY BEAT ===
-1. Read the beat's text and data fields. Identify the SINGLE underlying concept -- not the words, the idea underneath them (growth, risk, comparison, a countdown, a tradeoff, a turning point, a quantity, a process taking time, an emotional beat with no concrete content at all).
-2. Decide: does this beat's idea actually call for a visual, or is it a connective/transitional beat better served by nothing or near-nothing? Many beats -- especially short transitional ones -- should render minimally. Forcing a visual onto every beat is exactly the failure mode above.
-3. If it does call for a visual: decide what FORM specifically represents that concept (see worked examples below -- these are reasoning patterns, not a menu to pick from verbatim).
-4. Write the `concept` field as the actual reasoning chain: "<what this beat is about> -> <why this specific visual represents that>". Not a vague label like "growth visual" -- the real chain, e.g. "compound interest accelerating over years -> a curve that visibly steepens, since flat or linear motion would misrepresent compounding".
+1. Read the beat's text and data fields. Identify the SINGLE underlying concept.
+2. Does this beat have real data (has_data)? If yes, your default move is a chart matching that data's shape (see chart guidance above) -- don't reach past this for an abstract shape unless a chart genuinely doesn't fit.
+3. If no data: is this a person/behavior beat where a simple figure fits, a pure transition that warrants minimal/no visual, or an abstract concept (risk, comparison, time) better shown with shape/motion?
+4. Write the `concept` field as the real reasoning chain: "<what this beat is about> -> <why this specific visual represents that>".
 5. Only then write the code.
 
-=== WORKED EXAMPLES OF THE REASONING (not literal templates -- the pattern is what matters) ===
-- Beat: "your money could grow to four hundred thousand dollars" (has_data, data_value=400000) -> concept: a single quantity is the entire point -> draw ONE large, legible number counting up from 0 to 400000 as t progresses, nothing else competing for attention, because the number IS the content and anything else would dilute it.
-- Beat: "the average investor loses money by panic selling" (warning) -> concept: loss/instability -> draw something that visibly degrades or drops -- a shape that shrinks, a line that falls and jitters, color shifting toward red -- because smooth/calm motion would misrepresent a warning about loss.
-- Beat: "compare that to what the wealthy do instead" (comparison, compare_value set) -> concept: two distinct paths diverging -> draw two shapes whose SIZE or TRAJECTORY relative to each other encodes the comparison (one taller, one shorter; one rising, one flat) -- not two identical shapes side by side with no relative meaning.
-- Beat: "but here's the part nobody talks about" (hook/transition, no concrete data) -> concept: this beat is connective tissue, building anticipation, not stating a fact with a shape -- draw something minimal: a single understated pulse, a subtle line beginning to draw but not resolving, or genuinely nothing. Do not invent content to fill the frame.
-- Beat: "it took thirteen years to compound" (time/waiting) -> concept: duration itself is the point -> draw something whose progress visibly takes the FULL beat duration to resolve (not finishing instantly at t=0.1), so the viewer feels time elapsing, not just sees a static end-state appear.
+=== WORKED EXAMPLES ===
+- Beat: "you'd have about $34,000" (has_data, data_value=34000, data_unit=dollars) -> concept: a single grown quantity -> a bar or fill-meter rising to represent the value, with "$34,000" labeled at the top as it settles, because the number is the entire point and a chart shows scale better than a bare counter alone.
+- Beat: "over 60% of gig workers underestimate" (has_data, data_value=60, data_unit=percent) -> concept: a portion of a population -> an icon-grid of ~10 small figures/circles where 6 are filled solid and 4 are outline-only, OR a donut pie at 60%, with "60%" labeled -- NOT a sentence on screen.
+- Beat: "less than $250 monthly cash flow nationwide" vs "the $5,000 average unplanned repair" (comparison, compare_value set) -> concept: a small recurring amount dwarfed by an occasional large one -> two bars, one short one tall, both labeled with their values.
+- Beat: "would you actually still be financially okay" (hook, no data) -> concept: a person facing uncertainty -> a simple seated/standing figure with a slumped or questioning gesture, OR if unsure about the figure, a single dimming/uncertain shape -- not the sentence as text.
+- Beat: "let's raise the stakes with item five" (transition introducing a new list item, no real data) -> concept: a new item beginning -> a small "05" badge or outlined number appearing, minimal otherwise -- not a big visual, just the marker.
+- Beat: "but here's the part nobody talks about" (pure transition, no data) -> concept: connective tissue -> minimal or nothing. Do not invent content to fill the frame.
 
 === WHAT YOU ARE WRITING ===
 A single Python function per beat, exactly this signature:
@@ -1558,24 +1792,47 @@ A single Python function per beat, exactly this signature:
 def draw_beat(draw, t, w, h, np, math):
     # your code here
 
-- `draw` is a PIL ImageDraw.Draw object on a transparent RGBA layer already sized to the canvas. Use draw.line(...), draw.ellipse(...), draw.polygon(...), draw.rectangle(...), draw.rounded_rectangle(...), draw.text(...), draw.arc(...), draw.pieslice(...) -- anything PIL's ImageDraw supports.
+- `draw` is a PIL ImageDraw.Draw object on a transparent RGBA layer already sized to the canvas. Use draw.line(...), draw.ellipse(...), draw.polygon(...), draw.rectangle(...), draw.rounded_rectangle(...), draw.text(...), draw.arc(...), draw.pieslice(...) -- anything PIL's ImageDraw supports EXCEPT draw.textsize() (removed from modern Pillow -- use the text_size() helper below instead).
+- `draw_emoji(emoji_char, cx, cy, size)` is also available in scope -- call it directly, don't redefine it.
+- `get_font(size, style="bold")` returns a ready-to-use font object. Two styles available: "bold" (clean modern sans, good for general numbers/labels) and "black" (a heavier, condensed, more dramatic display face -- good for hook-style headline words or high-intensity warning beats). Pick whichever weight matches this beat's tone, don't default to the same one every time. There is no other way to get a font: `ImageFont` is NOT available in scope.
+- `text_size(text, font)` returns (width, height) in pixels for a string rendered with a given font -- use this for centering/sizing text, not draw.textsize() which doesn't exist in this Pillow version.
 - `t` is the number of seconds elapsed since THIS beat started (0.0 at beat start). Use it to animate -- compute positions/sizes/opacity as a function of t.
-- `w`, `h` are the canvas pixel dimensions ({OUTPUT_WIDTH}x{OUTPUT_HEIGHT}). ALWAYS compute pixel positions from w and h (e.g. `cx = w * 0.5`) -- never hardcode 1920/1080.
-- `np` is numpy, `math` is the math module. Both available for any calculation you need (interpolation, trig, easing curves, etc).
+- `w`, `h` are the canvas pixel dimensions ({OUTPUT_WIDTH}x{OUTPUT_HEIGHT}).
+- `np` is numpy, `math` is the math module. Note: there is no np.Font or any font-related attribute on numpy -- fonts only come from get_font(size).
 - Colors are RGBA tuples, e.g. (255, 215, 130, 255). Always include alpha. Compute alpha from t for fade in/out.
 
 === WHAT YOU MAY NOT DO ===
-No imports, no file/network access, no `open`, `exec`, `eval`, `os`, `sys`. You don't need any of these for drawing -- PIL, numpy, and math cover everything required. Code that tries to do anything else will be rejected before it ever runs.
+No imports, no file/network access, no `open`, `exec`, `eval`, `os`, `sys`. Code that tries to do anything else will be rejected before it ever runs.
 
-=== VARIETY ===
-You are free to invent ANY visual form that fits -- bars, arcs, particles, growing shapes, splitting shapes, pulsing rings, abstract geometry, a single clean number, two compared quantities, a path that traces something, concentric shapes, radiating lines, anything PIL can draw. Across consecutive beats, vary the composition -- two beats with DIFFERENT underlying concepts must look visually distinct from each other. Reusing the same shape/motion for different ideas is the same failure mode as decoration with no meaning, just repeated.
+=== COMPLETENESS ===
+Every `for`, `if`, `while`, `else`, `elif` must have a real statement on the next line(s), properly indented -- never leave a block with only a comment and no code, and never leave a block empty. The ENTIRE function body must be one single, complete, syntactically valid Python function with nothing left unfinished -- this is checked mechanically before your code ever runs, and an incomplete block fails that check and the whole beat renders blank, wasting the beat entirely. If you're unsure a more complex composition will come out complete and correct, write a simpler one you're confident is fully correct instead.
+
+=== NO DOUBLE-DRAWING ===
+Each frame is a SINGLE independent call to your function at one value of t -- draw.text() and other draw calls do not "replace" what's at that position, they layer on top. If your code computes a displayed number/label at more than one point in the function and draws it more than once (e.g. once for a settling animation and again for a "final" state), both will be visible simultaneously and overlap into unreadable garbled text. Compute each value ONCE per call, decide its current state from t, and draw it exactly ONCE.
+
+=== COMMON MISTAKES THAT HAVE ACTUALLY HAPPENED -- AVOID THESE SPECIFICALLY ===
+- draw.text(xy, text, font, fill=color) -- font is already the 3rd POSITIONAL argument in PIL's signature; passing it positionally AND then also writing fill= is fine, but writing draw.text(xy, text, color) and ALSO font= afterward, or duplicating any argument, throws "got multiple values for argument". Pass each argument exactly once, in this order: draw.text((x, y), text, font=get_font(size), fill=(r,g,b,a)).
+- Pillow's drawing calls require integer pixel coordinates in many cases -- if you compute a coordinate with division (w / 2) it's a float; wrap coordinates in int(...) before passing them to draw.ellipse/rectangle/line/etc, especially anything derived from a fraction or a range/index.
+- For draw.ellipse/draw.rectangle, the box is [x0, y0, x1, y1] and REQUIRES x1 >= x0 and y1 >= y0 -- a shape whose size shrinks toward or past zero as t changes can easily produce an invalid box this way, which is a real, repeated crash seen in production. Use the provided `safe_box(cx, cy, half_w, half_h)` helper INSTEAD OF computing [x0,y0,x1,y1] yourself by hand -- it takes a center point and half-width/half-height and always returns a valid, correctly-ordered box no matter what values you pass in (including zero or negative sizes), so this failure becomes impossible. Example: draw.ellipse(safe_box(cx, cy, radius, radius), fill=color) instead of draw.ellipse([cx-radius, cy-radius, cx+radius, cy+radius], fill=color).
+
+=== TRANSITIONS BETWEEN BEATS (vary these, don't always fade) ===
+A plain fade-in/fade-out on every single beat, with nothing else, starts to feel monotonous across a whole video -- vary HOW each beat enters and exits, not just whether it fades. Pick whichever of these fits the beat's energy, and rotate between them across the video rather than using the same one repeatedly:
+- Slide-in: the whole visual (or its main element) enters from off-screen (left/right/top/bottom) and decelerates into its final position -- compute position as a function of t with an ease-out curve (e.g. position = target + (start - target) * (1 - progress) ** 3), don't move at constant speed.
+- Scale-in / pop: the visual starts slightly smaller (or larger) than its final size and scales to 100% with a touch of overshoot (scale briefly past 100% then settle back, using a damped oscillation or a simple overshoot-then-correct curve) -- good for numbers/counters that should feel like they "land" with impact.
+- Wipe / reveal: use a clip mask or progressively draw more of the shape over time (e.g. a bar chart's bars rise from 0 height to full height in sequence rather than all appearing at once; a line chart draws its line left-to-right rather than all points appearing simultaneously).
+- Quick cut with a flash: for a high-intensity beat (a stark number, a warning), a near-instant appearance (very short fade, under 0.1s) optionally preceded by one frame of a brief brightness flash -- use sparingly, only for beats that should feel sudden/jarring on purpose.
+- Cross-element handoff: if a number from this beat directly relates to the previous beat's number (e.g. a gross amount becoming a net amount after deductions), consider having the new element originate FROM roughly where the old number would have been (same x/y region) rather than appearing in an unrelated part of the frame -- this creates a felt sense of continuity between beats even though each beat's code is independent.
+Exit transitions deserve the same variety as entrances -- a shape can shrink away, slide off in a direction, or dissolve (fade while also drifting slightly), not just fade in place every time.
 
 === QUALITY BAR ===
-- Smooth animation: compute continuous functions of t (easing, sine waves, interpolation), not instant jumps, unless an instant snap is specifically the right feeling (e.g. a shock reveal).
-- Legible at video scale: text needs font size proportional to h (e.g. h*0.08 for a prominent number), shapes need enough size/contrast to read instantly.
-- Color should feel intentional: warm tones (amber/gold/orange) for growth, money, energy; cool tones (teal/blue) for calm/neutral; red for risk/warning/loss. Always full opacity alpha=255 for primary elements, lower alpha only for secondary/background elements.
-- Use t=0 as the entrance state and design toward a settled or resolved state by the end of the beat's duration -- the animation should have a clear beginning and a clear feel of arrival, not just continuous undirected motion.
+- Smooth animation: compute continuous functions of t (easing, sine waves, interpolation), not instant jumps, unless an instant snap is specifically the right feeling.
+- Every element should fade in and fade out, not just appear/disappear instantly -- compute an alpha from t (ramping 0 to 255 over the first ~15-20% of the beat, holding, ramping back down over the last ~15-20%) and apply it to every shape/text/figure you draw. This applies broadly, not just to the figure.
+- Reach for real effect techniques, not just static shapes: a soft glow (draw the same shape 2-3 times at increasing size with decreasing alpha, behind the main shape), a pulse (modulate a size or alpha with a sine wave over t), a subtle drop shadow (draw a duplicate shape offset by a few pixels in dark low-alpha color, behind the main shape), a trail (draw the last few positions of a moving element at decreasing alpha). These add real production value over a flat unadorned shape.
+- Legible at video scale: numbers need font size proportional to h (e.g. h*0.08 for a prominent number), shapes need enough size/contrast to read instantly.
+- Use this exact brand color palette, consistently, across every beat -- do not invent other colors: white (245,247,250) for primary text/numbers, market green (56,217,150) for growth/gains/positive, warning red (255,77,77) for risk/loss/danger, gold (255,209,102) for highlights/attention/key numbers, muted gray (138,148,166) for secondary/de-emphasized elements, dark panel (17,26,36) for card/panel backgrounds. These are RGB values for draw.text/draw.rectangle/etc fill colors.
+- Use t=0 as the entrance state and design toward a settled state by the end of the beat's duration.
 - Keep code self-contained and correct for ALL t in [0, duration], including exactly t=0 and t=duration -- no index errors, no division by zero.
+- Across consecutive beats with DIFFERENT concepts, vary the composition -- don't reuse the same chart type for every beat regardless of content.
 
 Return ONLY valid JSON:
 {{
@@ -1591,10 +1848,6 @@ Return ONLY valid JSON:
 
 The "code" field is a STRING containing the full function definition, with \n for newlines, valid Python, nothing else in that string (no markdown fences, no commentary). If a beat genuinely warrants no visual (pure transition, no concrete content), set "code" to an empty string "" rather than inventing decoration -- this is a valid and often correct choice, not a failure."""
 
-    # Same dynamic scaling as Call 2, but with a lower max -- a full
-    # draw_beat function (real Python, often 20-60 lines) is more
-    # output tokens per beat than Call 2's compact element JSON, so a
-    # batch of 10 here risks the 16384 output-token ceiling sooner.
     BATCH_SIZE = dynamic_batch_size(len(beats), min_size=3, max_size=6)
     all_results = []
     batches = [beats[i:i+BATCH_SIZE] for i in range(0, len(beats), BATCH_SIZE)]
@@ -1603,7 +1856,7 @@ The "code" field is a STRING containing the full function definition, with \n fo
         start_beat = batch_idx * BATCH_SIZE
         print(f"  🎬 Visual-code batch {batch_idx+1}/{len(batches)}: beats {start_beat}-{start_beat+len(batch)-1}...")
         response = _call_with_retry(lambda: gpt4o_call(client,
-            model="gpt-4o",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": _build_visual_code_batch_prompt(batch)}
@@ -1649,7 +1902,8 @@ def validate_visual_code(beat_codes: list, beats: list) -> list:
     beat's code is parsed and checked for forbidden constructs before
     it's ever allowed to run. A beat that fails this check gets its
     code cleared (renders blank); a beat that passes still might fail
-    later at actual execution time, which BeatCodeRenderer handles.
+    later at actual execution time, which _render_beat_frames_worker
+    (called via prerender_all_beat_visuals) handles.
 
     Also logs (never rejects on) a missing or suspiciously generic
     `concept` field -- this is the visible signal that the prompt's
@@ -1682,10 +1936,6 @@ def validate_visual_code(beat_codes: list, beats: list) -> list:
     return beat_codes
 
 
-
-# ============================================================
-# VALIDATION PASS - validates scene compositions
-# ============================================================
 def _ensure_bright_color(hex_color: str, min_luminance: float = 130.0) -> str:
     """If a color is too dark to read against the near-black procedural
     background, brighten it. White and the brand yellow (#FBC02D) pass
@@ -1700,16 +1950,13 @@ def _ensure_bright_color(hex_color: str, min_luminance: float = 130.0) -> str:
     except Exception:
         return "#FFFFFF"
 
-    # Perceived luminance (standard weights)
     luminance = 0.299 * r + 0.587 * g + 0.114 * b
     if luminance >= min_luminance:
         return hex_color
 
     if luminance < 1.0:
-        # Pure/near black -- no hue to preserve, just go white
         return "#FFFFFF"
 
-    # Scale up toward white, preserving hue/ratio
     scale = min_luminance / luminance
     r = min(255, int(r * scale))
     g = min(255, int(g * scale))
@@ -1726,7 +1973,6 @@ def validate_decisions(scenes: list, beats: list) -> list:
             scenes[scene_pos] = {"beat_index": scene_pos, "elements": []}
             continue
 
-        # Use enumeration position -- ignore GPT's beat_index
         scene["beat_index"] = scene_pos
         beat = beats[scene_pos] if scene_pos < len(beats) else {}
         beat_text = beat.get("text", "").strip().lower()
@@ -1745,24 +1991,20 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 continue
             etype = el.get("type", "text")
 
-            # Validate TEXT content against beat text
             if etype == "text":
                 content = (el.get("content") or "").strip()
                 if not content:
                     continue
-                # Strip punctuation, lowercase for comparison
                 check_words = [w.strip('.,!?;:\'"()[]- ').lower()
                                for w in content.split()
                                if len(w.strip('.,!?;:\'"()[]- ')) > 2]
                 if check_words and beat_words:
                     matches = sum(1 for w in check_words if w in beat_words)
                     if matches == 0 and len(check_words) > 0:
-                        # Pure hallucination -- skip element
                         print(f"  ⚠ Scene {scene_pos}: dropped hallucinated text '{content[:30]}'")
                         fixed += 1
                         continue
 
-                # Default text properties
                 el.setdefault("x", 0.5)
                 el.setdefault("y", 0.5)
                 el.setdefault("anchor", "center")
@@ -1776,9 +2018,6 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el.setdefault("anim_duration", 0.15)
                 el.setdefault("effect", "none")
 
-                # Enforce minimum brightness -- against the dark procedural
-                # background, a muted/dark fill color (e.g. dark grey, olive)
-                # combined with a black outline becomes nearly invisible.
                 el["color"] = _ensure_bright_color(el["color"])
 
             elif etype == "line":
@@ -1819,11 +2058,8 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el.setdefault("anim_duration", 0.2)
 
             elif etype == "number_counter":
-                # target_value is required and must be numeric -- if GPT
-                # sent something unparseable, drop the element entirely
-                # rather than render garbage.
                 try:
-                    el["target_value"] = float(el.get("target_value", 0))
+                    el["target_value"] = safe_float(el, "target_value", 0)
                 except (TypeError, ValueError):
                     print(f"  ⚠ Scene {scene_pos}: dropped number_counter with bad target_value")
                     fixed += 1
@@ -1843,7 +2079,7 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el.setdefault("start_offset", 0.0)
                 el.setdefault("duration", None)
                 el["color"] = _ensure_bright_color(el["color"])
-                el["size"] = max(60, min(int(el.get("size", 180)), 220))
+                el["size"] = max(60, min(safe_int(el, "size", 180), 220))
 
             elif etype == "grid":
                 glyph = str(el.get("glyph", "0")).strip()
@@ -1851,7 +2087,7 @@ def validate_decisions(scenes: list, beats: list) -> list:
                     print(f"  ⚠ Scene {scene_pos}: dropped grid with empty glyph")
                     fixed += 1
                     continue
-                el["glyph"] = glyph[:3]  # keep cells readable -- short glyphs only
+                el["glyph"] = glyph[:3]
                 el.setdefault("rows", 4)
                 el.setdefault("cols", 10)
                 el.setdefault("cell_size", 60)
@@ -1863,9 +2099,8 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el.setdefault("start_offset", 0.0)
                 el.setdefault("duration", None)
                 el["color"] = _ensure_bright_color(el["color"])
-                # Cap total cells so the grid never becomes visual noise
-                rows = max(1, min(int(el.get("rows", 4)), 10))
-                cols = max(1, min(int(el.get("cols", 10)), 16))
+                rows = max(1, min(safe_int(el, "rows", 4), 10))
+                cols = max(1, min(safe_int(el, "cols", 10), 16))
                 while rows * cols > 80:
                     if cols > rows:
                         cols -= 1
@@ -1874,23 +2109,19 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el["rows"], el["cols"] = rows, cols
 
             else:
-                # Unknown type, skip
                 continue
 
-            # Clamp coordinates to safe range
             for k in ("x", "y", "x1", "y1", "x2", "y2", "w", "h", "radius"):
                 if k in el and isinstance(el[k], (int, float)):
                     el[k] = max(0.0, min(1.0, float(el[k])))
 
             cleaned.append(el)
 
-        # HARD CAP: max 4 elements per scene
         if len(cleaned) > 4:
             print(f"  ⚠ Scene {scene_pos}: trimmed {len(cleaned)} elements to 4")
             cleaned = cleaned[:4]
             fixed += 1
 
-        # AUTO-STAGGER: if all text elements have start_offset 0.0, spread them out
         text_els = [e for e in cleaned if e.get("type", "text") == "text" and isinstance(e.get("content", ""), str)]
         all_zero = all(float(e.get("start_offset", 0.0)) < 0.05 for e in text_els)
         if all_zero and len(text_els) > 1:
@@ -1906,19 +2137,11 @@ def validate_decisions(scenes: list, beats: list) -> list:
     return scenes
 
 
-
-# ============================================================
-# SCENE-BASED RENDERER v5
-# GPT outputs scene compositions (lists of elements).
-# This renderer executes any combination of text/line/rect/circle
-# with per-element animation and timing.
-# ============================================================
 def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                                whisper_segments: list, output_path: str,
                                beat_visual_codes: list = None):
     print(f"🎨 Scene renderer v5: {len(scenes)} scenes...")
     beat_visual_codes = beat_visual_codes or []
-    # Quick lookup: beat_index -> generated code string (empty = nothing to render)
     _visual_code_by_beat = {}
     for entry in beat_visual_codes:
         if isinstance(entry, dict):
@@ -1937,9 +2160,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     if not os.path.exists(video_path):
         raise Exception(f"Video not found: {video_path}")
 
-    # ── basic helpers ──────────────────────────────────────────────
     def load_pil_font(path, size, weight="black"):
-        # weight selects between Black / ExtraBold / Bold
         try:
             if weight == "regular":
                 p = FONT_BOLD or path
@@ -1982,7 +2203,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         merged = Image.alpha_composite(pil, layer)
         return to_frame(merged)
 
-    # ── video metadata ─────────────────────────────────────────────
     def _ffprobe_dur(path):
         try:
             r = subprocess.run(['ffprobe','-v','error','-show_entries','format=duration',
@@ -1994,7 +2214,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     TARGET_FPS = 30.0
     vid_dur = _ffprobe_dur(video_path)
 
-    # Transcode to CFR for predictable frame timing
     cfr_video = output_path.replace(".mp4", "_cfr_tmp.mp4")
     subprocess.run(['ffmpeg','-y','-i',video_path,
                     '-vf',f'fps={TARGET_FPS:.0f}',
@@ -2002,7 +2221,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                     '-an', cfr_video],
                    capture_output=True, check=True)
 
-    # ── Build ordered Whisper word list — exact timestamps in speech order ──
     whisper_word_list = []
     for seg in whisper_segments:
         for we in seg.get('words', []):
@@ -2034,18 +2252,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
 
     def clamp(v, lo, hi): return max(lo, min(v, hi))
 
-    # ── Build flat timeline — pure Whisper, scoped per beat ─────────────────
-    #
-    # SINGLE-WORD BEAT: 1 text element → IMPACT mode
-    #   - Appears at exact Whisper word start
-    #   - Lasts up to 1.0s with bzzt flicker, but never overlaps the next beat
-    #
-    # MULTI-WORD BEAT: multiple text elements → CAPTION mode
-    #   - Each word appears at its Whisper timestamp
-    #   - Disappears when next word is spoken
-    #   - For multi-word content (e.g. "THE WORLD"), anim_end accounts for
-    #     the LAST word's end time, not just the first word's start
-    #
     timeline = []
     for scene_pos, scene in enumerate(scenes):
         beat = beats[scene_pos] if scene_pos < len(beats) else {}
@@ -2064,12 +2270,9 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         text_els  = [e for e in elements if e.get("type", "text") == "text"]
         other_els = [e for e in elements if e.get("type", "text") != "text"]
 
-        # Whisper words available in this beat's time window (beat-scoped to
-        # avoid matching the wrong occurrence of common words like THE/IS/A)
         beat_words = get_beat_whisper_words(beat_start, beat_end)
 
-        # Resolve each text element to Whisper timestamps within this beat
-        resolved = []  # [(whisper_start, whisper_end, el)]
+        resolved = []
         used_indices = set()
         for el in text_els:
             raw = (el.get("content") or "").strip()
@@ -2085,9 +2288,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                 el_start = first_match['start']
                 el_end   = first_match['end']
 
-                # If content has multiple words, extend el_end to cover the
-                # LAST word's Whisper end time too (so "THE WORLD" stays
-                # visible until "WORLD" is actually spoken, not just "THE")
                 if len(words_in_content) > 1:
                     available2 = [w for i, w in enumerate(beat_words) if i not in used_indices]
                     last_match = match_word_in_list(words_in_content[-1], available2)
@@ -2098,7 +2298,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
 
                 resolved.append((el_start, el_end, el))
             else:
-                # No Whisper match — fallback to beat_start
                 resolved.append((beat_start, beat_end, el))
 
         resolved.sort(key=lambda x: x[0])
@@ -2108,16 +2307,12 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
             anim_start = clamp(ws, 0.0, vid_dur - 0.1)
 
             if is_single_word:
-                # IMPACT: up to 1.0s with bzzt flicker, but never bleed into
-                # the next beat's start time
                 impact_end = anim_start + 1.0
                 if next_beat_start is not None:
                     impact_end = min(impact_end, next_beat_start)
                 anim_end = clamp(impact_end, anim_start + 0.1, vid_dur)
                 impact = True
             else:
-                # CAPTION: hold until next word's Whisper start, but at least
-                # until this element's own Whisper end time (covers multi-word content)
                 min_end = max(we_t, anim_start + 0.08)
                 if i + 1 < len(resolved):
                     anim_end = clamp(max(resolved[i + 1][0], min_end), anim_start + 0.08, vid_dur)
@@ -2129,7 +2324,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                 "el":            el,
                 "start":         anim_start,
                 "end":           anim_end,
-                "anim_duration": 0.06 if impact else float(el.get("anim_duration", 0.10)),
+                "anim_duration": 0.06 if impact else safe_float(el, "anim_duration", 0.10),
                 "impact":        impact,
             })
 
@@ -2138,17 +2333,13 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                 "el":            el,
                 "start":         beat_start,
                 "end":           beat_end,
-                "anim_duration": float(el.get("anim_duration", 0.2)),
+                "anim_duration": safe_float(el, "anim_duration", 0.2),
                 "impact":        False,
             })
 
     timeline.sort(key=lambda x: x["start"])
     print(f"  📊 Timeline: {len(timeline)} elements")
 
-    # ── Visual-code timeline -- one entry per beat that has generated
-    # code, scoped to that beat's real audio window (start_time to the
-    # earlier of end_time / next beat's start). draw_beat receives t
-    # relative to the beat's own start (0.0 at beat start).
     visual_code_timeline = []
     for scene_pos, beat in enumerate(beats):
         code = _visual_code_by_beat.get(scene_pos, "")
@@ -2165,7 +2356,8 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     visual_code_timeline.sort(key=lambda x: x["start"])
     print(f"  🎬 Visual code timeline: {len(visual_code_timeline)} beats with generated visuals")
 
-    # ── Frame-by-frame render ─────────────────────────────────────
+    prerendered_beats = prerender_all_beat_visuals(visual_code_timeline, OUTPUT_WIDTH, OUTPUT_HEIGHT)
+
     cap = cv2.VideoCapture(cfr_video)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -2180,7 +2372,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     frame_idx = 0
     prev_pct = -1
 
-    # ── Element drawing functions ──────────────────────────────────
     def get_anim_progress(el_t, start, end, anim_dur):
         """Return (entrance_progress, exit_progress) both 0..1.
         entrance_progress: 0=not started, 1=fully appeared
@@ -2189,20 +2380,17 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         if anim_dur <= 0:
             anim_dur = 0.001
         entrance = clamp((el_t - start) / anim_dur, 0.0, 1.0)
-        # No exit fade by default - just snap out at end
         return entrance
 
     def draw_text_element(layer, el, el_t, anim_t):
         """Draw a TEXT element with animation."""
         draw = ImageDraw.Draw(layer)
-        content = el.get("content", "").upper().strip()  # Always uppercase for Anton
+        content = el.get("content", "").upper().strip()
         if not content:
             return
-        x_pct = float(el.get("x", 0.5))
-        y_pct = float(el.get("y", 0.5))
-        # Hard cap: 130px max for sentence words, 160px for single-word impact,
-        # 220px for number_counter values (numbers/currency need to read big)
-        raw_size = int(el.get("size", 90))
+        x_pct = safe_float(el, "x", 0.5)
+        y_pct = safe_float(el, "y", 0.5)
+        raw_size = safe_int(el, "size", 90)
         word_count = len(content.split())
         if el.get("_is_counter"):
             size_cap = 220
@@ -2211,7 +2399,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         size = max(20, min(raw_size, size_cap))
         color = hex_to_rgb(el.get("color", "#FFFFFF"))
         weight = el.get("weight", "black")
-        outline = max(0, min(int(el.get("outline", 4)), 12))
+        outline = max(0, min(safe_int(el, "outline", 4), 12))
         anim = el.get("anim", "fade_in")
         anchor = el.get("anchor", "center")
         effect = el.get("effect", "none")
@@ -2225,7 +2413,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
             tw = size * len(content) * 0.55
             th = size
 
-        # Compute base position
         target_x = int(OUTPUT_WIDTH * x_pct)
         target_y = int(OUTPUT_HEIGHT * y_pct)
         if anchor == "center":
@@ -2241,14 +2428,12 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
             base_x = target_x - tw // 2
             base_y = target_y - th // 2
 
-        # Clamp to screen with padding so text never goes off-edge
         pad = 30
         max_x = OUTPUT_WIDTH - tw - pad
         max_y = OUTPUT_HEIGHT - th - pad
         base_x = max(pad, min(base_x, max_x))
         base_y = max(pad, min(base_y, max_y))
 
-        # Apply entrance animation
         draw_x, draw_y = base_x, base_y
         alpha = 1.0
         scale = 1.0
@@ -2279,9 +2464,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         elif anim == "none":
             alpha = 1.0
 
-        # Effects (applied during display)
         if effect == "flicker":
-            # Blink during first 0.3s of element life
             if el_t - 0 < 0.3:
                 frame_no = int(el_t * 30)
                 if frame_no % 2 == 1:
@@ -2291,7 +2474,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
             draw_x += _r.randint(-3, 3)
             draw_y += _r.randint(-3, 3)
 
-        # Re-render text at scaled size if scale != 1.0
         render_font = font
         if abs(scale - 1.0) > 0.02:
             new_size = max(20, int(size * scale))
@@ -2304,7 +2486,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                 draw_y = base_y + (th - th2) // 2
             except: pass
 
-        # Clamp draw position AFTER animation offsets (slide/shake can push text off-screen)
         draw_x = max(pad, min(draw_x, OUTPUT_WIDTH - tw - pad))
         draw_y = max(pad, min(draw_y, OUTPUT_HEIGHT - th - pad))
 
@@ -2312,7 +2493,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         if a_int < 5:
             return
 
-        # Draw outline (multiple offsets for thick outline)
         if outline > 0:
             for ox in range(-outline, outline + 1):
                 for oy in range(-outline, outline + 1):
@@ -2321,18 +2501,17 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                             continue
                         draw.text((draw_x + ox, draw_y + oy), content,
                                   font=render_font, fill=(0, 0, 0, a_int))
-        # Draw fill
         draw.text((draw_x, draw_y), content, font=render_font,
                   fill=(color[0], color[1], color[2], a_int))
 
     def draw_line_element(layer, el, el_t, anim_t):
         """Draw a LINE element with animation."""
         draw = ImageDraw.Draw(layer)
-        x1 = int(OUTPUT_WIDTH * float(el.get("x1", 0.3)))
-        y1 = int(OUTPUT_HEIGHT * float(el.get("y1", 0.5)))
-        x2 = int(OUTPUT_WIDTH * float(el.get("x2", 0.7)))
-        y2 = int(OUTPUT_HEIGHT * float(el.get("y2", 0.5)))
-        thickness = max(1, int(el.get("thickness", 6)))
+        x1 = int(OUTPUT_WIDTH * safe_float(el, "x1", 0.3))
+        y1 = int(OUTPUT_HEIGHT * safe_float(el, "y1", 0.5))
+        x2 = int(OUTPUT_WIDTH * safe_float(el, "x2", 0.7))
+        y2 = int(OUTPUT_HEIGHT * safe_float(el, "y2", 0.5))
+        thickness = max(1, safe_int(el, "thickness", 6))
         color = hex_to_rgb(el.get("color", "#FFFFFF"))
         anim = el.get("anim", "draw_horizontal")
 
@@ -2359,13 +2538,13 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     def draw_rect_element(layer, el, el_t, anim_t):
         """Draw a RECT element."""
         draw = ImageDraw.Draw(layer)
-        x = int(OUTPUT_WIDTH * float(el.get("x", 0.4)))
-        y = int(OUTPUT_HEIGHT * float(el.get("y", 0.4)))
-        w = int(OUTPUT_WIDTH * float(el.get("w", 0.2)))
-        h = int(OUTPUT_HEIGHT * float(el.get("h", 0.1)))
+        x = int(OUTPUT_WIDTH * safe_float(el, "x", 0.4))
+        y = int(OUTPUT_HEIGHT * safe_float(el, "y", 0.4))
+        w = int(OUTPUT_WIDTH * safe_float(el, "w", 0.2))
+        h = int(OUTPUT_HEIGHT * safe_float(el, "h", 0.1))
         color = hex_to_rgb(el.get("color", "#FFFFFF"))
         filled = bool(el.get("filled", True))
-        thickness = max(1, int(el.get("thickness", 3)))
+        thickness = max(1, safe_int(el, "thickness", 3))
         anim = el.get("anim", "fade_in")
 
         alpha = 1.0
@@ -2391,12 +2570,12 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     def draw_circle_element(layer, el, el_t, anim_t):
         """Draw a CIRCLE element."""
         draw = ImageDraw.Draw(layer)
-        cx = int(OUTPUT_WIDTH * float(el.get("x", 0.5)))
-        cy = int(OUTPUT_HEIGHT * float(el.get("y", 0.5)))
-        r = int(min(OUTPUT_WIDTH, OUTPUT_HEIGHT) * float(el.get("radius", 0.05)))
+        cx = int(OUTPUT_WIDTH * safe_float(el, "x", 0.5))
+        cy = int(OUTPUT_HEIGHT * safe_float(el, "y", 0.5))
+        r = int(min(OUTPUT_WIDTH, OUTPUT_HEIGHT) * safe_float(el, "radius", 0.05))
         color = hex_to_rgb(el.get("color", "#FFFFFF"))
         filled = bool(el.get("filled", False))
-        thickness = max(1, int(el.get("thickness", 4)))
+        thickness = max(1, safe_int(el, "thickness", 4))
         anim = el.get("anim", "fade_in")
 
         alpha = 1.0
@@ -2431,15 +2610,14 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         target_value over count_duration, then holds at target_value.
         Reuses draw_text_element's rendering by building a synthetic
         text element each frame with the current counted value."""
-        target = float(el.get("target_value", 0))
-        count_from = float(el.get("count_from", 0))
-        count_dur = max(0.05, float(el.get("count_duration", 0.8)))
-        decimals = max(0, int(el.get("decimals", 0)))
+        target = safe_float(el, "target_value", 0)
+        count_from = safe_float(el, "count_from", 0)
+        count_dur = max(0.05, safe_float(el, "count_duration", 0.8))
+        decimals = max(0, safe_int(el, "decimals", 0))
         prefix = el.get("prefix", "")
         suffix = el.get("suffix", "")
 
         progress = clamp(el_t / count_dur, 0.0, 1.0)
-        # Ease-out so the count settles rather than stopping abruptly
         eased = 1.0 - (1.0 - progress) ** 3
         current_value = count_from + (target - count_from) * eased
         content = _format_counter_value(current_value, decimals, prefix, suffix)
@@ -2447,8 +2625,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         synthetic = dict(el)
         synthetic["type"] = "text"
         synthetic["content"] = content
-        # Counter elements should not be re-uppercased/word-counted like
-        # spoken captions -- force single-word sizing path (no cap at 110px)
         synthetic["_is_counter"] = True
         draw_text_element(layer, synthetic, el_t, 1.0 if progress > 0 else anim_t)
 
@@ -2458,15 +2634,15 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         top-to-bottom (fill_sequential)."""
         draw = ImageDraw.Draw(layer)
         glyph = el.get("glyph", "0")
-        rows = max(1, int(el.get("rows", 4)))
-        cols = max(1, int(el.get("cols", 10)))
-        cell = max(10, int(el.get("cell_size", 60)))
+        rows = max(1, safe_int(el, "rows", 4))
+        cols = max(1, safe_int(el, "cols", 10))
+        cell = max(10, safe_int(el, "cell_size", 60))
         color = hex_to_rgb(el.get("color", "#FBC02D"))
         anim = el.get("anim", "fill_sequential")
-        fill_dur = max(0.05, float(el.get("fill_duration", 1.2)))
+        fill_dur = max(0.05, safe_float(el, "fill_duration", 1.2))
 
-        cx = int(OUTPUT_WIDTH * float(el.get("x", 0.5)))
-        cy = int(OUTPUT_HEIGHT * float(el.get("y", 0.55)))
+        cx = int(OUTPUT_WIDTH * safe_float(el, "x", 0.5))
+        cy = int(OUTPUT_HEIGHT * safe_float(el, "y", 0.55))
         grid_w = cols * cell
         grid_h = rows * cell
         ox = cx - grid_w // 2
@@ -2503,28 +2679,19 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                           fill=(color[0], color[1], color[2], a_int))
                 idx += 1
 
-    # ── Main frame loop ──────────────────────────────────────────
-    # Tracks the currently-active beat's long-lived code renderer so it
-    # can be reused across that beat's frames instead of spawning a
-    # fresh subprocess every frame (the old behavior, which was correct
-    # but slow -- see BeatCodeRenderer for the per-beat-not-per-frame
-    # redesign). Closed and replaced whenever the active beat changes.
-    _active_beat_index = [None]
-    _active_renderer = [None]
+    _warned_beats = set()
 
-    def _get_renderer_for(item):
-        if item is None:
-            if _active_renderer[0] is not None:
-                _active_renderer[0].close()
-                _active_renderer[0] = None
-                _active_beat_index[0] = None
+    def _lookup_prerendered_frame(item, t):
+        beat_frames = prerendered_beats.get(item["beat_index"])
+        if beat_frames is None:
+            if item["beat_index"] not in _warned_beats:
+                print(f"  ⚠ Beat {item['beat_index']}: no pre-rendered frames available -- rendering blank")
+                _warned_beats.add(item["beat_index"])
             return None
-        if _active_beat_index[0] != item["beat_index"]:
-            if _active_renderer[0] is not None:
-                _active_renderer[0].close()
-            _active_renderer[0] = BeatCodeRenderer(item["code"], OUTPUT_WIDTH, OUTPUT_HEIGHT)
-            _active_beat_index[0] = item["beat_index"]
-        return _active_renderer[0]
+        code_t = t - item["start"]
+        frame_i = int(code_t * INTERNAL_VISUAL_FPS)
+        frame_i = max(0, min(frame_i, beat_frames.shape[0] - 1))
+        return beat_frames[frame_i]
 
     while True:
         ret, frame = cap.read()
@@ -2534,37 +2701,24 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         frame = apply_vignette(frame)
         frame = apply_warm_grade(frame)
 
-        # Generated visual code -- one persistent subprocess per beat,
-        # reused across all of that beat's frames (started lazily on
-        # the first frame of the beat, closed when the beat ends or the
-        # next beat starts).
         active_code_item = next((item for item in visual_code_timeline
                                   if item["start"] <= t < item["end"]), None)
-        renderer = _get_renderer_for(active_code_item)
-        if renderer is not None:
-            code_t = t - active_code_item["start"]
-            arr, err = renderer.get_frame(code_t)
+        if active_code_item is not None:
+            arr = _lookup_prerendered_frame(active_code_item, t)
             if arr is not None:
                 code_layer = Image.fromarray(arr)
                 frame = composite_layer(frame, code_layer)
-            elif err and not active_code_item["_warned"]:
-                print(f"  ⚠ Beat {active_code_item['beat_index']}: visual code failed ({err}) -- rendering blank for remainder of beat")
-                active_code_item["_warned"] = True
 
-        # Find all elements active at time t
         raw_active = [item for item in timeline
                       if item["start"] <= t < item["end"]]
 
-        # Deduplicate: if two elements share the same content + near-same x/y position,
-        # keep only the one whose start time is closest to t (most recently activated).
-        # This prevents "WE WE" doubles when GPT repeats a word across adjacent beats.
         seen_keys = {}
         for item in sorted(raw_active, key=lambda x: x["start"], reverse=True):
             el = item["el"]
             if el.get("type") == "text":
                 content_key = (el.get("content", "").upper().strip(),
-                               round(float(el.get("x", 0.5)), 1),
-                               round(float(el.get("y", 0.5)), 1))
+                               round(safe_float(el, "x", 0.5), 1),
+                               round(safe_float(el, "y", 0.5), 1))
                 if content_key not in seen_keys:
                     seen_keys[content_key] = item
             else:
@@ -2572,27 +2726,18 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         active = list(seen_keys.values())
 
         if active:
-            # Slight darkening overlay when text is on screen
             frame = cv2.addWeighted(frame, 0.82, np.zeros_like(frame), 0.18, 0)
 
-            # Build composite layer
             layer = Image.new('RGBA', (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
 
             for item in active:
                 el    = item["el"]
-                el_t  = t - item["start"]   # seconds since element appeared
+                el_t  = t - item["start"]
                 el_dur = max(item["end"] - item["start"], 0.01)
                 impact = item.get("impact", False)
                 etype  = el.get("type", "text")
 
                 if impact and etype == "text":
-                    # BZZT FLICKER: flash-flash-flash-hold pattern over 1.0s
-                    # 0.00-0.08s: ON  (flash 1)
-                    # 0.08-0.16s: OFF
-                    # 0.16-0.24s: ON  (flash 2)
-                    # 0.24-0.32s: OFF
-                    # 0.32-0.40s: ON  (flash 3)
-                    # 0.40s+    : HOLD fully visible with slow fade-out at end
                     in_flash = (
                         (0.00 <= el_t < 0.08) or
                         (0.16 <= el_t < 0.24) or
@@ -2600,8 +2745,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                     )
                     in_off = (0.08 <= el_t < 0.16) or (0.24 <= el_t < 0.32)
                     if in_off:
-                        continue  # skip drawing — element is "off"
-                    # During flashes use full alpha; after 0.4s hold then fade out near end
+                        continue
                     if el_t >= 0.40:
                         fade_window = 0.15
                         time_left = el_dur - el_t
@@ -2610,7 +2754,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                         else:
                             anim_t = 1.0
                     else:
-                        anim_t = 1.0  # instant full alpha during flashes
+                        anim_t = 1.0
                     try:
                         draw_text_element(layer, el, el_t, anim_t)
                     except Exception as e:
@@ -2643,7 +2787,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
                   end='\r')
             prev_pct = pct
 
-    _get_renderer_for(None)  # close out any still-open beat code subprocess
     cap.release(); out.release()
     if os.path.exists(cfr_video): os.remove(cfr_video)
     print(f"\n  ✓ Frames done")
@@ -2662,10 +2805,6 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     print(f"  ✅ Render complete: {output_path}")
 
 
-
-# ============================================================
-# MAIN GENERATOR
-# ============================================================
 class FinanceGenerator:
     def __init__(self, audio_path: str, output_path: str = "output.mp4", niche_config: dict = None):
         self.audio_path  = audio_path
@@ -2749,7 +2888,6 @@ class FinanceGenerator:
         sorted_cats = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         top = [self.broll_dirs[c] for c, s in sorted_cats if s > 0 and c in self.broll_dirs]
 
-        # FIX 2: Filter to only folders that actually exist and have clips
         valid_top = []
         for folder in top:
             files = self.get_all_files_from_dir(folder)
@@ -2759,7 +2897,6 @@ class FinanceGenerator:
                 print(f"  ⚠ Skipping empty/missing broll folder: {folder}")
 
         if not valid_top:
-            # Fallback: scan ALL configured broll dirs and use any that have clips
             print(f"  ⚠ No keyword-matched folders had clips -- scanning all broll dirs...")
             for folder in self.broll_dirs.values():
                 files = self.get_all_files_from_dir(folder)
@@ -2778,7 +2915,6 @@ class FinanceGenerator:
 
     def create_segment_plan(self, duration: float, beats: list, top_categories: list) -> list:
         segments = []
-        # Build complete pool of all folders that have clips
         all_folders = []
         for folder in self.broll_dirs.values():
             if self.get_all_files_from_dir(folder):
@@ -2786,12 +2922,10 @@ class FinanceGenerator:
         if not all_folders:
             raise Exception("No broll clips found in any folder.")
 
-        # Per-folder clip pools with used tracking
         folder_pools = {}
         for folder in all_folders:
             folder_pools[folder] = list(self.get_all_files_from_dir(folder))
 
-        # Beat category → preferred folder (best-effort, falls back to rotation)
         broll_cat_to_folder = {
             'space':   self.broll_dirs.get('space',   'space_vids'),
             'ancient': self.broll_dirs.get('ancient', 'ancient_ruins_vids'),
@@ -2800,7 +2934,6 @@ class FinanceGenerator:
             'temple':  self.broll_dirs.get('temple',  'temple_vids'),
         }
 
-        # Per-folder shuffle indices so we cycle without repeating
         folder_idx = {f: 0 for f in all_folders}
         for f in all_folders:
             random.shuffle(folder_pools[f])
@@ -2811,11 +2944,9 @@ class FinanceGenerator:
 
         for i in range(n_segs):
             seg_dur = float(beats[i].get('clip_duration', base_dur)) if i < len(beats) else base_dur
-            # Pure round-robin across all folders -- guaranteed variety
             target_folder = all_folders[folder_rot % len(all_folders)]
             folder_rot += 1
 
-            # Pick next clip from folder, cycling
             pool = folder_pools[target_folder]
             idx  = folder_idx[target_folder]
             if idx >= len(pool):
@@ -2875,7 +3006,6 @@ class FinanceGenerator:
             vf += [f"scale=-2:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase",
                    f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}"]
 
-        # fps=30 MUST come first to convert VFR → CFR before any other filter
         vf = [f"fps={fps}"] + vf
         vf += ["eq=brightness=0.02:contrast=1.05:saturation=1.1", "format=yuv420p"]
         cmd += ['-vf', ','.join(vf), '-c:v', 'libx264', '-preset', 'ultrafast',
@@ -2917,7 +3047,7 @@ class FinanceGenerator:
     def _add_cta_overlay(self, video_input: str, output_path: str, duration: float):
         end_time = round(max(duration - 4, 1), 3)
         vf = (
-            f"drawtext=text='Vaults of History'"
+            f"drawtext=text='Subscribe for more!':"
             f":fontcolor=yellow:fontsize=42:font=Arial"
             f":borderw=2:bordercolor=black:shadowx=2:shadowy=2"
             f":x=(w-text_w)/2:y=h*0.91:enable='gt(t\\,{end_time})'"
@@ -2937,7 +3067,7 @@ class FinanceGenerator:
         t0 = time.time()
 
         print(f"\n{'='*70}")
-        print(f"📊  FINANCE EXPLAINER v1")
+        print(f"📊  FINANCE EXPLAINER v2 -- full Manim renderer")
         print(f"{'='*70}")
 
         try:
@@ -2957,43 +3087,30 @@ class FinanceGenerator:
 
         print(f"\n[STEP 3] GPT Call 1: Story Beats...")
         try:
-            topic_hint   = list(self.broll_dirs.keys())[0] if self.broll_dirs else "space"
+            topic_hint   = list(self.broll_dirs.keys())[0] if self.broll_dirs else "finance"
             beats_result = analyze_story_beats(full_text, whisper_segments, topic_hint, duration)
-            topic        = beats_result.get('topic', 'default')
+            topic        = beats_result.get('topic', 'finance')
             beats        = beats_result.get('beats', [])
 
-            # CRITICAL: GPT Call 1 only sees segment-level [start-end] brackets.
-            # When it splits one segment into multiple beats, it INVENTS the
-            # split-point timestamps. Recompute every beat's start_time/end_time
-            # from actual Whisper word timestamps for frame-accurate rendering.
             _whisper_words = build_whisper_word_list(whisper_segments)
             beats = realign_beat_times(beats, _whisper_words)
             print(f"  🎯 Realigned {len(beats)} beat timestamps to Whisper word boundaries")
         except Exception as e:
             raise Exception(f"STEP 3 FAILED: {e}")
 
-        print(f"\n[STEP 4] GPT Call 2: Render Decisions...")
-        try:
-            decisions = generate_render_decisions(beats, topic)
-        except Exception as e:
-            raise Exception(f"STEP 4 FAILED: {e}")
+        print(f"\n[STEP 4] Grouping beats into Manim chunks...")
+        chunks = group_beats_into_manim_chunks(beats, target_chunk_seconds=4.5)
+        print(f"  ✅ {len(beats)} beats -> {len(chunks)} chunk(s)")
 
-        print(f"\n[STEP 4b] GPT Call 3: Per-Beat Visual Code Generation...")
+        print(f"\n[STEP 5] GPT Call: Manim chunk code generation...")
         try:
-            beat_visual_codes = generate_visual_code(beats, topic)
+            chunk_code_list = generate_manim_chunk_code(chunks, topic)
         except Exception as e:
-            # If the whole call fails, fall back to no generated visuals
-            # rather than failing the entire video.
-            print(f"  ⚠ Visual code generation failed, continuing without it: {e}")
-            beat_visual_codes = []
-
-        print(f"\n[STEP 5] Validating...")
-        decisions = validate_decisions(decisions, beats)
-        if beat_visual_codes:
-            beat_visual_codes = validate_visual_code(beat_visual_codes, beats)
+            print(f"  ⚠ Manim chunk generation failed entirely, every chunk will fall back to a dashboard filler: {e}")
+            chunk_code_list = [None] * len(chunks)
 
         print(f"\n[STEP 6] Music...")
-        bg_music = MUSIC_MAP.get(topic, MUSIC_MAP['default'])
+        bg_music = MUSIC_MAP.get(beats_result.get("detected_tone", "default"), MUSIC_MAP['default'])
         if not os.path.exists(bg_music):
             bg_music = MUSIC_MAP['default']
             if not os.path.exists(bg_music):
@@ -3006,74 +3123,17 @@ class FinanceGenerator:
         print(f"  🎵 {bg_music}")
 
         temp_files    = []
-        concat_list   = "concat_list.txt"
-        concat_output = "concatenated_video.mp4"
+        concat_output = "manim_concatenated.mp4"
         audio_output  = "audio_mixed.mp4"
 
         try:
-            if USE_PROCEDURAL_BACKGROUND:
-                print(f"\n[STEP 7-10] Procedural background...")
-                generate_procedural_background(beats, topic, duration, concat_output,
-                                                 width=OUTPUT_WIDTH, height=OUTPUT_HEIGHT, fps=fps)
-            else:
-                print(f"\n[STEP 7] B-roll matching...")
-                top_categories = self.match_broll_categories(full_text)
-                print(f"  📊 {top_categories}")
+            print(f"\n[STEP 7] Rendering Manim chunks (parallel) + concatenating...")
+            clip_paths = render_all_manim_chunks(chunks, chunk_code_list,
+                                                  w=OUTPUT_WIDTH, h=OUTPUT_HEIGHT, fps=fps)
+            concat_manim_clips(clip_paths, concat_output)
+            print(f"  ✅ {len(clip_paths)} chunks concatenated -> {concat_output}")
 
-                print(f"\n[STEP 8] Segment plan...")
-                try:
-                    video_segments = self.create_segment_plan(duration, beats, top_categories)
-                    print(f"  ✅ {len(video_segments)} segments")
-                except Exception as e:
-                    raise Exception(f"STEP 8 FAILED: {e}")
-
-                print(f"\n[STEP 9] Processing segments...")
-                try:
-                    from tqdm import tqdm
-                    use_tqdm = True
-                except:
-                    use_tqdm = False
-
-                for i, seg in enumerate(video_segments):
-                    temp_file = f"temp_segment_{i:02d}.mp4"
-                    t_seg     = time.time()
-
-                    if use_tqdm:
-                        total_f = int(seg['duration'] * fps)
-                        pbar    = tqdm(total=total_f,
-                                       desc=f"  Seg {i+1}/{len(video_segments)}: {os.path.basename(seg['file'])[:28]}",
-                                       unit='frame')
-                        def upd(c, t, pb=pbar):
-                            pb.n = min(c, t); pb.refresh()
-                        result = None
-                        try:
-                            result = self.process_segment_to_file(seg, temp_file, fps, upd)
-                        finally:
-                            pbar.n = pbar.total; pbar.refresh(); pbar.close()
-                            print(f"    ✓ {time.time()-t_seg:.1f}s")
-                    else:
-                        print(f"  {i+1}/{len(video_segments)}: {os.path.basename(seg['file'])}", end='', flush=True)
-                        result = self.process_segment_to_file(seg, temp_file, fps)
-                        print(f" ✓ ({time.time()-t_seg:.1f}s)")
-
-                    if os.path.exists(temp_file):
-                        temp_files.append(temp_file)
-
-                if not temp_files:
-                    raise Exception("No segments processed")
-
-                print(f"\n[STEP 10] Concatenating {len(temp_files)} segments...")
-                with open(concat_list, 'w') as f:
-                    for tf in temp_files:
-                        f.write(f"file '{tf}'\n")
-                r = subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
-                                     '-i', concat_list, '-c', 'copy', concat_output],
-                                    capture_output=True)
-                if r.returncode != 0:
-                    raise Exception(f"Concat failed: {r.stderr.decode()[-200:]}")
-                print(f"  ✅ Done")
-
-            print(f"\n[STEP 11] Audio mix...")
+            print(f"\n[STEP 8] Audio mix...")
             cmd = ['ffmpeg', '-y', '-i', concat_output, '-i', self.audio_path]
             if bg_music and os.path.exists(bg_music):
                 cmd += ['-i', bg_music]
@@ -3093,20 +3153,9 @@ class FinanceGenerator:
                 raise Exception(f"Audio failed: {r.stderr.decode()[-200:]}")
             print(f"  ✅ Mixed")
 
-            print(f"\n[STEP 12] OpenCV text render...")
-            try:
-                render_text_overlay_opencv(audio_output, decisions, beats, whisper_segments,
-                                            self.output_path, beat_visual_codes=beat_visual_codes)
-            except Exception as e:
-                print(f"  ❌ Render failed: {e}")
-                traceback.print_exc()
-                subprocess.run(['ffmpeg', '-y', '-i', audio_output, '-c', 'copy', self.output_path],
-                               check=True, capture_output=True)
+            shutil.move(audio_output, self.output_path)
 
-            if os.path.exists(audio_output):
-                os.remove(audio_output)
-
-            print(f"\n[STEP 13] CTA...")
+            print(f"\n[STEP 9] CTA...")
             cta_output = self.output_path.replace(".mp4", "_cta.mp4")
             self._add_cta_overlay(self.output_path, cta_output, duration)
             self.output_path = cta_output
@@ -3121,7 +3170,7 @@ class FinanceGenerator:
             print(f"✅ COMPLETE!")
             print(f"📁 {self.output_path}")
             print(f"💾 {file_size:.2f} MB | ⏱ {duration:.1f}s | ⚡ {total_time:.0f}s")
-            print(f"🎭 {len(beats)} beats | 📝 {len(decisions)} decisions")
+            print(f"🎭 {len(beats)} beats | 🎬 {len(chunks)} Manim chunks")
             print(f"{'='*70}\n")
             return True
 
@@ -3136,7 +3185,7 @@ class FinanceGenerator:
                 if os.path.exists(tf):
                     try: os.remove(tf)
                     except: pass
-            for f in [concat_list, concat_output, audio_output]:
+            for f in [concat_output, audio_output]:
                 if os.path.exists(f):
                     try: os.remove(f)
                     except: pass
@@ -3145,11 +3194,6 @@ class FinanceGenerator:
                 except: pass
 
 
-# ============================================================
-# NICHE TEMPLATES
-# Only relevant if USE_PROCEDURAL_BACKGROUND is False (broll-clip
-# fallback path). With procedural backgrounds on, this is unused.
-# ============================================================
 NICHE_TEMPLATES = {
     'finance': {
         'broll_dirs': {},
@@ -3158,10 +3202,6 @@ NICHE_TEMPLATES = {
 }
 
 
-
-# ============================================================
-# FASTAPI
-# ============================================================
 @app.get("/")
 def root():
     return {"service": "Finance Explainer v1", "status": "running",
@@ -3237,8 +3277,1163 @@ def download_video():
     return FileResponse(current_job["output"], media_type="video/mp4",
                         filename=f"finance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
 
+
+MANIM_FORBIDDEN_NAMES = {
+    "open", "exec", "eval", "compile", "__import__",
+    "os", "sys", "subprocess", "socket", "requests", "shutil",
+    "globals", "locals", "vars", "input", "breakpoint", "exit", "quit",
+    "DecimalNumber",
+    "MarkupText", "Integer", "Variable", "BulletedList", "Title", "Paragraph",
+    "BarChart", "SVGMobject", "ComplexPlane", "PolarPlane",
+    "MathTex", "Tex", "SingleStringMathTex",
+    "Axes", "NumberLine", "NumberPlane",
+    "Rectangle",
+}
+MANIM_FORBIDDEN_PATTERNS = [
+    r'\bDecimalNumber\b',
+    r'\bMarkupText\b', r'\bInteger\b', r'\bVariable\b', r'\bBulletedList\b',
+    r'\bTitle\b', r'\bParagraph\b', r'\bBarChart\b',
+    r'\bSVGMobject\b', r'\bComplexPlane\b', r'\bPolarPlane\b',
+    r'\bMathTex\b', r'\bSingleStringMathTex\b', r'\bTex\b',
+    r'\bAxes\b', r'\bNumberLine\b', r'\bNumberPlane\b',
+    r'\bRectangle\b',
+]
+MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
+MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
+    "Rectangle": "fm_card / fm_two_cards / fm_stacked_cards (a labeled box) or fm_animate_bar_chart / fm_animate_comparison_bars / fm_animate_waterfall (a bar)",
+    "Axes": "fm_animate_line_chart",
+    "NumberLine": "fm_animate_line_chart, or drop the axis entirely and just show the data",
+    "NumberPlane": "fm_animate_line_chart, or drop the axis entirely and just show the data",
+    "MathTex": "fm_formula",
+    "Tex": "fm_formula",
+    "SingleStringMathTex": "fm_formula",
+    "SVGMobject": "fm_icon(name, size, color)",
+    "BarChart": "fm_animate_bar_chart",
+    "DecimalNumber": "always_redraw with a plain Text() that reads tracker.get_value()",
+    "MarkupText": "Text()",
+    "Integer": "Text() built from an f-string",
+    "Variable": "a ValueTracker plus always_redraw with a plain Text()",
+    "BulletedList": "separate Text() lines arranged with .arrange(DOWN)",
+    "Title": "Text()",
+    "Paragraph": "Text()",
+    "ComplexPlane": "fm_animate_line_chart, or drop the axis entirely and just show the data",
+    "PolarPlane": "fm_animate_line_chart, or drop the axis entirely and just show the data",
+}
+
+
+def safety_correction_hint(reason: str) -> str:
+    """Turns a manim_static_safety_check rejection reason into a sharp,
+    specific correction instruction for a single targeted GPT retry,
+    instead of the generic system prompt the chunk already saw once and
+    apparently didn't follow. Naming the exact banned class AND the
+    exact replacement to call, in the same short sentence, is a much
+    stronger signal than the system prompt's general-purpose ban list
+    buried among hundreds of other rules."""
+    for name, replacement in MANIM_FORBIDDEN_REPLACEMENT_HINTS.items():
+        if f"'{name}'" in reason:
+            return (
+                f"CORRECTION REQUIRED: your previous attempt at this exact chunk used "
+                f"'{name}', which is permanently banned in this environment and was "
+                f"automatically rejected before rendering -- it will be rejected again if "
+                f"you use it a second time. Rewrite this chunk's visual using {replacement} "
+                f"instead. Do not use '{name}' anywhere in your replacement code, including "
+                f"inside helper expressions or as part of a workaround."
+            )
+    return (
+        f"CORRECTION REQUIRED: your previous attempt at this exact chunk was rejected "
+        f"for this specific reason: {reason}. Fix exactly that problem and resubmit "
+        f"valid code -- do not change anything else about the visual."
+    )
+
+
+def manim_static_safety_check(code: str) -> tuple[bool, str]:
+    """Parse GPT-generated Manim chunk code and reject anything unsafe
+    BEFORE it's ever written to disk and executed via the `manim` CLI
+    subprocess. Different shape than the PIL pipeline's safety check:
+    Manim's whole API requires `from manim import *`, so imports can't
+    be banned outright -- instead this allows only a fixed allowlist
+    of modules (manim, numpy, math) and rejects anything else, plus
+    the same dangerous-builtin-name check as the PIL pipeline. Also
+    structurally verifies the code contains exactly one top-level
+    class definition named per the expected pattern with a construct
+    method, the same AST-based approach (not substring matching) used
+    for draw_beat, for the same reason: a substring check would pass
+    even with stray unsafe top-level statements alongside the real
+    class definition.
+
+    MANIM_FORBIDDEN_NAMES bans DecimalNumber specifically: it has its
+    own update-cycle quirks unrelated to LaTeX and reliably misbehaves
+    in this codebase, so it stays banned. MathTex/Tex/SingleStringMathTex
+    were briefly removed from this list on the assumption that having
+    texlive installed meant they were safe -- production logs proved
+    that wrong. The toolchain compiles fine; the failure mode is GPT
+    generating malformed LaTeX source inside Python raw strings (most
+    commonly doubled backslashes like r"\\text{...}" instead of
+    r"\text{...}", since a raw string already preserves a single
+    backslash literally, plus stray literal "$" characters inside the
+    tex string). That is not a fixable-by-better-prompting problem at
+    the rate GPT gets it wrong, so MathTex/Tex/SingleStringMathTex are
+    back on this list for good. Axes/NumberLine/NumberPlane are banned
+    for the same reason: the prompt previously contradicted itself by
+    listing them as banned-because-they-crash in one sentence and then
+    un-banning them in the next, which is now fixed by keeping them
+    banned consistently here and in the prompt text.
+    Rejecting the remaining names here is instant and free, instead of
+    paying for a manim subprocess spin-up just to watch it crash."""
+    for pattern in MANIM_FORBIDDEN_PATTERNS:
+        if re.search(pattern, code):
+            bare = pattern.replace(r'\b', '')
+            return False, f"regex pre-scan: forbidden name '{bare}' found in code"
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return False, f"syntax error: {e}"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root_module = alias.name.split(".")[0]
+                if root_module not in MANIM_ALLOWED_IMPORT_MODULES:
+                    return False, f"imports disallowed module '{alias.name}'"
+        if isinstance(node, ast.ImportFrom):
+            root_module = (node.module or "").split(".")[0]
+            if root_module not in MANIM_ALLOWED_IMPORT_MODULES:
+                return False, f"imports disallowed module '{node.module}'"
+        if isinstance(node, ast.Name) and node.id in MANIM_FORBIDDEN_NAMES:
+            return False, f"references forbidden name '{node.id}'"
+        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+            return False, f"references dunder attribute '{node.attr}'"
+
+    class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
+    if len(class_defs) != 1:
+        return False, f"expected exactly one top-level class definition, found {len(class_defs)}"
+
+    cls = class_defs[0]
+    has_construct = any(
+        isinstance(n, ast.FunctionDef) and n.name == "construct" for n in cls.body
+    )
+    if not has_construct:
+        return False, "class definition is missing a construct(self) method"
+
+    non_class_non_import = [
+        n for n in tree.body
+        if not isinstance(n, (ast.ClassDef, ast.Import, ast.ImportFrom))
+    ]
+    if non_class_non_import:
+        kinds = sorted({type(n).__name__ for n in non_class_non_import})
+        return False, f"unexpected top-level statement(s) outside the class/imports: {kinds}"
+
+    return True, ""
+
+
+MANIM_CHUNK_TIMEOUT_SECONDS = 45
+MANIM_CHUNK_CACHE_DIR = "/tmp/finance_explainer_manim_cache"
+MANIM_CHUNK_MAX_DRIFT_RATIO = 0.45
+
+
+FINANCE_DASHBOARD_MANIM_BOILERPLATE = '''
+from manim import *
+import random as _fdb_random
+from manim.utils.rate_functions import (
+    ease_in_sine, ease_out_sine, ease_in_out_sine,
+    ease_in_quad, ease_out_quad, ease_in_out_quad,
+    ease_in_cubic, ease_out_cubic, ease_in_out_cubic,
+    ease_in_bounce, ease_out_bounce, ease_in_out_bounce,
+    ease_in_elastic, ease_out_elastic, ease_in_out_elastic,
+)
+
+config.pixel_width = 1920
+config.pixel_height = 1080
+config.frame_rate = 30
+config.frame_height = 8.0
+
+
+def _finance_dashboard_background_group():
+    fw = config.frame_width
+    fh = config.frame_height
+    grid = VGroup()
+    step = fh / 8
+    x = -fw / 2
+    while x <= fw / 2 + 1e-6:
+        grid.add(Line([x, -fh / 2, 0], [x, fh / 2, 0]))
+        x += step
+    y = -fh / 2
+    while y <= fh / 2 + 1e-6:
+        grid.add(Line([-fw / 2, y, 0], [fw / 2, y, 0]))
+        y += step
+    grid.set_stroke(color="#8A94A6", width=0.6, opacity=0.07)
+
+    axis = VGroup(
+        Line([-fw * 0.46, -fh * 0.42, 0], [-fw * 0.46, fh * 0.42, 0]),
+        Line([-fw * 0.46, -fh * 0.42, 0], [fw * 0.46, -fh * 0.42, 0]),
+    )
+    axis.set_stroke(color="#8A94A6", width=1.2, opacity=0.14)
+
+    ticker = VGroup()
+    rng = _fdb_random.Random(7)
+    samples = ["+0.4%", "-0.2%", "1.07x", "+1.1%", "-0.6%", "0.98x", "+2.3%", "-1.4%"]
+    for i in range(14):
+        val = rng.choice(samples)
+        label = Text(val, font_size=14, color="#8A94A6")
+        label.set_opacity(0.10)
+        label.move_to([-fw / 2 + (i + 0.5) * (fw / 14), fh / 2 - 0.34, 0])
+        ticker.add(label)
+
+    return VGroup(grid, axis, ticker)
+
+
+_FDB_MIN_WAIT = 0.04
+
+
+class FinanceDashboardScene(Scene):
+    def setup(self):
+        self.camera.background_color = "#0B111A"
+        self.add(_finance_dashboard_background_group())
+
+    def wait(self, duration=1.0, stop_condition=None, frozen_frame=None):
+        if duration < _FDB_MIN_WAIT:
+            duration = _FDB_MIN_WAIT
+        return super().wait(duration, stop_condition=stop_condition, frozen_frame=frozen_frame)
+
+
+class FinanceDashboard3DScene(ThreeDScene):
+    def setup(self):
+        self.camera.background_color = "#0B111A"
+        self.set_camera_orientation(phi=0 * DEGREES, theta=-90 * DEGREES)
+        self.add_fixed_in_frame_mobjects(_finance_dashboard_background_group())
+
+    def wait(self, duration=1.0, stop_condition=None, frozen_frame=None):
+        if duration < _FDB_MIN_WAIT:
+            duration = _FDB_MIN_WAIT
+        return super().wait(duration, stop_condition=stop_condition, frozen_frame=frozen_frame)
+
+
+''' + _FUNCTIONS_MANIM_CODE + '\n\n'
+
+
+def _manim_chunk_cache_key(code: str, w: int, h: int, fps: int) -> str:
+    raw = f"{code}|{w}|{h}|{fps}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
+def _ffprobe_duration_seconds(path: str) -> float:
+    cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+           '-of', 'default=noprint_wrappers=1:nokey=1', path]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return float(result.stdout.strip())
+
+
+def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
+                          w: int = 1920, h: int = 1080, fps: int = 30) -> tuple:
+    """Forces a rendered Manim chunk onto an exact target duration,
+    independent of whether the GPT-authored run_time/wait math inside
+    the chunk was correct -- never trusts the chunk's own animation
+    timing to be the timeline truth. Measures the actual rendered
+    length via ffprobe, then retimes the whole clip with setpts so it
+    lands exactly on target. If the raw render is wildly off (beyond
+    MANIM_CHUNK_MAX_DRIFT_RATIO), a speed change would look broken
+    rather than subtle, so this rejects the chunk entirely instead of
+    warping it -- the caller falls back to a dashboard filler."""
+    try:
+        actual = _ffprobe_duration_seconds(raw_path)
+    except Exception as e:
+        return None, f"could not probe rendered chunk duration: {e}"
+
+    if actual <= 0:
+        return None, "rendered chunk reported zero or negative duration"
+
+    drift = abs(actual - target_duration) / target_duration
+    if drift > MANIM_CHUNK_MAX_DRIFT_RATIO:
+        import sys
+        print(f"  ⚠ duration drift {drift*100:.0f}% exceeds {MANIM_CHUNK_MAX_DRIFT_RATIO*100:.0f}% limit — rejecting chunk, falling back to filler", file=sys.stderr)
+        return None, f"rendered duration drifted {drift*100:.0f}% from target ({actual:.2f}s vs {target_duration:.2f}s)"
+
+    speed_ratio = target_duration / actual
+    vf = f"setpts=PTS*{speed_ratio:.6f}"
+    cmd = [
+        'ffmpeg', '-y', '-i', raw_path,
+        '-vf', vf, '-r', str(fps),
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
+        '-pix_fmt', 'yuv420p', '-an', '-t', str(target_duration),
+        out_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        tail = result.stderr.decode(errors='replace')[-300:]
+        return None, f"duration-lock ffmpeg pass failed: {tail}"
+
+    return out_path, ""
+
+
+def _make_dashboard_filler(out_path: str, duration: float, w: int = 1920,
+                            h: int = 1080, fps: int = 30) -> str:
+    """Exact-duration filler clip for any chunk that fails safety check,
+    crashes, times out, or drifts past MANIM_CHUNK_MAX_DRIFT_RATIO --
+    uses the bare dashboard background color rather than black, since
+    the whole video already sits on this color and a navy frame reads
+    as a quiet beat rather than a visible error flash. This is the
+    last-resort fallback only -- see _make_held_frame_filler for the
+    preferred fallback used for short silence gaps, which holds the
+    previous chunk's actual final frame instead of cutting to blank."""
+    cmd = [
+        'ffmpeg', '-y',
+        '-f', 'lavfi', '-i', f'color=c=0x0B111A:s={w}x{h}:r={fps}:d={duration}',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+        '-pix_fmt', 'yuv420p', '-r', str(fps), '-an', '-t', str(duration),
+        out_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        raise Exception(f"dashboard filler failed: {result.stderr.decode(errors='replace')[-200:]}")
+    return out_path
+
+
+def _make_held_frame_filler(prev_clip_path: str, out_path: str, duration: float,
+                             w: int = 1920, h: int = 1080, fps: int = 30) -> str:
+    """Fills a short silence-gap chunk by freezing the previous content
+    chunk's actual final frame for the gap's duration, instead of
+    cutting to blank background. This is what real editors do for a
+    natural speech pause -- the visual holds, it doesn't vanish.
+    Falls back to a plain dashboard filler if the previous clip can't
+    be read for any reason."""
+    frame_path = os.path.join(os.path.dirname(out_path), f"_lastframe_{os.path.basename(out_path)}.png")
+    extract_cmd = ['ffmpeg', '-y', '-sseof', '-0.1', '-i', prev_clip_path, '-vframes', '1', frame_path]
+    result = subprocess.run(extract_cmd, capture_output=True)
+    if result.returncode != 0 or not os.path.exists(frame_path):
+        return None
+    cmd_loop = [
+        'ffmpeg', '-y', '-loop', '1', '-i', frame_path, '-t', str(duration),
+        '-vf', f'scale={w}:{h}', '-r', str(fps),
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
+        '-pix_fmt', 'yuv420p', '-an', out_path,
+    ]
+    result2 = subprocess.run(cmd_loop, capture_output=True)
+    try:
+        os.remove(frame_path)
+    except Exception:
+        pass
+    if result2.returncode != 0:
+        return None
+    return out_path
+
+
+MANIM_CHUNK_DEBUG_LOG_DIR = "/tmp/finance_explainer_manim_logs"
+
+
+def _extract_manim_error_summary(stderr_text: str, stdout_text: str, max_chars: int = 2500) -> str:
+    """Manim renders its tracebacks through `rich`, which wraps the
+    actual exception in box-drawing characters and ANSI color codes --
+    a naive [-500:] slice of that raw text usually lands inside the
+    source-code context panel rather than the actual exception type
+    and message, which is what actually matters for debugging. This
+    strips the box-drawing/ANSI noise and explicitly hunts for the
+    last `SomeError: message` style line so the surfaced summary is
+    readable instead of a fragment of a rendered box border."""
+    raw = (stderr_text or "") + "\n" + (stdout_text or "")
+    clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw)
+    clean = re.sub(r'[│┃┌┐└┘─━╭╮╰╯┏┓┗┛┣┫┳┻╋]', '', clean)
+    lines = [ln.rstrip() for ln in clean.splitlines() if ln.strip()]
+
+    exception_line = ""
+    for ln in reversed(lines):
+        if re.match(r'^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception)\b', ln.strip()):
+            exception_line = ln.strip()
+            break
+
+    tail = "\n".join(lines)[-max_chars:]
+    if exception_line and exception_line not in tail:
+        tail = f"{exception_line}\n...\n{tail}"
+    return tail or "manim subprocess failed with no captured output"
+
+
+def _save_manim_failure_log(class_name: str, stderr_text: str, stdout_text: str) -> str:
+    os.makedirs(MANIM_CHUNK_DEBUG_LOG_DIR, exist_ok=True)
+    log_path = os.path.join(MANIM_CHUNK_DEBUG_LOG_DIR, f"{class_name}.log")
+    try:
+        with open(log_path, "w") as f:
+            f.write("=== STDERR ===\n")
+            f.write(stderr_text or "")
+            f.write("\n\n=== STDOUT ===\n")
+            f.write(stdout_text or "")
+    except Exception:
+        pass
+    return log_path
+
+
+def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 1920,
+                        h: int = 1080, fps: int = 30) -> tuple:
+    """Renders ONE Manim chunk to its own exact-duration MP4 clip via the
+    real `manim` CLI as a subprocess (not an in-process exec, since
+    Manim's render pipeline isn't a simple function call -- it writes
+    its own output file via ffmpeg internally). The GPT-authored code
+    is safety-checked on its own BEFORE FINANCE_DASHBOARD_MANIM_BOILERPLATE
+    is prepended, so the structural check still only ever has to trust
+    the boilerplate this file controls, not anything GPT wrote. Returns
+    (clip_path_or_None, error_str). On any failure (safety rejection,
+    subprocess crash, timeout, missing output, duration drift past
+    MANIM_CHUNK_MAX_DRIFT_RATIO), returns (None, reason) -- the caller
+    is expected to fall back to a dashboard-color filler of the exact
+    target duration, never crash the whole video over one bad chunk.
+    Disk-cached by content hash (including duration, since the cached
+    artifact is the final duration-locked clip, not the raw render) so
+    re-running after an unrelated downstream failure doesn't re-spend
+    the wall-clock cost of every chunk that already rendered fine.
+
+    Resolution and frame rate are NOT passed as `manim` CLI flags --
+    FINANCE_DASHBOARD_MANIM_BOILERPLATE sets config.pixel_width,
+    config.pixel_height, and config.frame_rate directly at module
+    level instead, since that is a stable Manim Community mechanism
+    across versions, whereas CLI flag names/spellings can drift and an
+    unrecognized flag would fail every single chunk at once."""
+    ok, reason = manim_static_safety_check(code)
+    if not ok:
+        return None, f"safety check rejected: {reason}"
+
+    os.makedirs(MANIM_CHUNK_CACHE_DIR, exist_ok=True)
+    cache_key = _manim_chunk_cache_key(f"{code}|{duration:.4f}", w, h, fps)
+    cached_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"{cache_key}.mp4")
+    if os.path.exists(cached_path):
+        return cached_path, ""
+
+    work_dir = tempfile.mkdtemp(prefix="manim_chunk_")
+    script_path = os.path.join(work_dir, "chunk_scene.py")
+    try:
+        with open(script_path, "w") as f:
+            f.write(FINANCE_DASHBOARD_MANIM_BOILERPLATE)
+            f.write(code)
+
+        cmd = [
+            "manim", "-qh", "--disable_caching",
+            "--media_dir", work_dir,
+            script_path, class_name,
+        ]
+        try:
+            result = subprocess.run(
+                cmd, cwd=work_dir, capture_output=True, text=True,
+                timeout=MANIM_CHUNK_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return None, f"manim render timed out after {MANIM_CHUNK_TIMEOUT_SECONDS}s"
+
+        if result.returncode != 0:
+            log_path = _save_manim_failure_log(class_name, result.stderr, result.stdout)
+            summary = _extract_manim_error_summary(result.stderr, result.stdout)
+            return None, f"manim subprocess failed (exit {result.returncode}), full log: {log_path}\n{summary}"
+
+        produced = glob.glob(os.path.join(work_dir, "**", f"{class_name}.mp4"), recursive=True)
+        if not produced:
+            return None, "manim reported success but no output .mp4 was found"
+
+        locked_path, lock_err = _lock_chunk_duration(produced[0], duration, cached_path, w, h, fps)
+        if not locked_path:
+            return None, lock_err
+
+        return locked_path, ""
+    except Exception as e:
+        return None, f"unexpected error rendering manim chunk: {e}"
+    finally:
+        try:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+GAP_CHUNK_MIN_SECONDS = 0.35
+
+
+def group_beats_into_manim_chunks(beats: list, target_chunk_seconds: float = 4.5) -> list:
+    """Groups consecutive beats into chunks of roughly target_chunk_seconds
+    each, without splitting any single beat across two chunks -- a
+    chunk boundary always falls between beats, never inside one, since
+    each chunk becomes its own independent Manim Scene/clip. A beat
+    longer than target_chunk_seconds on its own still gets its own
+    whole chunk (never truncated).
+
+    CRITICAL: every chunk is rendered and concatenated back-to-back
+    with zero gap between clips (see concat_manim_clips), but real
+    narration always has silence between sentences -- natural speech
+    pauses between Whisper segments. If those gaps are not represented
+    as their own chunks, the concatenated video's internal clock runs
+    fractions of a second fast relative to the audio track every time
+    a gap is skipped, and that loss compounds across the whole video:
+    by minute one this can total several seconds, which is exactly
+    why visuals appear to fire earlier and earlier as a video runs
+    on -- they are not actually drifting, the silent gaps between them
+    were simply never given their own screen time. Whenever there is
+    a real gap between one chunk's end_time and the next chunk's
+    start_time, an explicit silent gap chunk (is_gap=True, no beats)
+    is inserted to occupy exactly that duration, so the video timeline
+    always matches the audio timeline beat-for-beat, gap-for-gap."""
+    raw_chunks = []
+    current = []
+    current_start = None
+    current_end = None
+    for beat in beats:
+        b_start = beat.get("start_time", 0.0)
+        b_end = beat.get("end_time", b_start + 1.0)
+        if current and (b_end - current_start) > target_chunk_seconds:
+            raw_chunks.append({"beats": current, "start_time": current_start, "end_time": current_end})
+            current = []
+            current_start = None
+        if not current:
+            current_start = b_start
+        current.append(beat)
+        current_end = b_end
+    if current:
+        raw_chunks.append({"beats": current, "start_time": current_start, "end_time": current_end})
+
+    chunks = []
+    prev_end = None
+    for c in raw_chunks:
+        if prev_end is not None:
+            gap = c["start_time"] - prev_end
+            if gap >= GAP_CHUNK_MIN_SECONDS:
+                chunks.append({"beats": [], "start_time": prev_end, "end_time": c["start_time"], "is_gap": True})
+        chunks.append(c)
+        prev_end = c["end_time"]
+    return chunks
+
+
+def generate_manim_chunk_code(chunks: list, topic: str) -> list:
+    """Manim-based replacement for the old PIL/cv2 generate_visual_code.
+    Produces one Manim Scene class per chunk (each chunk is roughly
+    target_chunk_seconds of consecutive beats, see
+    group_beats_into_manim_chunks) instead of one draw_beat() function
+    per beat. Uses the same shared adaptive rate limiter
+    (gpt4o_call/_call_with_retry) and the same dynamic_batch_size
+    scaling as the old PIL-based Call 3, since smaller multi-second
+    chunks means MORE total API calls per video than the old
+    pipeline's larger 3-6-beat batches -- without dynamic batching
+    this would hit the shared 30k TPM ceiling far more easily, not
+    less. Each batch asks GPT for several chunks' worth of Manim code
+    in one call, same batching shape as the old PIL Call 3.
+
+    Confirmed real bug, now fixed: results used to be slotted into
+    the final ordered list by trusting GPT's own self-reported
+    "chunk_index" field in its JSON response. In practice GPT would
+    sometimes reset that count back to 0 for a later batch instead of
+    continuing the real global count, which silently overwrote an
+    earlier batch's correct chunks with a later batch's content (e.g.
+    a beat from minute four landing at the start of the video) and
+    left that batch's own true slot empty. The fix never trusts that
+    field for indexing -- the global index is derived from each
+    item's own position in the returned array, which is the same
+    order the chunks were requested in, and the class name inside the
+    code is force-renamed to match via regex. This makes correct
+    ordering independent of GPT getting cross-batch arithmetic right."""
+    if not OPENAI_API_KEY:
+        raise Exception("OPENAI_API_KEY not set.")
+
+    print(f"  🎬 Manim Call: chunk code generation for {len(chunks)} chunks...")
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    system_prompt = """You are a generative motion graphics engineer using Manim (Manim Community edition) for a premium long-form finance explainer channel. For each chunk of narration (a few seconds, sometimes one beat, sometimes several consecutive beats grouped together) you write ONE complete Manim Scene class that animates that chunk's visual. This is a documentary-grade finance/data show, not an AI caption video -- the visual itself should carry the idea, not a wall of words.
+
+=== THINK IN VISUAL METAPHORS — NOT TEXT LABELS ===
+Every financial concept has a physical visual that IS the concept. Your job is to find that visual and animate it. The audio already says the words. You show the REALITY.
+
+The pattern: audio names the concept → you animate the physical thing that concept represents → viewer understands without reading a single word.
+
+=== THE 3BLUE1BROWN STANDARD — CHARTS, DIAGRAMS, AND REAL MATH ARE THE DEFAULT, NOT ICONS AND NOT SENTENCES ===
+The visual language of this channel is the visual language of 3blue1brown: axes, plotted lines, bars, arcs, donuts, waterfalls, growing numbers, geometric proof-style diagrams, and actual mathematical notation. Almost nothing in a 3blue1brown video is a literal pictogram of an object, and almost nothing is a sentence of prose text either -- it is the STRUCTURE of the idea made visible (a curve bending, a bar growing, a region filling, a value ticking up, an equation transforming). That is the standard here. Default to a chart, graph, gauge, donut, waterfall, bar comparison, counter, or an actual formula for every beat that has a number, a trend, a proportion, a comparison, or a calculation -- which is the vast majority of beats on this channel.
+
+SHOW THE CALCULATION, NOT JUST THE RESULT, WHEN A BEAT IS ABOUT A CALCULATION: MathTex and Tex are BANNED on this channel -- they route through a LaTeX subprocess that crashes constantly on GPT-generated raw-string formulas (double-escaped backslashes, stray literal "$" signs) and every crash silently becomes a blank filler clip. When narration describes how a number is calculated (compound interest, a percentage of a percentage, tax taken off a total, an hourly rate times hours), do not just show the final number -- show the FORMULA, the same way 3blue1brown shows the equation before showing what it evaluates to, but build it with fm_formula(scene, "A = P x (1 + r)^n", duration=D) -- use "x" for multiplication and write exponents inline as "^n" rather than true superscripts. ALWAYS call fm_formula for this, NEVER type a raw `Text("...")` formula yourself: a hand-picked font_size on a formula string of unknown final length is exactly how text runs off the edges of the 16:9 frame (this has happened -- a two-line calculation overflowed past the right edge because nothing was scaling it to fit). fm_formula auto-shrinks to always fit inside the frame regardless of string length, so you never have to estimate whether your formula is "too long" -- it cannot overflow. For a calculation that simplifies to a result (e.g. "$250 x 12 x 5 = $15,000" then "-$5,000 = $10,000"), pass a LIST of strings -- `fm_formula(scene, ["$250 x 12 x 5 = $15,000", "-$5,000 = $10,000"], duration=D)` -- each becomes its own row, auto-scaled together as one group. Reach for this whenever a beat's content is fundamentally "X calculated from Y" rather than just "here is X."
+
+fm_icon (a literal pictogram: a house, a coin, a clock, a person) is a SMALL ACCENT, not a primary visual. Reach for it only to label or anchor a chart that's already doing the real work (a tiny house icon next to a "Rent" axis label), or for the rare beat that is genuinely about a single concrete object with no number or trend attached at all. If you notice you are about to make an icon the LARGEST or ONLY element in a chunk, stop -- ask whether this beat actually has a number, a comparison, a trend, a proportion, or a calculation hiding in it that a chart or formula would show instead. Nearly every finance beat does.
+When in doubt between an icon-based visual and a chart/formula-based visual for the same beat, choose the chart or formula.
+
+=== VARIETY IS A HARD REQUIREMENT, NOT A NICE-TO-HAVE ===
+You are one of several parallel calls generating chunks for the SAME video. If every chunk about money reaches for the same coin-stack or dollar-icon-and-arrow visual, the finished video repeats one image dozens of times and looks broken even though each individual chunk technically passed every rule. Coins are ONE option among many for "income" or "money flowing" beats — not the default. Before settling on a coin visual, actively consider whether the beat is better served by: a bar chart, a counter ticking up, a comparison, a card, a gauge, a donut, a waterfall, a timeline, an icon grid, or a line chart. Treat coin-stacking as a visual you reach for occasionally, never as the safe default for "money" in general.
+
+NEVER USE A GENERIC COIN/DOLLAR ICON TO REPRESENT A SPECIFIC NAMED ITEM OR CATEGORY: a real, confirmed failure used fm_icon("coin") stacked inside a card labeled "Lattes" -- coins do not mean coffee, and decorating a specific spending category (lattes, rent, a subscription, a specific purchase) with a generic dollar-coin icon is a content mismatch that reads as nonsensical, not illustrative. fm_icon only has a fixed, limited set of shapes (dollar, coin, house, person, clock, arrow_up, arrow_down, warning, checkmark, fire) -- if a beat names something specific that has no matching icon (lattes, groceries, a gym membership, streaming subscriptions), do NOT force the closest-sounding money icon onto it. Either use the category name as a plain 1-2 word label (cat_lbl already exists for this on charts/cards) with no icon at all, or represent the category through its dollar VALUE in a chart/comparison rather than through an icon. A card or bar with just a label and a number is always safer and more honest than an icon that does not actually depict the thing being discussed.
+NEVER LAYER A DECORATIVE ICON DIRECTLY ON TOP OF OR BEHIND A CARD/PRIMITIVE'S OWN TEXT: a real, confirmed failure placed stacked fm_icon("coin") shapes inside an fm_two_cards card, directly overlapping that card's own label text ("Side Gigs" became unreadable with circles cutting through every letter). fm_card and fm_two_cards already lay out their own label and value text with correct spacing -- adding extra icons inside or behind that same space, without first checking they land in genuinely empty space, is a near-guaranteed collision. If you want an icon alongside a card, place it OUTSIDE the card's bounding box entirely (e.g. .next_to(card, UP, buff=0.3)), never centered inside or behind the card's own content area.
+
+THIS APPLIES TO REPEATED VALUES, NOT JUST REPEATED ICONS: if the narration mentions the same dollar figure more than once across nearby beats (a recurring number like a side-hustle income figure or a monthly bill that the script returns to), do NOT render it the same way every time it appears -- a bare hero number via fm_animate_single_value or fm_animate_glow_reveal, shown identically three or four times across a video, is just as repetitive and just as broken-looking as the same coin icon repeated. The first time a value appears, a clean hero-number treatment is appropriate. If that exact same value recurs later in the script, treat it as a cue to show it doing something structurally different this time -- as one side of a comparison bar against another value, as a component inside a calculation (a plain-Text() formula it feeds into, never MathTex), as a bar in a chart alongside related figures, or as part of a waterfall step -- rather than reaching for the same standalone hero-number layout again. Each chunk is generated independently and cannot see what other chunks chose, so you cannot know for certain a value has been shown before -- but if a value is clearly central to the script's recurring argument (the kind of number a narrator would say two or three times), default to a chart/comparison/formula treatment for it rather than a standalone hero number, since hero-number treatment is the layout most likely to look identical on repeat.
+
+=== MATCH THE PRIMITIVE TO WHAT KIND OF NUMBER THE BEAT ACTUALLY HAS ===
+Before picking a primitive, identify what kind of value this beat is about, then use this table — do not pattern-match on keywords alone (e.g. the word "runway" does not automatically mean gauge):
+- A PROPORTION or PERCENTAGE of a whole (0-100%, "half your paycheck," "67% of workers") -> fm_animate_donut or fm_animate_gauge. These primitives exist to show fullness/completeness, never a raw count.
+- A SMALL RAW COUNT (a count of months, items, or units, e.g. "1 month of runway," "3 missed payments") -> fm_animate_single_value or fm_animate_counter, with a 1-2 word label under it. NEVER use a gauge for a raw count -- a gauge with "1" inside it communicates nothing because there is no visible sense of how full or empty that "1" is relative to anything.
+- A DOLLAR AMOUNT on its own -> fm_animate_single_value or fm_animate_counter, huge font_size (130+).
+- TWO OR MORE COMPARABLE AMOUNTS (income vs rent, side hustle vs job) -> fm_animate_comparison_bars or fm_animate_bullet_chart, never two separate disconnected visuals -- they must share one baseline so the eye can compare heights directly.
+- A SEQUENCE OF DEDUCTIONS from a starting amount down to a net (gross pay minus rent minus bills equals net) -> fm_animate_waterfall, one continuous chart, never separate unconnected bars for each line item.
+- A VALUE CHANGING OVER TIME (growth, decline, trend) -> fm_animate_line_chart for one series, fm_animate_line_chart_multi for two or more series being compared on the same chart.
+- A CONCEPT NAMED BEFORE ANY NUMBER EXISTS YET ("side hustle," "emergency fund" as an idea, not yet a value) -> fm_animate_glow_reveal or fm_animate_single_value with "?" -- see CONCEPT BEAT RULE below.
+
+=== COLOR IS NOT OPTIONAL — HARD RULE ===
+NEVER use BRAND_GRAY (#8A94A6) as the fill color for bars, gauges, or any hero visual element. Gray communicates nothing emotionally and is invisible against the dark background.
+
+EVERY bar, gauge fill, donut arc, and counter MUST use one of:
+- BRAND_RED (#FF4D4D): loss, danger, debt, expenses, warning, anything negative or alarming
+- BRAND_GREEN (#38D996): income, gain, growth, savings building, anything positive
+- BRAND_GOLD (#FFD166): neutral highlight, key numbers, caution
+
+If bars are gray in your output, you have failed the emotional impact requirement. Recolor them.
+
+=== NEAR-ZERO TEXT RULE — THE MOST IMPORTANT INSTRUCTION ===
+The audio narration speaks ALL the words. Your visual's ONLY job is to show what those words MEAN — never to repeat them.
+
+Think of how 3blue1brown explains neural networks: nodes light up, edges pulse, matrices transform, activations flow — no captions, no sentences, just pure visual storytelling. That is exactly the standard here.
+
+NEVER put on screen:
+- Sentences, phrases, or words from the narration
+- Explanatory labels longer than 2-3 words
+- Any Text() that a viewer could hear in the audio instead
+
+THE ONLY TEXT ALLOWED:
+- Actual data values: $4,200 | 67% | $1,800/mo | 1 month
+- Ultra-short chart axis labels: "Rent" | "Income" | "Net" (1-2 words)
+- Chapter title cards via fm_animate_glow_reveal ONLY (hook/concept beats)
+
+WRONG: Text("Most people have less than one month of savings")
+RIGHT: fm_animate_gauge(self, 0.8, 6, "Months of Runway", BRAND_RED, duration=D)
+
+WRONG: Text("Your side hustle income is not enough to replace your job")
+RIGHT: fm_animate_comparison_bars(self, [("Side Hustle", 500, BRAND_GREEN), ("Job Income", 4200, BRAND_GOLD)], duration=D)
+
+If your construct() has more than 2 Text() objects that are not numbers or 1-2 word labels, you are writing captions. STOP. Replace them with a chart, gauge, counter, or comparison visual. The audio already says the words — your job is to make the viewer SEE the reality behind those words.
+
+THIS RULE APPLIES TO title_text TOO, NOT JUST RAW Text() CALLS: passing a full sentence into title_text="Emergency Wipes Out A Month of Effort" is the exact same captioning violation as a raw Text() sentence -- it just hides inside a library function's parameter instead of your own code, which does not make it acceptable. title_text is for a SHORT chart label (2-4 words: "Monthly Cashflow", "Income vs Bills"), never a narrated sentence, a complete clause, or anything paraphrasing what the narration already says. If you find yourself writing a title_text that reads like a sentence with a subject and a verb, delete it -- either drop title_text entirely (most charts do not need one, the data values and category labels already say enough) or cut it down to a 2-4 word label.
+
+NEVER LEAVE AN ICON OR SHAPE ON SCREEN WITHOUT A LABEL OR VALUE NEXT TO IT: a real failure rendered a warning-triangle icon sitting above an empty rounded box with no text inside it at all -- the chunk crashed or stalled partway through, but the partial scene that had already been added (icon + empty box, no label ever added) became the visible frame for several seconds. An icon by itself, or an icon plus an empty container shape, is never a complete visual idea -- every fm_icon() call must be paired with an actual label or value Text() placed clearly next to it in the SAME chunk, added in the same group/animation so they always appear together or not at all. If you are building a box/card to hold a label, add the label text to that box in the same breath you create the box -- never create an empty container and add its contents in a later, separable step.
+NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called fm_two_cards("Side Hustle", "?", BRAND_GREEN, "Passive Income", "?", BRAND_GOLD) -- a card showing nothing but a giant question mark where a number should be reads as a broken or unfinished render to a viewer, never as intentional suspense, even if that was the intent. Every value field passed into fm_card, fm_two_cards, fm_stacked_cards, fm_animate_single_value, fm_animate_comparison_bars, or any other primitive's value/amount parameter must be an ACTUAL number or dollar amount drawn from the script's content -- never "?", "???", "N/A", "TBD", or any other placeholder standing in for a number you have not decided on. If a beat is genuinely about an unknown or a question being posed (e.g. "how much would you guess?"), convey that through narration-matched motion (a card fading in empty, then the real number animating in afterward in a LATER chunk once revealed) rather than rendering a literal question mark as the value itself.
+
+=== HARD STRUCTURAL RULES (checked mechanically, violating these wastes the whole chunk) ===
+- Your response for EACH chunk must be exactly: `from manim import *` on its own line, then exactly ONE class definition subclassing either FinanceDashboardScene (the normal case) or FinanceDashboard3DScene (only for a deliberate 3D establishing-shot tilt, see below), with a `construct(self)` method, and nothing else at the top level -- no print statements, no code outside the class, no second class.
+- FinanceDashboardScene and FinanceDashboard3DScene are already defined for you before your code runs. Do not redefine them, do not set self.camera.background_color yourself, do not draw your own grid or background -- setup() on both base classes already paints the dark navy dashboard background, grid, and ticker texture. Your construct() goes straight to the chunk's actual content.
+- The ONLY imports allowed in your own code are `manim`, `numpy`, `math` -- nothing else, ever.
+- Never reference: open, exec, eval, compile, __import__, os, sys, subprocess, socket, requests, shutil, globals, locals, vars, input, breakpoint, exit, quit, or any dunder attribute.
+- Triangle() takes NO vertex arguments -- it is a fixed equilateral shape, only accepts styling kwargs (color, fill_color, fill_opacity) plus standard Mobject methods like .scale()/.rotate()/.move_to(). A real failure: `Triangle([-0.18,1.5,0],[0.18,1.5,0],[0,1.9,0], color=BRAND_RED)` crashed with "takes 1 positional argument but 4 were given". For a custom 3-point shape with specific vertices, use `Polygon(p1, p2, p3, color=..., fill_color=..., fill_opacity=...)` instead, or build a plain Triangle then `.scale()`/`.stretch()`/`.rotate()` it into the shape you need.
+- DO NOT INVENT KWARG OR FUNCTION NAMES THAT SOUND PLAUSIBLE -- this is a real, repeated crash source. Several real failures came from names that sound exactly like they should exist but do not in this Manim version:
+  - `RoundedRectangle(width=..., height=..., radius=...)` crashed with "unexpected keyword argument 'radius'" -- the correct kwarg is `corner_radius`, not `radius`. Always use `RoundedRectangle(width=..., height=..., corner_radius=..., color=..., fill_color=..., fill_opacity=...)`.
+  - `axes.plot_line_graph(..., add_anchor_points=...)` crashed with "unexpected keyword argument 'add_anchor_points'" -- this kwarg does not exist on plot_line_graph in this version. Only pass `x_values`, `y_values`, `line_color`, `add_vertex_dots` (if needed) -- nothing else.
+  - `Axes(..., axis_config={..., "number_font_size": ...})` crashed -- `number_font_size` is not a valid axis_config key. For number/tick label sizing on Axes, use the `decimal_number_config` parameter instead, or skip built-in number labels entirely and place your own Text labels manually, which is more reliable.
+  - `rate_func=bounce_out` crashed with "name 'bounce_out' is not defined" -- this name does not exist in Manim's namespace at all. The real, confirmed-to-exist rate functions are: `smooth`, `linear`, `there_and_back`, `there_and_back_with_pause`, `rush_into`, `rush_from`, `slow_into`, `double_smooth`, `ease_in_sine`, `ease_out_sine`, `ease_in_out_sine`, `ease_in_quad`, `ease_out_quad`, `ease_in_out_quad`, `ease_in_cubic`, `ease_out_cubic`, `ease_in_out_cubic`, `ease_in_bounce`, `ease_out_bounce`, `ease_in_out_bounce`, `ease_in_elastic`, `ease_out_elastic`, `ease_in_out_elastic`. For a "settle into place with a little bounce" feel, use `rate_func=ease_out_bounce`, never `bounce_out`.
+  - `BRAND_BLUE` crashed with "name \'BRAND_BLUE\' is not defined" -- this color constant was never defined and does not exist. The COMPLETE list of brand color constants in scope is exactly six: BRAND_WHITE, BRAND_GREEN, BRAND_RED, BRAND_GOLD, BRAND_GRAY, BRAND_PANEL. There is no BRAND_BLUE, BRAND_ORANGE, BRAND_PURPLE, or any other brand color -- if a beat seems to call for a color outside this set, pick the closest match from the six that actually exist (BRAND_GOLD for a neutral/highlight color, BRAND_GRAY for a muted/secondary color) rather than inventing a new constant name.
+  The general rule: if you are not certain a kwarg, function name, or constant is real (not just "sounds like it should be"), prefer the simplest, most basic version of the call (fewer kwargs, plain Text instead of a fancy config option, one of the six confirmed brand colors instead of a guessed one) over guessing a more specific-sounding name that might not exist. A simpler call that works beats a fancier call that crashes the whole chunk.
+- AVOID CubicBezier FOR SIMPLE JUMP/ARC MOTION -- a real failure: `CubicBezier(*curve_jump)` crashed with "missing 1 required positional argument: \'end_anchor\'" because the unpacked list only had 3 points instead of the 4 CubicBezier always requires (start_anchor, start_handle, end_handle, end_anchor -- exactly four, never fewer). CubicBezier is easy to get wrong under time pressure. For a simple "object hops/arcs from point A to point B" motion, use `MoveAlongPath(obj, ArcBetweenPoints(point_a, point_b, angle=PI/3))` instead -- ArcBetweenPoints only needs the two endpoints and an angle, it is far less error-prone, and it produces the same kind of arcing jump motion. Reach for raw CubicBezier only if you are constructing all 4 points explicitly and have visually verified the count yourself.
+- NEVER PATCH AN ARGUMENT-COUNT OR ARGUMENT-MISMATCH ERROR WITH AN UNPACKING TRICK -- a real failure: `Arc(start_angle=PI, angle=PI, radius=0.58, stroke_width=8, *[[] for _ in range(1)])` crashed with "Arc.__init__() got multiple values for argument 'radius'" because the trailing `*[[] for _ in range(1)]` unpacks an extra empty positional argument that collides with `radius` (Arc's first positional parameter), passing it twice. This pattern -- adding a throwaway `*[...]` unpack as a "fix" for a call that seems to want more or fewer arguments -- never actually fixes anything and always crashes the chunk. If a call signature seems wrong, simplify it instead: pass every argument as an explicit keyword (`Arc(radius=0.58, start_angle=PI, angle=PI, stroke_width=8)`) and drop any unpacking entirely. Never pass the same parameter both positionally and by keyword.
+- Star's FIRST positional argument is `n` (the number of points), NOT a center point -- a real failure: `Star(ORIGIN + UR * 1, n=5, color=BRAND_GOLD, ...)` crashed with "Star.__init__() got multiple values for argument 'n'" because the coordinate was passed positionally into the `n` slot while `n=5` was ALSO passed as a keyword, the same positional/keyword collision as the Arc case above. Star's real signature is `Star(n=5, *, outer_radius=1, inner_radius=None, start_angle=..., **kwargs)` -- every parameter after `n` is keyword-only. NEVER pass a coordinate as Star's first positional argument. Build it with keywords only -- `star = Star(n=5, outer_radius=0.5, color=BRAND_GOLD, fill_color=BRAND_GOLD, fill_opacity=1.0)` -- then position it afterward with `.move_to(point)`, the same pattern used for every other shape in this codebase.
+- NEVER WRITE A BARE `_` EXPECTING IT TO MEAN "THE PREVIOUS LINE'S RESULT" -- a real failure: a multi-line `fm_card(...)` call's result was never assigned to a variable, then the very next line wrote `self.play(FadeIn(_), run_time=0.8)` and crashed with "NameError: name '_' is not defined". This is Python interactive-shell behavior (`_` holds the last evaluated expression at a REPL prompt) and does NOT apply inside a script or a method body -- `_` is just an undefined name here unless you explicitly write `_ = something`. EVERY mobject you build and intend to animate must be assigned to an explicitly named variable on the same statement that creates it (e.g. `card = fm_card(...)`), never left as a bare unassigned expression you then reference by `_` on a later line.
+- TO MAKE ANYTHING DASHED, WRAP IT IN DashedVMobject -- NEVER INVENT KWARGS ON .set_style() -- a real failure: `dashed_rect.set_style(dash_length=0.30, dash_offset=0.18, draw_border_dash_array=...)` crashed with "VMobject.set_style() got an unexpected keyword argument 'dash_length'" -- `set_style()` has no dash-related parameters at all; dashing is not a style you set on an existing mobject, it is a SEPARATE wrapper mobject. The correct pattern: build the solid shape first (`rect = Rectangle(width=2, height=1)`), then wrap it -- `dashed_rect = DashedVMobject(rect, num_dashes=20, dashed_ratio=0.5)` -- and add/animate `dashed_rect`, not the original `rect`. `DashedVMobject`'s real keyword arguments are `num_dashes`, `dashed_ratio`, `dash_offset`, and `color` -- never `dash_length` on a generic VMobject.
+- Polygon TAKES EACH VERTEX AS ITS OWN SEPARATE POSITIONAL ARGUMENT, NEVER ONE LIST -- a real failure: `Polygon([[0,1.2,0], [1,0.2,0], [0.6,-1.1,0], ...], color=BRAND_GOLD, ...)` crashed with "ValueError: setting an array element with a sequence... exceed the maximum number of dimension of 2" because passing a single list containing all the points makes Polygon treat that ENTIRE list as if it were one vertex, not six. Polygon's real signature is `Polygon(*vertices, **kwargs)` -- it needs the points unpacked. Either star-unpack a list you already built -- `Polygon(*[[0,1.2,0], [1,0.2,0], [0.6,-1.1,0]], color=BRAND_GOLD)` -- or pass each point as its own argument -- `Polygon([0,1.2,0], [1,0.2,0], [0.6,-1.1,0], color=BRAND_GOLD)`. Never pass a bare list of points as Polygon's only positional argument.
+- BRAND_* CONSTANTS ARE PLAIN HEX STRINGS, NOT ManimColor OBJECTS -- THIS IS FINE FOR color=/fill_color= KWARGS BUT NOT FOR interpolate_color() -- a real failure: `interpolate_color(BRAND_GREEN, BRAND_RED, alpha)` crashed with "AttributeError: 'str' object has no attribute 'interpolate'". Almost every Mobject color parameter (color=, fill_color=, stroke_color=) auto-converts a hex string for you, which is why BRAND_GREEN works everywhere else without issue -- but the standalone `interpolate_color()` function does NOT do that conversion, it calls `.interpolate()` directly on whatever you pass it, so a raw string crashes immediately. If a beat needs a color that shifts between two brand colors as a value changes (a progress bar shifting from green to red, a gauge fill that warns as it fills), wrap both colors first: `interpolate_color(ManimColor(BRAND_GREEN), ManimColor(BRAND_RED), alpha)`. `ManimColor` is already in scope from `from manim import *` -- no extra import needed.
+- always_redraw LAMBDAS REFERENCING A TRACKER DEFINED LATER OR IN A LOOP CRASH WITH A SCOPE ERROR: a real failure used `always_redraw(lambda: Dot(axes.c2p(t_tracker.get_value(), ...)))` and crashed with a "cannot access free variable" scope error on the tracker name. This happens when the ValueTracker the lambda refers to is created inside a loop, inside a conditional branch, or anywhere Python cannot guarantee it already has a value by the time the lambda is defined and called. The reliable pattern: create EVERY ValueTracker as a plain top-level statement directly in construct(), by itself, before any always_redraw or lambda that references it -- e.g. `t_tracker = ValueTracker(0)` on its own line, immediately followed by the always_redraw call that uses it. Never define a tracker inside a for-loop body, an if-branch, or any nested function if an always_redraw elsewhere needs to see it.
+- Line, Arc, and other VMobject-family shapes do NOT accept a generic `opacity=` kwarg in their constructor -- a real failure: `Line(p1, p2, color=BRAND_GRAY, stroke_width=2, opacity=0.35)` crashed with "Mobject.__init__() got an unexpected keyword argument 'opacity'". Set opacity via `.set_stroke(color=..., width=..., opacity=...)` or `.set_fill(color=..., opacity=...)` AFTER construction, never as a constructor kwarg: `ln = Line(p1, p2); ln.set_stroke(color=BRAND_GRAY, width=2, opacity=0.35)`.
+- MathTex, Tex, AND SingleStringMathTex ARE BANNED. Texlive itself compiles fine, but GPT-generated raw-string LaTeX reliably contains escaping bugs (writing r"\\text{...}" with a doubled backslash instead of the correct r"\text{...}", or dropping a literal "$" inside the tex string) that crash the manim subprocess outright -- a crashed chunk silently becomes a blank filler clip, which is why entire stretches of finished video have gone blank. For any formula or equation, call fm_formula -- see the "SHOW THE CALCULATION" rule above for the exact pattern. There is no safe way to use MathTex/Tex from generated code in this pipeline; do not reach for them under any circumstance.
+- Still avoid DecimalNumber specifically (it has its own unrelated update-cycle quirks in this codebase) -- for a number that needs to animate (counting up/down, or tracking a ValueTracker), use `always_redraw` with plain `Text()` instead: `counter = always_redraw(lambda: Text(f"${tracker.get_value():,.0f}", font_size=120, color="#F5F7FA"))`, `self.add(counter)`, then `self.play(tracker.animate.set_value(34000), run_time=2)`. This gives the same live-updating effect with zero DecimalNumber dependency. If you need a live-updating value INSIDE a formula, rebuild the whole Text() string each frame via the same always_redraw pattern -- never MathTex.
+- Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, Axes, NumberLine, NumberPlane, SVGMobject, ComplexPlane, PolarPlane, Rectangle. Use Text() and the fm_* library instead. For line charts prefer fm_animate_line_chart (consistent styling), for bar charts use fm_animate_bar_chart. Axes, NumberLine, and NumberPlane stay banned -- do not use them even though the toolchain technically supports them, for the same GPT-reliability reasons as MathTex above. For ANY icon or symbol (house, person, clock, dollar sign, warning triangle, checkmark) use fm_icon(name, size, color) — never SVGMobject, never ImageMobject, never any class that loads external files.
+  QUICK SUBSTITUTION TABLE -- every one of these banned names is REJECTED by an automated safety check before rendering even starts (the chunk becomes a blank filler clip, not a crash, but still blank), so if you catch yourself about to type any of these, stop and use the replacement instead. There is no case where the banned name is the only option:
+    Rectangle(...)        -> fm_card / fm_two_cards / fm_stacked_cards (a labeled box) or fm_animate_bar_chart / fm_animate_comparison_bars / fm_animate_waterfall (a bar)
+    Axes(...)              -> fm_animate_line_chart (trend/growth curve)
+    MathTex(...) / Tex(...) -> fm_formula (any formula or calculation)
+    NumberLine(...) / NumberPlane(...) -> fm_animate_line_chart, or drop the axis and just show the data
+    SVGMobject(...)        -> fm_icon(name, size, color)
+    BarChart(...)          -> fm_animate_bar_chart
+  RoundedRectangle and SurroundingRectangle are NOT banned and are the correct choice for cards/pills/meters -- only the bare Rectangle() class is forbidden.
+- RESTRUCTURE_MOBJECTS WARNING: never call self.add() on a fm_* result AND ALSO animate its submobjects separately. The returned VGroup must be treated as an atomic unit. Wrong: `card = fm_card(...); self.add(card); self.play(FadeIn(card[0]))`. Correct: `card = fm_card(...); self.play(FadeIn(card))`. Accessing submobjects of fm_* returns (card[0], cards[1], etc.) and adding them separately to the scene causes Manim's restructure_mobjects crash.
+- NO GUESSING SUBMOBJECT INDICES: never index into a VGroup (card[1], card_show[2], etc.) unless you personally built that exact group in this same construct() and know precisely how many Mobjects you added to it, in what order. A real failure: indexing card_show[1] and card_show[2] on a group that only had 1 submobject, which crashes with IndexError: list index out of range. fm_* library functions do not document or guarantee submobject count/order as part of their contract -- never index into an fm_* return value's internals. If you need to reference a specific piece of something later (a label, an icon, a bar), keep it as its own separate named variable when you build it (e.g. `icon = fm_icon(...); label = Text(...); group = VGroup(icon, label)`), then refer to that original variable directly instead of re-deriving it by indexing the group afterward.
+- NO SELF-CONTAINING GROUPS: never add a VGroup (or a card/group built from one) into itself, into a copy of itself, or into another group that already (directly or through a shared variable) contains it. A real failure: building `card_real` and `card_show` from overlapping pieces, then calling FadeOut/animate on one while it still shares submobjects with the other -- when Manim's set_z_index walks the submobject family on a group with a circular reference, it recurses forever and crashes with RecursionError: maximum recursion depth exceeded. If two named groups in your construct() are meant to be visually related (e.g. one fading while the other glows), build each from its OWN independent VGroup() with its OWN Mobjects -- never have one variable's group literally contain the other variable's group, and never call VGroup(*existing_group) to wrap something that is already itself a VGroup.
+- NEVER BUILD A CUSTOM always_redraw GAUGE: a real failure built its own live-updating gauge with `gauge = always_redraw(lambda: make_gauge()[0])` then crashed trying to VGroup() a ValueTracker that got mixed in -- this happened because fm_animate_gauge already handles its OWN internal ValueTracker, its OWN animation, and already calls scene.add() on everything itself before it returns. It does not return a drawable visual to wrap in your own always_redraw -- it returns (tracker, val_lbl, cat_lbl) for reference only, after the gauge is already on screen and already animated. If a beat needs a gauge, call fm_animate_gauge once with the final target value and let it run -- never build your own ValueTracker/always_redraw scaffolding around it or any other fm_animate_* function, they are not building blocks to wrap, they are the complete animation.
+- GAUGE RULE: gauges are for PROPORTIONS only (a value that is meaningfully full/empty against a max, e.g. "half your emergency fund," "67% of capacity"). A small raw count like "1 month of runway" is NOT a proportion and must NOT become a gauge -- see the primitive-selection table above, use fm_animate_single_value instead. Once you have genuinely decided a beat is a proportion-of-a-whole and a gauge is the right call, you MUST use fm_animate_gauge to build it rather than a custom Line needle or Arrow pointer that rotates from center — these always overlap the value text and look broken. fm_animate_gauge handles the arc fill, the value text position, and the label correctly.
+- CONCEPT BEAT RULE: when a beat names a concept but has no data yet (e.g. "Passive Income", "Side Hustle", "Emergency Fund"), use fm_animate_glow_reveal or fm_animate_single_value with a "?" as the value string. Never draw arbitrary decorative shapes (waves, spirals, random arcs) — they communicate nothing.
+- HARD TIMING RULE: the sum of ALL self.play(run_time=X) + self.wait(X) values in your construct() must equal the chunk's given duration. Chunks that render more than 45% longer than target are rejected and replaced with a blank filler. The most common cause of rejection is calling an fm_animate_* function (which already consumes the full duration internally) AND THEN also adding self.wait() or another self.play() on top -- this doubles the length and guarantees rejection. One fm_animate_* call = the entire construct(). If you use raw Manim instead, your play/wait budget is the chunk duration, spend it all, do not go over.
+- NEVER WRITE INLINE SUBTRACTION INSIDE wait(): a real failure was `self.wait(4.5-0.5-1.0-2.2-0.8)`, which looks like it sums to exactly 0 but float rounding actually lands it at a hair below zero, and Manim raises ValueError for any non-positive wait duration. Compute your full time budget as named variables FIRST (e.g. `t_intro = 0.5`, `t_build = 1.0`, `t_hold = 2.2`, `t_fade = 0.8`), confirm the remainder makes sense, and pass the final remaining wait as a plain literal number you've already calculated, never as a live subtraction expression inside the wait() call itself.
+
+=== FRAME, ASPECT RATIO, SAFE MARGINS ===
+Output is 16:9, 1920x1080, 30fps. Always read `config.frame_width` and `config.frame_height` at runtime instead of hardcoding numbers -- they are already configured correctly for this aspect ratio. Keep every object's resting position within roughly `config.frame_width * 0.42` of horizontal center and `config.frame_height * 0.42` of vertical center; anything closer to the true edge risks clipping on some players/crops. ORIGIN is frame center.
+
+=== BUILT-IN LIBRARY FUNCTIONS (always in scope, crash-proof, prefer these first) ===
+These fm_* functions are already defined before your chunk runs -- do NOT import or redefine them. Call them directly inside construct(). They handle all self.play()/self.wait() timing internally using their duration parameter, so calling one of these is all you need for that visual type -- do not add extra self.wait() after them. Brand constants also in scope: BRAND_WHITE="#F5F7FA", BRAND_GREEN="#38D996", BRAND_RED="#FF4D4D", BRAND_GOLD="#FFD166", BRAND_GRAY="#8A94A6", BRAND_PANEL="#111A24".
+
+FACTORY functions (return a VGroup, you add/animate it yourself):
+  fm_card(label_text, value_text, accent_color=BRAND_GOLD, panel_color=BRAND_PANEL, text_color=BRAND_WHITE, label_size=36, value_size=90, buff=0.45)
+    Auto-sized SurroundingRectangle card. Always fits text correctly. Use: c = fm_card("Salary", "$4,200", BRAND_GREEN); self.play(FadeIn(c))
+  fm_two_cards(left_label, left_val, left_color, right_label, right_val, right_color, label_size=34, value_size=80, spacing=1.1)
+    Two side-by-side cards centered at ORIGIN. Use: cards = fm_two_cards(...); self.play(FadeIn(cards))
+  fm_stacked_cards(items, label_size=30, value_size=68, spacing=0.24)
+    items = [(label, value_str, color), ...]. Vertical stack. Use: stack = fm_stacked_cards([("Rent","$1,400",BRAND_RED), ...]); self.play(FadeIn(stack))
+  fm_glow_around(mobject, color=BRAND_GOLD, n_layers=3)
+    Wrap any mobject in glow. Use: self.add(fm_glow_around(my_text, BRAND_GREEN))
+
+ANIMATION functions (handle ALL self.play/self.wait for their duration, call once with full chunk duration):
+  fm_animate_counter(scene, start_val, end_val, label_text, accent_color=BRAND_GOLD, prefix="$", suffix="", duration=3.0, position=None, value_size=130, label_size=38)
+    Counting number via ValueTracker+always_redraw. Zero LaTeX. Returns (tracker, counter_mob, label_mob).
+    Example: fm_animate_counter(self, 0, 34000, "Emergency Fund", BRAND_GREEN, prefix="$", duration=4.2)
+  fm_animate_bar_chart(scene, values, names, colors=None, duration=3.5, title_text="")
+    Hand-built bar chart (Rectangle + Text, zero BarChart dependency) with value labels above each bar and a real baseline + y-axis. colors defaults to [GREEN,GOLD,RED,WHITE].
+    Example: fm_animate_bar_chart(self, [4200, 1800, 600], ["Salary","Side Hustle","Passive"], [BRAND_GREEN,BRAND_GOLD,BRAND_RED], duration=3.8)
+  fm_animate_gauge(scene, value, max_val, label_text, accent_color=BRAND_GREEN, duration=3.0, position=None, radius=2.0)
+    Arc gauge (gray track + colored fill). Returns (tracker, val_lbl, cat_lbl).
+    Example: fm_animate_gauge(self, 1, 6, "Months Runway", BRAND_RED, duration=3.5)
+  fm_animate_donut(scene, percentage, label_text, accent_color=BRAND_GREEN, duration=3.0, position=None)
+    Donut ring with pct text inside. Returns (tracker, pct_lbl, cat_lbl).
+    Example: fm_animate_donut(self, 67, "Living Paycheck to Paycheck", BRAND_RED, duration=3.2)
+  fm_animate_line_chart(scene, y_values, end_value_label, accent_color=BRAND_GREEN, x_labels=None, duration=3.5, title_text="")
+    Axes-based trend line + gradient fill under curve. Returns (axes, line, end_dot).
+    Example: fm_animate_line_chart(self, [200,350,600,900,1400,2100], "$2,100/mo", BRAND_GREEN, duration=4.0)
+  fm_animate_waterfall(scene, steps, duration=4.5)
+    steps = [{"label": str, "value": float, "color": hex_optional}, ...]. Last step = net total. Returns (bars, labels).
+    Example: fm_animate_waterfall(self, [{"label":"Income","value":4200},{"label":"Rent","value":-1400,"color":BRAND_RED},{"label":"Net","value":2800}], duration=4.5)
+  fm_animate_text_reveal(scene, lines, colors=None, duration=3.0, sizes=None)
+    Sequential fade-in for hook/chapter moments ONLY (not narration captions). colors defaults to [GOLD,WHITE,...].
+    Example: fm_animate_text_reveal(self, ["A Question...", "that might sting"], duration=2.8)
+  fm_animate_icon_grid(scene, total, filled, label_text, accent_color=BRAND_GREEN, duration=3.0, cols=10, position=None)
+    Crowd grid for population stats. Shows pct hero text beside grid. Returns (icons, pct_lbl).
+    Example: fm_animate_icon_grid(self, 100, 67, "Living Paycheck to Paycheck", BRAND_RED, duration=3.5)
+  fm_animate_stacked_cards(scene, items, duration=4.0, spacing=0.26)
+    items = [(label, value_str, color), ...]. Cards slide in from right sequentially. Returns stacked VGroup.
+    Example: fm_animate_stacked_cards(self, [("Rent","$1,400",BRAND_RED),("Car","$480",BRAND_RED),("Food","$320",BRAND_GOLD)], duration=3.8)
+  fm_animate_comparison_bars(scene, items, duration=4.0, title_text="", show_net=True)
+    Clean income-vs-expense bars: positive values go UP, negative go DOWN from a zero baseline. Auto-appends a net bar. No axis-line-through-bars problem. items = [(label, value_float, color), ...]. Pass RAW signed values (not abs).
+    Example: fm_animate_comparison_bars(self, [("Passive Income", 600, BRAND_GREEN), ("Rent + Bills", -1800, BRAND_RED)], duration=3.8, title_text="Monthly Cashflow")
+    Use this INSTEAD of fm_animate_bar_chart whenever comparing income vs expenses, gains vs losses, or any mix of positive and negative values.
+  fm_animate_bullet_chart(scene, actual, target, range_low, range_high, label_text, accent_color=BRAND_GREEN, duration=3.0, position=None, bar_length=8.0)
+    Gray range band + target tick + growing actual bar. For "hitting the target?" beats. Returns (tracker, bar, actual_lbl).
+    Example: fm_animate_bullet_chart(self, 500, 1000, 0, 1500, "Monthly Side Income vs Target", BRAND_GOLD, duration=3.5)
+  fm_icon(name, size=1.0, color=BRAND_GOLD)
+    Pure geometry finance icon — NO SVGMobject. Returns a VGroup. Position with .move_to() then self.play(FadeIn(icon)).
+    name options: 'dollar', 'coin', 'house', 'person', 'clock', 'arrow_up', 'arrow_down', 'warning', 'checkmark', 'fire'.
+    Example: icon = fm_icon("warning", size=1.2, color=BRAND_RED); icon.move_to(ORIGIN + LEFT * 3); self.play(FadeIn(icon))
+  fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE, duration=3.0, font_size=88, subtitle=None, subtitle_color=None)
+    Dramatic text with expanding glow rings — chapter titles, major reveals, hook moments. Returns (text_mob, rings).
+    Example: fm_animate_glow_reveal(self, "Corporate Paycheck", BRAND_RED, duration=3.0, subtitle="The Only Source")
+  fm_animate_timeline(scene, events, accent_color=BRAND_GOLD, duration=4.0, show_index=False)
+    Horizontal timeline: dots on a line, labels alternating above/below (no overlapping text). events = list of str. Returns (dots, labels).
+    Example: fm_animate_timeline(self, ["Start", "Checkpoint", "Breakdown", "Warning Sign"], BRAND_GOLD, duration=4.0)
+  fm_animate_single_value(scene, value_str, label_text, accent_color=BRAND_GOLD, duration=3.0, value_size=140, label_size=38, sublabel=None)
+    Single hero number with label — for beats with one key figure and no comparison needed. Returns (value_mob, label_mob).
+    Example: fm_animate_single_value(self, "$500/mo", "Monthly Side Income", BRAND_GREEN, duration=3.2)
+  fm_formula(scene, lines, font_size=60, color=BRAND_WHITE, duration=3.0)
+    Plain-Text() formula/calculation display, auto-scaled to ALWAYS fit inside the 16:9 frame regardless of string length — the ONLY way to show a formula, never a raw Text() call. lines is a string or a list of strings (one row each). Returns the formula group.
+    Example: fm_formula(self, ["$250 x 12 x 5 = $15,000", "-$5,000 = $10,000"], duration=3.5)
+  fm_animate_line_chart_multi(scene, series, duration=4.0, title_text="")
+    Two or more trend lines sharing ONE Axes for direct comparison — the ONLY safe way to compare trends, never two separate fm_animate_line_chart calls or a raw Axes. series is a list of {"y_values": [...], "label": str, "color": hex} dicts. Returns (axes, lines).
+    Example: fm_animate_line_chart_multi(self, [{"y_values": [800,820,840,860], "label": "Rent", "color": BRAND_RED}, {"y_values": [3000,3060,3120,3180], "label": "Income", "color": BRAND_GREEN}], duration=4.0)
+
+When a library function exists for what the beat needs, use it -- it is crash-proof and professionally tuned. For beats the library doesn't cover well, use raw Manim primitives as before. The library is a starting point and covers the most common beat types; it is not a cage.
+
+ONE FULL-SCREEN ANIMATE PRIMITIVE PER CHUNK, NEVER TWO STACKED TOGETHER: fm_animate_gauge, fm_animate_donut, fm_animate_single_value, fm_animate_glow_reveal, fm_animate_icon_grid, fm_animate_comparison_bars, fm_animate_bar_chart, fm_animate_line_chart, and fm_animate_waterfall are each already a COMPLETE, self-contained visual that defaults to centering itself at ORIGIN. A real, confirmed failure: a single chunk called fm_animate_icon_grid(...) AND fm_animate_single_value(...) (or fm_animate_glow_reveal with a subtitle) back to back -- both defaulted to the same central position, and the result was three separate text blocks and a full icon grid all stacked directly on top of each other, completely unreadable. These functions were not designed to be layered -- each one already fills the available frame space on its own. Pick exactly ONE of these per chunk that best matches what the beat needs. If you genuinely believe two numbers need to appear in the same chunk (e.g. two values being compared), that is almost always a sign you should be calling fm_animate_comparison_bars or fm_two_cards with BOTH values passed in as part of ONE call -- not two separate primitive calls placed in the same construct(). Likewise, never call fm_animate_gauge or fm_animate_donut twice in the same chunk to show two side-by-side proportions -- if you have two values to compare against each other (not each against its own separate max), that is a comparison, not two proportions, and fm_animate_comparison_bars is correct, not two gauges.
+
+RETURN-VALUE UNPACKING IS A REAL, RECURRING CRASH SOURCE: every ANIMATION function above states its exact return tuple in its description (e.g. "Returns (tracker, pct_lbl, cat_lbl)"). A confirmed real failure: calling `(tracker, pct_lbl) = fm_animate_donut(...)` against a function documented as returning THREE values, not two -- `ValueError: too many values to unpack`. Before writing any line that unpacks an fm_animate_* call into named variables, re-read that exact function's "Returns (...)" text above and count the names in your unpacking statement against the count in that line. If you do not need the returned values at all (most calls), do not unpack them -- just call the function as a bare statement: `fm_animate_donut(self, 67, "Label", BRAND_RED, duration=3.2)` with no assignment, which is always safe regardless of arity.
+
+=== NUMBERS ARE REQUIRED DATA, NOT BANNED "TEXT" ===
+Be precise about what "near-zero text" actually means, because getting this wrong produces charts with nothing on them. BANNED: restating the narration's sentence as a caption, or a label that just repeats what the visual already shows. REQUIRED, ALWAYS: the actual value on every data-bearing visual -- a bar with no number next to it, a gauge with no value near the needle, a card with no dollar amount, a comparison with no figures on either side, is a decoration, not a chart, and is a failure regardless of how nicely it animates. If a visual represents a quantity, that quantity must appear on screen as a Text or short Text -- this is data, never optional, never something "near-zero text" excuses you from. A 1-2 word category tag (e.g. "Inflation", "Earnings", "Rent") under a value is also required whenever you're comparing two or more things, since two unlabeled shapes side by side communicate nothing.
+
+=== BANNED PATTERNS (these were real failures in actual output, do not repeat them) ===
+- A grid or lattice of overlapping circles/shapes used as generic decoration or texture (e.g. a "flower of life" pattern). If you cannot attach a specific labeled number or count to a shape, do not draw it -- "portfolio stack" means a small countable pile of 3-6 solid coin/bar shapes with a total dollar value next to it, never a large decorative grid.
+- Two or more bare outline shapes (circles, rectangles) placed on screen with no value, no label, and no axis -- this reads as nothing. Every comparison needs numbers attached to what it's comparing.
+- A single bare outline shape (no fill, no number, no context) as the entire visual for a chunk -- outlines alone do not read as data.
+- A muted gray element as the main/hero focus of a visual. Gray (#8A94A6) is for de-emphasized secondary structure only (an unfilled track behind a gauge needle, a faint grid line) -- the actual data (the bar, the filled gauge arc, the needle, the growing number) must be a vivid brand color, not gray, or it disappears against the dark background.
+
+=== VISUAL VOCABULARY -- A TOOLKIT TO COMBINE AND INVENT FROM, NOT A CHECKLIST TO MATCH AGAINST ===
+This is a documentary finance dashboard. The items below are examples of the technique level we're working at -- anchor to a baseline, fill instead of outline, attach a real number, track a moving point -- not an exhaustive menu where your job is to find the closest-matching name and copy its construction. Use a named one outright when it's genuinely the best fit. Combine two of them when a beat calls for it (a card that also has a small bullet-style range bar inside it; a waterfall step that fades with a gradient fill). And when a beat doesn't match any of these well, invent a new composition using the same underlying techniques (real axis or baseline, solid fill, attached number, sized-to-content box, one accent color) rather than forcing it into the nearest named shape. The fixed, non-negotiable part is never the specific shape -- it's that whatever you build has a number where a number belongs, fill instead of bare outline, and no floating shape with no axis and no value:
+- Bar comparison, ANY number of categories: ALWAYS call fm_animate_bar_chart(scene, values, names, colors, duration, title_text) -- it has no limit on category count and already handles baseline alignment, bar spacing, and label sizing correctly for 2, 3, 4, or more bars. For an income-vs-expenses-with-a-net-total breakdown specifically, use fm_animate_comparison_bars instead (it supports positive AND negative values and auto-computes the net bar). NEVER hand-build a bar chart with raw Rectangle()/Line() calls -- `Rectangle` is BANNED and will be rejected by the safety check. Hand-built bar charts are exactly what produced floating bars disconnected from the baseline, axis lines towering over the bars, and category labels overlapping value labels in past renders -- the library functions exist specifically because reinventing this by hand, per chunk, with no shared logic, reliably breaks in one of those ways. If a chunk needs short category labels to avoid crowding (4+ bars), pass short names into fm_animate_bar_chart's `names` list (e.g. "$0-250" not "$0-$250 per month") -- the function already sizes and spaces them correctly, you do not need to hand-tune font sizes or spacing yourself.
+- Trend / line chart, ONE series: ALWAYS call fm_animate_line_chart(scene, y_values, end_value_label, accent_color, duration, title_text) -- it already builds the Axes internally, plots the line, fills the area under it, and places the ending value as a hero label at the line's endpoint.
+- Trend / line chart, TWO OR MORE series being compared on the SAME chart (e.g. rent growth vs income growth, two income paths over time): ALWAYS call fm_animate_line_chart_multi(scene, series, duration, title_text) where series is a list of {"y_values": [...], "label": str, "color": hex} dicts -- it shares one Axes across every line and keeps the endpoint labels from colliding even when the lines end at similar values. Do NOT call fm_animate_line_chart twice and overlay the results yourself -- that builds two separate Axes that won't align.
+NEVER write `Axes(...)` directly in your own construct() for ANY trend/line-chart need, single series or multiple -- `Axes` is BANNED and will be rejected by the safety check; only the pre-built fm_* functions are allowed to use it internally. If neither fm_animate_line_chart nor fm_animate_line_chart_multi covers what the beat needs, pick a different chart type entirely (bar comparison, waterfall) rather than reaching for raw Axes.
+- Compound growth curve: same fm_animate_line_chart call as the trend chart, but compute `y_values` yourself as a Python list with deliberately accelerating values (an exponential-feeling progression, not a straight line) before passing it in -- the curvature comes from the data you hand it, not from special-casing the function call.
+- Progress / runway meter: a RoundedRectangle or Arc filling toward a target with a clearly brighter fill color than its empty track, paired with a ValueTracker-driven Text showing the current value, not just a bar with no number.
+- Gauge / security meter: an Arc track in muted gray (the unfilled dial), a SEPARATE filled Arc or Line needle in a vivid brand color showing the actual value, and the numeric value itself in Text/Text near the needle or below the gauge -- never just a bare gray arc with a colored needle and nothing else.
+- Donut / percentage: Annulus or Arc animated on its angle, filled in a vivid brand color against a muted gray full-circle track, with the percentage as a Text centered inside the ring -- the percentage number is mandatory, it is the entire point of a donut.
+- Cashflow waterfall: a starting bar at the top (gross income, labeled with its number), then smaller bars stepping down (each one labeled with what it subtracts and its amount), ending in a highlighted final net bar with its number. Reach for this one often -- it is one of the most useful primitives on this channel, and every step needs its number.
+- Funnel: a sequence of trapezoids or progressively narrower bars top to bottom, each stage labeled with its count or percentage -- never an unlabeled funnel shape.
+- Bill / paycheck / rent invoice / utility bill / emergency expense / bank balance card: a RoundedRectangle styled like a card (a colored top strip, a 1-3 word label, and the dollar amount as Text -- the amount is mandatory, a card with no number on it is just a rounded rectangle), built as one VGroup so it can slide in, stack, or get crossed out as a unit. Stack 2-4 of these vertically for "bills add up" beats, each with its own visible amount. To size any card or pill correctly around its own text instead of guessing a fixed box size that might not fit (text overflowing the edges, or a box that ends up empty because nothing was sized to match it), build the Text first, then wrap it with `SurroundingRectangle(text_mobject, buff=0.4, color=..., fill_color=..., fill_opacity=1)` so the box is always exactly the right size for what's inside it.
+- Concept-introduction beat with no number yet (e.g. naming two things being set up for later comparison, before any data has been given): do not leave the card empty just because there is no value to show yet. Fill the card body with a solid or semi-solid brand color (not a bare white outline) and give each side its own distinct color identity so the two sides read as visually distinct concepts, not two identical empty templates. Prefer a distinct SHAPE or chart-style treatment per side (a small bar stub, a partial arc, a different geometric silhouette) over an icon -- icons should be the exception here, not the default. A number becomes mandatory the moment the narration actually gives one for that thing.
+- Icon-grid / crowd grid / necessity heatmap: a grid of small Circle or Square mobjects, a portion recolored in a vivid brand color to represent a percentage of people, with that percentage shown as a Text beside the grid -- the right tool for population statistics, not a donut.
+- Calendar / timeline: a horizontal Line with tick marks for time units, a marker or flag at a specific point labeled with what it marks (e.g. "Month 18"), a shaded region before/after that point.
+- Treadmill / moving-backward metaphor: a flat or rising baseline Line with a value label, a second element animated moving backward or failing to keep pace -- communicates "running in place" without needing a human figure.
+- Leaky bucket / faucet: a container shape with a fill level and its current amount labeled, small Dot "drips" leaving through a gap faster than the fill rises.
+- Portfolio stack: a small countable pile of 3-6 solid-filled coin or bar shapes stacked vertically or diagonally (like a neat pile of chips, not a grid), the TOTAL dollar value as a hero Text beside or below it, a yield percentage as a smaller number if relevant.
+- Inflation vs earnings: built on a real `Axes` object, two lines plotted on shared axes (one flat, one rising), each line ending in its own labeled value, the gap between them visibly widening over the animation.
+- Replaceability / runway gauge: an Arc gauge from 0 to 6+ months (gray track, colored filled progress), needle landing on the actual computed runway value, that value shown as a number near the needle.
+- Bullet chart: a compact single horizontal bar that packs three things at once -- a muted gray background band showing the acceptable/target range, a thin tick mark showing the specific target value, and a solid brand-color bar drawn on top showing the actual value reaching toward or past that tick. Excellent for "are you hitting the target or not" beats (e.g. side income vs. the 6-month runway target, actual cash flow vs. break-even) since it shows actual, target, and the gap in one compact object instead of three separate ones.
+- Gradient fill under a curve: for compound growth, inflation gap, or any "area under the line" beat, build the filled region as a Polygon following the curve's points down to the baseline, then call `region.set_color_by_gradient(ACCENT_COLOR, "#111A24")` so it reads as a glowing accent at the curve and fades toward the dark panel color at the baseline, rather than a flat single-color fill.
+- Anchored moving labels: when a value label belongs to a point that's animating (the end of a growing line, the top of a rising bar), don't place a separate static Text and hope it stays aligned -- build it with `always_redraw(lambda: Text(...).next_to(moving_point, UP))` so the label physically tracks the point every frame, the same way a real financial chart's price tag follows the line.
+This list is a sample of the technique level, not the ceiling -- if you can see a better, more specific way to visualize a particular beat using these same underlying techniques, build that instead of forcing the beat into the nearest named item.
+
+=== WHEN A BEAT NEEDS MULTIPLE ELEMENTS, COMPOSE THEM AS ONE LAYOUT, NOT SEPARATE OBJECTS DROPPED AT ORIGIN ===
+A beat that has more than one visual element (an icon plus a number plus a bar, or several bars in one comparison) needs an explicit layout decision before you write any positioning code. Never call several fm_* or icon/text builders and leave each at its default position, since they will all land stacked on top of each other at ORIGIN -- this produces unreadable visual noise, not a composition. Pick ONE of these layouts and position every element relative to it:
+- Horizontal row: elements placed left-to-right with consistent spacing, using .next_to(previous_element, RIGHT, buff=...) chained from one anchor element, never each one independently .move_to()'d to a guessed coordinate.
+- Vertical stack: elements placed top-to-bottom with .next_to(previous_element, DOWN, buff=...), same chaining principle.
+- Icon-plus-value pairing: the icon and its number are ONE small group (build them as a VGroup together, icon then value below or beside it via .next_to()), not two independent objects each separately centered on screen.
+- Shared-baseline comparison: when a beat compares two or more amounts (rent vs income, multiple cost categories), every bar's bottom edge sits on the SAME Line, and every bar's height is scaled relative to the SAME value-to-height ratio so a $2,100 bar and a $20 bar are visibly, proportionally different heights -- never bars that are each sized independently and happen to end up looking similar regardless of their actual values.
+A chunk with two or more elements simply centered at the same point, or several bars with no shared axis so their relative sizes don't reflect their actual values, fails this rule even if each individual element looks fine in isolation.
+
+=== EMOTIONAL IMPACT — REQUIRED ON EVERY CHUNK ===
+Before choosing a visual, answer: what emotion does this beat create? Then build toward that emotion. Finance visuals only work if the viewer FEELS the number, not just reads it.
+
+DANGER / WARNING (debt, empty runway, missed payments): BRAND_RED hero. Bars oppressively tall. Gauges nearly empty. Numbers at font_size 130+. The visual should feel alarming.
+
+LOSS / EXPENSE (rent due, emergency cost, negative net): Show the expense as visually massive next to a tiny income. fm_animate_comparison_bars — a small green stub vs a towering red column — tells the whole story.
+
+POSITIVE / GROWTH (passive income building, savings growing): BRAND_GREEN, upward motion, counter counting UP toward a goal. Rising line chart with gradient fill under it.
+
+HOOK / CONCEPT (introducing an idea): Documentary chapter-card energy. fm_animate_glow_reveal at font_size 120+, glow rings expanding, one bold color accent. Fill the entire frame.
+
+SCALE IS EMOTIONAL: hero numbers font_size 100-150 always. A $200 passive income bar should look pathetically small next to the $1,800 rent bar. Make the math visible and visceral.
+
+=== CUSTOM GEOMETRY MUST LOOK PREMIUM, NOT LIKE A PLACEHOLDER ===
+When a beat needs custom geometry the fm_* library doesn't cover, the bar is professional documentary motion graphics, not a programmer's quick sketch. A flat single-color circle, pill, or blob with no other treatment reads as a cheap placeholder, not a finished visual, regardless of what it's supposed to represent. Every custom shape needs at least one of these treatments to earn its place on screen:
+- A glow or depth cue: wrap it with fm_glow_around, or layer 2-3 concentric copies of the same shape at decreasing opacity to fake soft depth, rather than one flat fill.
+- A gradient instead of a flat fill: `.set_color_by_gradient(color1, color2)` reads as premium where a single flat hue reads as a placeholder icon.
+- Real proportionality to data: if the shape is meant to represent a quantity (size, fullness, count), its dimensions must actually scale with that quantity -- a shape that's just "a circle" with no size logic behind it is decoration, not data visualization, even if it's pretty.
+- Motion that reveals structure: build the shape via Create/DrawBorderThenFill rather than a single FadeIn, so the viewer watches it form rather than just appear.
+A simple checkmark in a flat-colored circle, or any single uniform-color silhouette standing alone with nothing else going on, fails this bar -- it looks like a placeholder app icon, not a finished frame of a finance documentary. If you cannot make a custom shape look premium with the time/duration available, fall back to a chart-based primitive instead (a counter, a small bar, a donut) -- a well-executed simple chart always beats a flat custom shape that looks unfinished.
+
+=== ESTABLISHING SHOTS: WHEN AND HOW TO USE THE 3D BASE CLASS ===
+Most chunks should use FinanceDashboardScene (flat 2D) -- it is not heavier and is the right default. Occasionally, for a chunk introducing a new hero card or chart for the first time, or a chapter-opening beat, subclass FinanceDashboard3DScene instead so that one hero object tilts in from an angle and settles flat, like a dashboard panel rotating into view. Build the hero object as a single VGroup, give it a starting rotation before your first self.play (e.g. `hero.rotate(60 * DEGREES, axis=UP)`), then settle it with `self.play(Rotate(hero, angle=-60 * DEGREES, axis=UP, run_time=...))`. Rotate the object itself, not the camera, unless you specifically intend a slow establishing pan. Use this sparingly -- an occasional establishing beat, not a constant gimmick. The background is already locked flat for you via add_fixed_in_frame_mobjects, so it will not rotate even while your hero object does.
+
+=== BRAND PALETTE -- USE THESE EXACT HEX VALUES, NEVER INVENT OTHERS ===
+White, primary numbers/text: "#F5F7FA". Market green, growth/gains/positive: "#38D996". Warning red, risk/loss/danger: "#FF4D4D". Gold, highlights/key numbers: "#FFD166". Muted gray, secondary/de-emphasized structure ONLY (never the main hero element): "#8A94A6". Dark panel, card backgrounds: "#111A24". The hero of every visual -- the bar, the filled gauge arc, the growing number, the card's amount -- should be white, green, red, or gold, with enough fill/stroke weight to read clearly against the dark navy background; reserve gray strictly for tracks, grid lines, and de-emphasized context. Pick ONE accent color as the actual data color for a given chunk (green for a gain, red for a risk/warning, gold for a neutral highlight) and let everything else in that chunk stay white or gray -- several brand colors all competing for attention in the same chunk reads as busy, not premium.
+
+=== QUALITY BAR ===
+- Real Manim primitives, not approximations: Transform(a, b) for one shape/number becoming another, ValueTracker + Text for any number counting up or down, Create()/Write()/FadeIn()/FadeOut() with real run_time and rate_func easing (smooth, there_and_back, rush_into) -- never an instant snap unless a deliberate "shock cut" is specifically right for a warning beat.
+- For bar charts and multi-category comparisons, use fm_animate_bar_chart or fm_animate_comparison_bars -- they already build real tick marks/baseline/axis lines by hand with zero BarChart dependency (BarChart itself is banned and will be rejected). For trend lines, prefer fm_animate_line_chart, or Manim's built-in Axes directly (Axes is allowed, only BarChart is banned) when you need a chart shape the library doesn't cover.
+- Fill, don't just outline: bars, gauge progress arcs, donut segments, and card bodies should be solid or semi-solid fills in brand colors, not bare strokes -- a thin outline alone reads as faint and unfinished against the dark background.
+- Glow/emphasis: layer 2-3 duplicate copies of a shape at increasing scale and decreasing opacity behind the main shape, rather than leaving it flat.
+- Legible at video scale: hero numbers around font_size 90-140, supporting labels 28-40.
+- Correct across the chunk's full duration including its very start and end -- no division by zero, no index errors, no negative radii on a shrinking shape.
+
+=== CONSISTENT LAYOUT LANGUAGE ACROSS CHUNKS ===
+Each chunk renders as an independent clip with no memory of the chunk before or after it, so do not assume any specific "previous chunk" content. Instead keep a consistent layout language so the cuts still feel like one continuous show: hero objects centered around ORIGIN, a label (if any) sitting just below its number, a small source/footnote tag (if any) always in a lower corner at low opacity.
+
+Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_name": "Chunk0", "code": "from manim import *\\n\\nclass Chunk0(FinanceDashboardScene):\\n    def construct(self):\\n        ..."}, ...]}. The "code" field must be the complete, final Python source for that chunk as a single string with real newlines escaped as \\n."""
+
+    def _build_user_prompt(batch_items):
+        lines = []
+        for global_idx, chunk in batch_items:
+            chunk_text = " ".join(b.get("text", "") for b in chunk["beats"])
+            duration = round(chunk["end_time"] - chunk["start_time"], 2)
+            lines.append(
+                f'Chunk {global_idx}: duration={duration}s, class_name="Chunk{global_idx}", '
+                f'narration="{chunk_text}"'
+            )
+        return f"Topic: {topic}\n\n" + "\n".join(lines)
+
+    def _gpt_call_for_prompt(user_prompt):
+        def _do():
+            return gpt4o_call(
+                client,
+                model="gpt-4.1",
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "manim_chunks",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "chunks": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "chunk_index": {"type": "integer"},
+                                            "class_name":  {"type": "string"},
+                                            "code":        {"type": "string"},
+                                        },
+                                        "required": ["chunk_index", "class_name", "code"],
+                                        "additionalProperties": False,
+                                    },
+                                }
+                            },
+                            "required": ["chunks"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+        return _call_with_retry(_do, label="Manim chunk call")
+
+    def _parse_chunks_from_raw(raw_text: str) -> list:
+        """Three-layer output parser. Layer 1: clean json.loads. Layer 2:
+        JSONDecoder.raw_decode walk through the chunks array, extracting
+        each object individually and stopping at the first one that fails
+        rather than discarding everything. Layer 3: give up and return
+        whatever was salvaged so the caller can retry missing indices."""
+        raw = raw_text.strip()
+
+        try:
+            return json.loads(raw).get("chunks", [])
+        except json.JSONDecodeError:
+            pass
+
+        chunks_out = []
+        arr_start = raw.find('"chunks"')
+        if arr_start < 0:
+            return chunks_out
+        bracket = raw.find('[', arr_start)
+        if bracket < 0:
+            return chunks_out
+
+        decoder = json.JSONDecoder()
+        pos = bracket + 1
+        while pos < len(raw):
+            stripped = raw[pos:]
+            lstripped = stripped.lstrip(' \t\n\r,')
+            if not lstripped or lstripped[0] in (']', '}'):
+                break
+            offset = len(stripped) - len(lstripped)
+            try:
+                obj, end = decoder.raw_decode(lstripped)
+                if isinstance(obj, dict) and "code" in obj and "class_name" in obj:
+                    chunks_out.append(obj)
+                pos += offset + end
+                while pos < len(raw) and raw[pos] in (' ', '\t', '\n', '\r', ','):
+                    pos += 1
+            except json.JSONDecodeError:
+                break
+
+        return chunks_out
+
+    def _slot_items(returned_items, batch_global_indices):
+        """Rename classes and slot parsed items into all_results by position."""
+        for i, item in enumerate(returned_items):
+            if i >= len(batch_global_indices):
+                break
+            global_idx = batch_global_indices[i]
+            if global_idx >= len(chunks):
+                continue
+            expected_class_name = f"Chunk{global_idx}"
+            raw_code = item.get("code", "") or ""
+            renamed_code, _ = re.subn(
+                r'^class\s+\w+\(', f'class {expected_class_name}(',
+                raw_code, count=1, flags=re.MULTILINE,
+            )
+            item["code"] = renamed_code
+            item["class_name"] = expected_class_name
+            item["chunk_index"] = global_idx
+            all_results[global_idx] = item
+
+    gap_indices = {i for i, c in enumerate(chunks) if c.get("is_gap")}
+    codegen_chunks = [c for i, c in enumerate(chunks) if i not in gap_indices]
+    codegen_to_global = [i for i in range(len(chunks)) if i not in gap_indices]
+
+    all_results = {i: {"is_gap": True} for i in gap_indices}
+    if gap_indices:
+        print(f"  ⏸  {len(gap_indices)} silence gap chunk(s) skip codegen entirely")
+
+    chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=4)
+    n_batches = max(1, math.ceil(len(codegen_chunks) / chunk_batch_size)) if codegen_chunks else 0
+    print(f"  🎬 Manim chunks: {n_batches} batch(es) of ~{chunk_batch_size} chunks each...")
+
+    for batch_idx in range(n_batches):
+        local_batch = codegen_chunks[batch_idx * chunk_batch_size: (batch_idx + 1) * chunk_batch_size]
+        if not local_batch:
+            continue
+        local_indices = list(range(batch_idx * chunk_batch_size, batch_idx * chunk_batch_size + len(local_batch)))
+        batch = local_batch
+        batch_global_indices = [codegen_to_global[i] for i in local_indices]
+
+        print(f"  🎬 Manim chunk batch {batch_idx + 1}/{n_batches}: {len(batch)} chunks...")
+
+        try:
+            response = _gpt_call_for_prompt(_build_user_prompt(list(zip(batch_global_indices, batch))))
+            returned = _parse_chunks_from_raw(response.choices[0].message.content)
+            _slot_items(returned, batch_global_indices)
+            missing = [idx for idx in batch_global_indices if idx not in all_results]
+            if missing:
+                print(f"  ⚠ Batch {batch_idx + 1}: parser recovered {len(returned)}/{len(batch)} chunks, retrying {len(missing)} individually...")
+                for idx in missing:
+                    local_i = batch_global_indices.index(idx)
+                    try:
+                        r2 = _gpt_call_for_prompt(_build_user_prompt([(idx, batch[local_i])]))
+                        recovered = _parse_chunks_from_raw(r2.choices[0].message.content)
+                        _slot_items(recovered, [idx])
+                    except Exception as e2:
+                        print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
+            n_done = sum(1 for idx in batch_global_indices if idx in all_results)
+            print(f"  ✅ Manim chunk batch {batch_idx + 1} done: {n_done}/{len(batch)} chunks")
+        except Exception as e:
+            print(f"  ⚠ Manim chunk batch {batch_idx + 1} failed entirely ({e}), retrying one by one...")
+            for idx, chunk in zip(batch_global_indices, batch):
+                try:
+                    r = _gpt_call_for_prompt(_build_user_prompt([(idx, chunk)]))
+                    recovered = _parse_chunks_from_raw(r.choices[0].message.content)
+                    _slot_items(recovered, [idx])
+                except Exception as e2:
+                    print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
+
+    repair_targets = []
+    for idx in codegen_to_global:
+        item = all_results.get(idx)
+        if not item or not item.get("code"):
+            continue
+        ok, reason = manim_static_safety_check(item["code"])
+        if not ok:
+            repair_targets.append((idx, reason))
+
+    if repair_targets:
+        print(f"  🔧 {len(repair_targets)} chunk(s) failed the safety check, attempting one targeted repair each...")
+        for idx, reason in repair_targets:
+            print(f"    🔧 Chunk{idx} original failure: {reason}")
+            local_i = codegen_to_global.index(idx)
+            chunk = codegen_chunks[local_i]
+            hint = safety_correction_hint(reason)
+            corrected_prompt = _build_user_prompt([(idx, chunk)]) + "\n\n" + hint
+            try:
+                r = _gpt_call_for_prompt(corrected_prompt)
+                recovered = _parse_chunks_from_raw(r.choices[0].message.content)
+                if recovered:
+                    candidate = recovered[0]
+                    candidate_code = candidate.get("code", "") or ""
+                    renamed_code, _ = re.subn(
+                        r'^class\s+\w+\(', f'class Chunk{idx}(',
+                        candidate_code, count=1, flags=re.MULTILINE,
+                    )
+                    ok2, reason2 = manim_static_safety_check(renamed_code)
+                    if ok2:
+                        candidate["code"] = renamed_code
+                        candidate["class_name"] = f"Chunk{idx}"
+                        candidate["chunk_index"] = idx
+                        all_results[idx] = candidate
+                        print(f"    ✅ Chunk{idx} repaired")
+                    else:
+                        print(f"    ⚠ Chunk{idx} repair attempt still failed (original: {reason} -- retry: {reason2}), keeping original code for the renderer to reject the same way")
+                else:
+                    print(f"    ⚠ Chunk{idx} repair attempt returned no parseable code, keeping original")
+            except Exception as e:
+                print(f"    ⚠ Chunk{idx} repair attempt errored: {e}, keeping original")
+
+    ordered = [all_results.get(i) for i in range(len(chunks))]
+    print(f"  ✅ {sum(1 for r in ordered if r)} / {len(chunks)} total manim chunks generated")
+    return ordered
+
+
+def concat_manim_clips(clip_paths: list, output_path: str) -> str:
+    """Concatenates every rendered (or filler) chunk clip into one
+    continuous silent video via ffmpeg concat. Every clip going into
+    this -- both real Manim renders and dashboard fillers -- is encoded
+    with the same libx264/yuv420p/fps settings, so a fast stream-copy
+    concat should always apply; the re-encode path only exists as a
+    safety net in case any clip's stream parameters drifted."""
+    concat_list_path = output_path + "_concat_list.txt"
+    with open(concat_list_path, "w") as f:
+        for p in clip_paths:
+            f.write(f"file '{os.path.abspath(p)}'\n")
+
+    cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+           '-i', concat_list_path, '-c', 'copy', output_path]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        cmd_reencode = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+                         '-i', concat_list_path,
+                         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
+                         '-pix_fmt', 'yuv420p', output_path]
+        result2 = subprocess.run(cmd_reencode, capture_output=True)
+        if result2.returncode != 0:
+            raise Exception(f"chunk concat failed: {result2.stderr.decode(errors='replace')[-300:]}")
+
+    try:
+        os.remove(concat_list_path)
+    except Exception:
+        pass
+    return output_path
+
+
+def _render_or_fill_one_chunk(chunk_index: int, chunk: dict, item, w: int, h: int, fps: int) -> tuple:
+    target_duration = round(max(chunk["end_time"] - chunk["start_time"], 0.05), 3)
+    fallback_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"filler_{chunk_index:04d}_{target_duration:.3f}.mp4")
+
+    if not item or not item.get("code") or not item.get("class_name"):
+        _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+        return chunk_index, fallback_path, "no chunk code generated"
+
+    clip_path, err = render_manim_chunk(item["code"], item["class_name"],
+                                         target_duration, w, h, fps)
+    if not clip_path:
+        _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+        return chunk_index, fallback_path, err
+    return chunk_index, clip_path, ""
+
+
+def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
+                             h: int = 1080, fps: int = 30, max_workers: int = None) -> list:
+    """Renders every CONTENT chunk's Manim code in parallel via a
+    process pool, each chunk being its own independent `manim` CLI
+    subprocess. Any content chunk that fails safety check, crashes,
+    times out, or drifts past MANIM_CHUNK_MAX_DRIFT_RATIO gets a
+    dashboard-color filler of its exact target duration instead, so
+    total video length always matches the audio regardless of how
+    many chunks failed.
+
+    Gap (silence) chunks are deliberately excluded from this parallel
+    pass and handled afterward in a sequential second pass (see the
+    end of this function) -- a gap chunk needs to read the ACTUAL
+    final frame of the content chunk immediately before it, which is
+    only guaranteed to exist once the parallel pass above has fully
+    finished, since parallel workers can complete in any order.
+
+    Default worker count is deliberately smaller than
+    prerender_all_beat_visuals' cpu_count()-1 pattern: each worker here
+    spawns a full `manim` subprocess (its own Python interpreter, Cairo
+    renderer, and an ffmpeg mux at the end), which is much heavier per
+    worker than the old in-process PIL beat renderer, so a full
+    cpu_count()-1 pool risks thrashing the machine rather than helping."""
+    os.makedirs(MANIM_CHUNK_CACHE_DIR, exist_ok=True)
+    n = len(chunks)
+    if max_workers is None:
+        max_workers = max(1, multiprocessing.cpu_count() // 2)
+    clip_paths = [None] * n
+    content_indices = [i for i in range(n) if not chunks[i].get("is_gap")]
+    gap_indices = [i for i in range(n) if chunks[i].get("is_gap")]
+    print(f"  🎬 Rendering {len(content_indices)} content chunk(s) across up to {max_workers} parallel workers...")
+
+    done = 0
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_render_or_fill_one_chunk, i, chunks[i],
+                        chunk_code_list[i] if i < len(chunk_code_list) else None, w, h, fps): i
+            for i in content_indices
+        }
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                idx, path, err = future.result()
+            except Exception as e:
+                target_duration = round(max(chunks[i]["end_time"] - chunks[i]["start_time"], 0.05), 3)
+                fallback_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"filler_{i:04d}_{target_duration:.3f}.mp4")
+                _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+                idx, path, err = i, fallback_path, f"worker exception: {e}"
+
+            clip_paths[idx] = path
+            done += 1
+            if err:
+                print(f"  ⚠ Chunk {idx}: {err[:160]} -- filled with dashboard background [{done}/{len(content_indices)}]")
+            if done % 10 == 0 or done == len(content_indices):
+                print(f"  ⚙️  Manim chunk progress: {done}/{len(content_indices)}")
+
+    if gap_indices:
+        print(f"  ⏸  Filling {len(gap_indices)} silence gap(s) by holding the previous frame...")
+        held = 0
+        for i in gap_indices:
+            target_duration = round(max(chunks[i]["end_time"] - chunks[i]["start_time"], 0.05), 3)
+            gap_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"gap_{i:04d}_{target_duration:.3f}.mp4")
+            prev_path = clip_paths[i - 1] if i > 0 else None
+            held_path = None
+            if prev_path and os.path.exists(prev_path):
+                held_path = _make_held_frame_filler(prev_path, gap_path, target_duration, w, h, fps)
+            if held_path:
+                clip_paths[i] = held_path
+                held += 1
+            else:
+                fallback_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"filler_{i:04d}_{target_duration:.3f}.mp4")
+                _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+                clip_paths[i] = fallback_path
+        print(f"  ✅ {held}/{len(gap_indices)} silence gap(s) held on previous frame, {len(gap_indices) - held} used blank fallback")
+
+    print(f"  ✅ All {n} chunks accounted for ({sum(1 for p in clip_paths if p)} clips ready)")
+    return clip_paths
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Finance Explainer v1 on :{port} | Key: {'set' if OPENAI_API_KEY else 'MISSING'}")
+    print(f"🚀 Finance Explainer v2 (Manim renderer) on :{port} | Key: {'set' if OPENAI_API_KEY else 'MISSING'}")
     uvicorn.run(app, host="0.0.0.0", port=port)
