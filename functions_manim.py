@@ -68,7 +68,15 @@ def fm_stacked_cards(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
     items = list of (label_str, value_str, accent_color_hex).
     Returns a VGroup. Animate entry yourself."""
     cards = VGroup()
-    for label, value, color in items:
+    for entry in items:
+        if isinstance(entry, dict):
+            label = entry.get("label", "")
+            value = entry.get("value", "")
+            color = entry.get("color", BRAND_GOLD)
+        else:
+            label, value, color = entry
+        if not isinstance(value, str):
+            value = f"${abs(value):,.0f}" if isinstance(value, (int, float)) else str(value)
         c = fm_card(label, value, color, panel_color, text_color, label_size, value_size, buff=0.32)
         cards.add(c)
     cards.arrange(DOWN, buff=spacing)
@@ -187,9 +195,8 @@ def fm_animate_gauge(scene, value, max_val, label_text,
     start_angle = PI + PI * 0.12
     sweep_total = PI - PI * 0.24
 
-    track = Arc(radius=radius, start_angle=start_angle, angle=sweep_total)
+    track = Arc(radius=radius, start_angle=start_angle, angle=sweep_total, arc_center=position)
     track.set_stroke(color=BRAND_GRAY, width=16, opacity=0.32)
-    track.move_to(position)
 
     tracker = ValueTracker(0.0)
 
@@ -197,9 +204,8 @@ def fm_animate_gauge(scene, value, max_val, label_text,
         frac = tracker.get_value()
         if frac < 1e-6:
             return VMobject()
-        a = Arc(radius=radius, start_angle=start_angle, angle=sweep_total * frac)
+        a = Arc(radius=radius, start_angle=start_angle, angle=sweep_total * frac, arc_center=position)
         a.set_stroke(color=accent_color, width=16, opacity=1.0)
-        a.move_to(position)
         return a
 
     fill_arc = always_redraw(_arc)
@@ -243,10 +249,10 @@ def fm_animate_donut(scene, percentage, label_text,
             radius=inner_r + thickness / 2,
             start_angle=PI / 2,
             angle=-angle,
+            arc_center=position,
             stroke_width=int(thickness * 105),
         )
         arc.set_stroke(color=accent_color, opacity=1.0)
-        arc.move_to(position)
         return arc
 
     fill     = always_redraw(_fill)
@@ -578,7 +584,14 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
     safe_w = config.frame_width * 0.84
     if text.width > safe_w:
         text.scale(safe_w / text.width)
-    text.move_to(ORIGIN if subtitle is None else ORIGIN + UP * 0.35)
+
+    sub = None
+    if subtitle:
+        sub = Text(subtitle, font_size=38, color=subtitle_color)
+        text_group = VGroup(text, sub).arrange(DOWN, buff=0.42)
+        text_group.move_to(ORIGIN)
+    else:
+        text.move_to(ORIGIN)
 
     rings = VGroup()
     for i in range(5):
@@ -593,8 +606,6 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
 
     mobs = [text, *rings]
     if subtitle:
-        sub = Text(subtitle, font_size=38, color=subtitle_color)
-        sub.next_to(text, DOWN, buff=0.42)
         mobs.append(sub)
         hold_t = max(hold_t - 0.28, 0.05)
 
@@ -715,10 +726,6 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
     scale    = 4.2 / max(total_h, 1.0)
     zero_y   = max_neg * scale - 2.1
 
-    baseline = Line([-total_w / 2 - 0.5, zero_y, 0], [total_w / 2 + 0.5, zero_y, 0])
-    baseline.set_stroke(BRAND_GRAY, width=2.2, opacity=0.55)
-    scene.add(baseline)
-
     bars       = VGroup()
     val_labels = VGroup()
     cat_labels = VGroup()
@@ -742,16 +749,19 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
         val_labels.add(val_lbl)
 
         cat_lbl = Text(label, font_size=22, color=BRAND_GRAY)
-        cat_lbl.next_to(bar, DOWN if not is_neg else DOWN, buff=0.45 if not is_neg else 0.85)
+        cat_label_y = (y_bot - 0.32) if is_neg else (zero_y - 0.32)
+        cat_lbl.move_to([x, cat_label_y, 0])
         cat_labels.add(cat_lbl)
 
+    baseline = Line([-total_w / 2 - 0.5, zero_y, 0], [total_w / 2 + 0.5, zero_y, 0])
+    baseline.set_stroke(BRAND_GRAY, width=2.2, opacity=0.55)
+    scene.add(baseline)
+
     chart = VGroup(bars, val_labels, cat_labels)
-    chart.move_to(ORIGIN + UP * 0.1)
-    baseline.move_to([0, zero_y + chart.get_center()[1] - chart.get_center()[1], 0])
 
     if title_text:
         ttl = Text(title_text, font_size=30, color=BRAND_GRAY)
-        ttl.next_to(chart, UP, buff=0.28)
+        ttl.next_to(VGroup(bars, val_labels), UP, buff=0.28)
         scene.add(ttl)
 
     scene.add(cat_labels)
