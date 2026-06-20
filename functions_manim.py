@@ -131,11 +131,9 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
     y_scale = chart_h / max(max_v * 1.28, 1.0)
     base_y  = -chart_h / 2 - 0.15
 
-    baseline = Line([-total_w / 2 - 0.45, base_y, 0], [total_w / 2 + 0.45, base_y, 0])
+    edge_margin = bar_w / 2 + 0.3
+    baseline = Line([-total_w / 2 - edge_margin, base_y, 0], [total_w / 2 + edge_margin, base_y, 0])
     baseline.set_stroke(color=BRAND_GRAY, width=2.0, opacity=0.48)
-    y_axis = Line([-total_w / 2 - 0.45, base_y, 0],
-                   [-total_w / 2 - 0.45, base_y + chart_h + 0.35, 0])
-    y_axis.set_stroke(color=BRAND_GRAY, width=2.0, opacity=0.48)
 
     bars       = VGroup()
     val_labels = VGroup()
@@ -159,7 +157,7 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
         cat_lbl.next_to(bar, DOWN, buff=0.15)
         cat_labels.add(cat_lbl)
 
-    chart_group = VGroup(baseline, y_axis, bars, val_labels, cat_labels)
+    chart_group = VGroup(baseline, bars, val_labels, cat_labels)
     bars_cx = bars.get_center()[0]
     chart_group.shift(RIGHT * (-bars_cx) + UP * 0.22)
 
@@ -168,7 +166,7 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
         ttl.next_to(chart_group, UP, buff=0.22)
         scene.add(ttl)
 
-    scene.add(baseline, y_axis, cat_labels)
+    scene.add(baseline, cat_labels)
     grow_t = max(min(duration * 0.70, duration - 0.38), 0.1)
     hold_t = max(duration - grow_t, 0.05)
     scene.play(
@@ -348,6 +346,7 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
     bar_w   = min(1.5, 10.5 / n)
     spacing = bar_w * 1.55
     total_w = (n - 1) * spacing
+    edge_margin = bar_w / 2 + 0.3
 
     running = 0.0
     bases   = []
@@ -364,10 +363,12 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
     chart_h   = 4.5
     y_scale   = chart_h / max(max_top - min_base, 1.0)
     base_y    = -chart_h / 2 - min_base * y_scale + 0.4
+    axis_y    = base_y - 0.45
+    cat_row_y = axis_y - 0.35
 
     baseline  = Line(
-        [-total_w / 2 - 0.4, base_y - 0.45, 0],
-        [ total_w / 2 + 0.4, base_y - 0.45, 0],
+        [-total_w / 2 - edge_margin, axis_y, 0],
+        [ total_w / 2 + edge_margin, axis_y, 0],
     ).set_stroke(color=BRAND_GRAY, opacity=0.38, width=1.5)
 
     bars   = VGroup()
@@ -380,13 +381,13 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
 
         if i == n - 1:
             c  = step.get("color", BRAND_GOLD if v >= 0 else BRAND_RED)
-            y0 = base_y - 0.45 if v >= 0 else base_y - 0.45 - bar_h
+            y0 = axis_y if v >= 0 else axis_y - bar_h
         elif v >= 0:
             c  = step.get("color", BRAND_GREEN)
-            y0 = base_y - 0.45 + base * y_scale
+            y0 = axis_y + base * y_scale
         else:
             c  = step.get("color", BRAND_RED)
-            y0 = base_y - 0.45 + (base + v) * y_scale
+            y0 = axis_y + (base + v) * y_scale
 
         bar = Rectangle(width=bar_w, height=bar_h)
         bar.set_fill(c, opacity=0.9)
@@ -399,7 +400,9 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
         val_lbl  = Text(val_str, font_size=22, color=c, weight=BOLD)
         val_lbl.next_to(bar, DOWN if (v < 0) else UP, buff=0.08)
         cat_lbl  = Text(step.get("label", ""), font_size=18, color=BRAND_GRAY)
-        cat_lbl.next_to(bar, DOWN, buff=0.5 if v >= 0 else 0.9)
+        cat_lbl.move_to([x_pos, cat_row_y, 0])
+        if v < 0 and val_lbl.get_top()[1] > cat_lbl.get_bottom()[1] - 0.05:
+            val_lbl.next_to(cat_lbl, DOWN, buff=0.12)
         labels.add(VGroup(val_lbl, cat_lbl))
 
     all_elements = VGroup(baseline, bars, labels)
@@ -408,7 +411,6 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
     if actual_bottom < safe_bottom:
         shift_up = safe_bottom - actual_bottom
         all_elements.shift(UP * shift_up)
-        baseline.shift(UP * shift_up)
 
     scene.add(baseline)
     anim_t  = max(min(duration * 0.70, duration - 0.6), 0.1)
@@ -717,6 +719,7 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
     bar_w   = min(2.2, 9.5 / max(n, 1))
     spacing = bar_w * 1.55
     total_w = (n - 1) * spacing
+    edge_margin = bar_w / 2 + 0.35
 
     pos_vals = [v for _, v, _ in items if v > 0]
     neg_vals = [v for _, v, _ in items if v < 0]
@@ -725,6 +728,7 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
     total_h  = max_pos + max_neg
     scale    = 4.2 / max(total_h, 1.0)
     zero_y   = max_neg * scale - 2.1
+    cat_row_y = zero_y - 0.32
 
     bars       = VGroup()
     val_labels = VGroup()
@@ -749,11 +753,12 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
         val_labels.add(val_lbl)
 
         cat_lbl = Text(label, font_size=22, color=BRAND_GRAY)
-        cat_label_y = (y_bot - 0.32) if is_neg else (zero_y - 0.32)
-        cat_lbl.move_to([x, cat_label_y, 0])
+        cat_lbl.move_to([x, cat_row_y, 0])
+        if is_neg and val_lbl.get_top()[1] > cat_lbl.get_bottom()[1] - 0.05:
+            val_lbl.next_to(cat_lbl, DOWN, buff=0.15)
         cat_labels.add(cat_lbl)
 
-    baseline = Line([-total_w / 2 - 0.5, zero_y, 0], [total_w / 2 + 0.5, zero_y, 0])
+    baseline = Line([-total_w / 2 - edge_margin, zero_y, 0], [total_w / 2 + edge_margin, zero_y, 0])
     baseline.set_stroke(BRAND_GRAY, width=2.2, opacity=0.55)
     scene.add(baseline)
 
