@@ -141,7 +141,7 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
 
     for i, (v, name, c) in enumerate(zip(values, names, bar_colors)):
         x     = -total_w / 2 + i * spacing
-        bar_h = max(abs(v) * y_scale, 0.06)
+        bar_h = max(abs(v) * y_scale, 0.16)
         bar   = Rectangle(width=bar_w, height=bar_h)
         bar.set_fill(c, opacity=0.92)
         bar.set_stroke(c, width=1.5, opacity=0.55)
@@ -334,6 +334,96 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
     return axes, line, end_dot
 
 
+def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
+    """Multiple trend lines sharing ONE Axes, for direct comparison
+    (e.g. rent growth vs income growth, two income paths over time).
+    series: list of dicts {"y_values": [...], "label": str, "color": hex}.
+    All series must have the same length (same x-spacing). This is the
+    ONLY safe way to compare two or more trends on one chart -- never
+    build a second raw Axes or a manual multi-line plot by hand.
+    Handles all animation."""
+    if not series:
+        return None, None
+    n = len(series[0]["y_values"])
+    if n < 2:
+        return None, None
+
+    all_vals = [v for s in series for v in s["y_values"]]
+    min_y   = min(all_vals)
+    max_y   = max(all_vals)
+    y_span  = max(max_y - min_y, 1.0)
+    y_pad   = y_span * 0.22
+    y_lo    = max(0.0, min_y - y_pad)
+    y_hi    = max_y + y_pad
+    y_step  = max((y_hi - y_lo) / 4, 0.01)
+    x_step  = max((n - 1) // 5, 1)
+
+    axes = Axes(
+        x_range=[0, n - 1, x_step],
+        y_range=[y_lo, y_hi, y_step],
+        x_length=10.5,
+        y_length=5.2,
+        axis_config={
+            "color": BRAND_GRAY,
+            "stroke_opacity": 0.45,
+            "include_tip": False,
+            "include_numbers": False,
+        },
+    )
+    axes.move_to(ORIGIN + DOWN * 0.15)
+
+    lines    = []
+    end_dots = []
+    end_lbls = []
+    for s in series:
+        y_values = s["y_values"]
+        color    = s.get("color", BRAND_GREEN)
+        pts      = [axes.c2p(i, y_values[i]) for i in range(n)]
+        line     = VMobject()
+        line.set_points_as_corners(pts)
+        line.set_stroke(color=color, width=4.5, opacity=0.95)
+        lines.append(line)
+
+        end_dot = Dot(axes.c2p(n - 1, y_values[-1]), color=color, radius=0.11)
+        end_lbl = Text(s.get("label", ""), font_size=26, color=color, weight=BOLD)
+        _dot_x = axes.c2p(n - 1, y_values[-1])[0]
+        _safe_right = config.frame_width * 0.38
+        _lbl_dir = UR if _dot_x < _safe_right else UL
+        end_lbl.next_to(end_dot, _lbl_dir, buff=0.12)
+        _frame_right_edge = config.frame_width / 2 - 0.25
+        if end_lbl.get_right()[0] > _frame_right_edge:
+            end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
+        end_dots.append(end_dot)
+        end_lbls.append(end_lbl)
+
+    order   = sorted(range(len(series)), key=lambda i: series[i]["y_values"][-1], reverse=True)
+    min_gap = 0.4
+    for k in range(1, len(order)):
+        prev_i = order[k - 1]
+        cur_i  = order[k]
+        gap = end_lbls[prev_i].get_bottom()[1] - end_lbls[cur_i].get_top()[1]
+        if gap < min_gap:
+            end_lbls[cur_i].shift(DOWN * (min_gap - gap))
+
+    if title_text:
+        ttl = Text(title_text, font_size=30, color=BRAND_GRAY)
+        ttl.next_to(axes, UP, buff=0.22)
+        scene.add(ttl)
+
+    scene.add(axes)
+    grow_t  = max(min(duration * 0.65, duration - 0.6), 0.1)
+    label_t = 0.45
+    hold_t  = max(duration - grow_t - label_t, 0.05)
+    scene.play(*[Create(l) for l in lines], run_time=grow_t, rate_func=smooth)
+    scene.play(
+        *[FadeIn(d) for d in end_dots],
+        *[Write(l) for l in end_lbls],
+        run_time=label_t,
+    )
+    scene.wait(hold_t)
+    return axes, lines
+
+
 def fm_animate_waterfall(scene, steps, duration=4.5):
     """Cashflow waterfall. Steps arrive sequentially via GrowFromEdge.
     steps = list of {"label": str, "value": float, "color": hex (optional)}.
@@ -377,7 +467,7 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
     for i, (step, base) in enumerate(zip(steps, bases)):
         v     = step["value"]
         x_pos = -total_w / 2 + i * spacing
-        bar_h = max(abs(v) * y_scale, 0.06)
+        bar_h = max(abs(v) * y_scale, 0.16)
 
         if i == n - 1:
             c  = step.get("color", BRAND_GOLD if v >= 0 else BRAND_RED)
@@ -401,8 +491,8 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
         val_lbl.next_to(bar, DOWN if (v < 0) else UP, buff=0.08)
         cat_lbl  = Text(step.get("label", ""), font_size=18, color=BRAND_GRAY)
         cat_lbl.move_to([x_pos, cat_row_y, 0])
-        if v < 0 and val_lbl.get_top()[1] > cat_lbl.get_bottom()[1] - 0.05:
-            val_lbl.next_to(cat_lbl, DOWN, buff=0.12)
+        if v < 0 and val_lbl.get_bottom()[1] < cat_lbl.get_top()[1] + 0.05:
+            cat_lbl.next_to(val_lbl, DOWN, buff=0.12)
         labels.add(VGroup(val_lbl, cat_lbl))
 
     all_elements = VGroup(baseline, bars, labels)
@@ -702,6 +792,39 @@ def fm_animate_single_value(scene, value_str, label_text,
     scene.wait(hold_t)
     return val_mob, lbl_mob
 
+def fm_formula(scene, lines, font_size=60, color=BRAND_WHITE, duration=3.0,
+               position=None):
+    """Plain-Text() formula display (one line or a list of lines for a
+    multi-step calculation), auto-scaled to ALWAYS fit inside the frame
+    no matter how long the string is -- zero LaTeX, zero overflow risk.
+    Use this instead of typing a raw Text() formula yourself: a hand-sized
+    font_size on a long formula string is exactly what runs off the edges
+    of the 16:9 frame. lines: a single string, or a list of strings (each
+    becomes its own row, e.g. the calculation on one line and the
+    simplified result on the next). Handles all animation."""
+    if position is None:
+        position = ORIGIN
+    if isinstance(lines, str):
+        lines = [lines]
+    safe_w = config.frame_width * 0.86
+    safe_h = config.frame_height * 0.7
+    text_mobs = [Text(s, font_size=font_size, color=color, weight=BOLD) for s in lines]
+    group = VGroup(*text_mobs).arrange(DOWN, buff=0.28)
+    if group.width > safe_w:
+        group.scale_to_fit_width(safe_w)
+    if group.height > safe_h:
+        group.scale_to_fit_height(safe_h)
+    group.move_to(position)
+
+    intro_t = max(min(duration * 0.4, 1.2), 0.1)
+    hold_t  = max(duration - intro_t, 0.05)
+    scene.play(
+        LaggedStart(*[FadeIn(t, scale=0.92) for t in text_mobs], lag_ratio=0.15),
+        run_time=intro_t, rate_func=smooth,
+    )
+    scene.wait(hold_t)
+    return group
+
 def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
                                 show_net=True):
     """Clean income-vs-expense comparison bars. No axis line through bars.
@@ -736,7 +859,7 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
 
     for i, (label, value, color) in enumerate(items):
         x      = -total_w / 2 + i * spacing
-        bar_h  = max(abs(value) * scale, 0.08)
+        bar_h  = max(abs(value) * scale, 0.16)
         is_neg = value < 0
         y_bot  = zero_y - bar_h if is_neg else zero_y
         bar    = Rectangle(width=bar_w, height=bar_h)
@@ -754,8 +877,8 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
 
         cat_lbl = Text(label, font_size=22, color=BRAND_GRAY)
         cat_lbl.move_to([x, cat_row_y, 0])
-        if is_neg and val_lbl.get_top()[1] > cat_lbl.get_bottom()[1] - 0.05:
-            val_lbl.next_to(cat_lbl, DOWN, buff=0.15)
+        if is_neg and val_lbl.get_bottom()[1] < cat_lbl.get_top()[1] + 0.05:
+            cat_lbl.next_to(val_lbl, DOWN, buff=0.15)
         cat_labels.add(cat_lbl)
 
     baseline = Line([-total_w / 2 - edge_margin, zero_y, 0], [total_w / 2 + edge_margin, zero_y, 0])

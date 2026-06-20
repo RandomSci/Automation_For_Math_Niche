@@ -3047,7 +3047,7 @@ class FinanceGenerator:
     def _add_cta_overlay(self, video_input: str, output_path: str, duration: float):
         end_time = round(max(duration - 4, 1), 3)
         vf = (
-            f"drawtext=text='Vaults of History'"
+            f"drawtext=text='Subscribe for more!':"
             f":fontcolor=yellow:fontsize=42:font=Arial"
             f":borderw=2:bordercolor=black:shadowx=2:shadowy=2"
             f":x=(w-text_w)/2:y=h*0.91:enable='gt(t\\,{end_time})'"
@@ -3299,6 +3299,51 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'\bRectangle\b',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
+MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
+    "Rectangle": "fm_card / fm_two_cards / fm_stacked_cards (a labeled box) or fm_animate_bar_chart / fm_animate_comparison_bars / fm_animate_waterfall (a bar)",
+    "Axes": "fm_animate_line_chart",
+    "NumberLine": "fm_animate_line_chart, or drop the axis entirely and just show the data",
+    "NumberPlane": "fm_animate_line_chart, or drop the axis entirely and just show the data",
+    "MathTex": "fm_formula",
+    "Tex": "fm_formula",
+    "SingleStringMathTex": "fm_formula",
+    "SVGMobject": "fm_icon(name, size, color)",
+    "BarChart": "fm_animate_bar_chart",
+    "DecimalNumber": "always_redraw with a plain Text() that reads tracker.get_value()",
+    "MarkupText": "Text()",
+    "Integer": "Text() built from an f-string",
+    "Variable": "a ValueTracker plus always_redraw with a plain Text()",
+    "BulletedList": "separate Text() lines arranged with .arrange(DOWN)",
+    "Title": "Text()",
+    "Paragraph": "Text()",
+    "ComplexPlane": "fm_animate_line_chart, or drop the axis entirely and just show the data",
+    "PolarPlane": "fm_animate_line_chart, or drop the axis entirely and just show the data",
+}
+
+
+def safety_correction_hint(reason: str) -> str:
+    """Turns a manim_static_safety_check rejection reason into a sharp,
+    specific correction instruction for a single targeted GPT retry,
+    instead of the generic system prompt the chunk already saw once and
+    apparently didn't follow. Naming the exact banned class AND the
+    exact replacement to call, in the same short sentence, is a much
+    stronger signal than the system prompt's general-purpose ban list
+    buried among hundreds of other rules."""
+    for name, replacement in MANIM_FORBIDDEN_REPLACEMENT_HINTS.items():
+        if f"'{name}'" in reason:
+            return (
+                f"CORRECTION REQUIRED: your previous attempt at this exact chunk used "
+                f"'{name}', which is permanently banned in this environment and was "
+                f"automatically rejected before rendering -- it will be rejected again if "
+                f"you use it a second time. Rewrite this chunk's visual using {replacement} "
+                f"instead. Do not use '{name}' anywhere in your replacement code, including "
+                f"inside helper expressions or as part of a workaround."
+            )
+    return (
+        f"CORRECTION REQUIRED: your previous attempt at this exact chunk was rejected "
+        f"for this specific reason: {reason}. Fix exactly that problem and resubmit "
+        f"valid code -- do not change anything else about the visual."
+    )
 
 
 def manim_static_safety_check(code: str) -> tuple[bool, str]:
@@ -3793,7 +3838,7 @@ The pattern: audio names the concept → you animate the physical thing that con
 === THE 3BLUE1BROWN STANDARD — CHARTS, DIAGRAMS, AND REAL MATH ARE THE DEFAULT, NOT ICONS AND NOT SENTENCES ===
 The visual language of this channel is the visual language of 3blue1brown: axes, plotted lines, bars, arcs, donuts, waterfalls, growing numbers, geometric proof-style diagrams, and actual mathematical notation. Almost nothing in a 3blue1brown video is a literal pictogram of an object, and almost nothing is a sentence of prose text either -- it is the STRUCTURE of the idea made visible (a curve bending, a bar growing, a region filling, a value ticking up, an equation transforming). That is the standard here. Default to a chart, graph, gauge, donut, waterfall, bar comparison, counter, or an actual formula for every beat that has a number, a trend, a proportion, a comparison, or a calculation -- which is the vast majority of beats on this channel.
 
-SHOW THE CALCULATION, NOT JUST THE RESULT, WHEN A BEAT IS ABOUT A CALCULATION: MathTex and Tex are BANNED on this channel -- they route through a LaTeX subprocess that crashes constantly on GPT-generated raw-string formulas (double-escaped backslashes, stray literal "$" signs) and every crash silently becomes a blank filler clip. When narration describes how a number is calculated (compound interest, a percentage of a percentage, tax taken off a total, an hourly rate times hours), do not just show the final number -- show the FORMULA, the same way 3blue1brown shows the equation before showing what it evaluates to, but build it from plain `Text()` only. The simplest reliable pattern is ONE Text() string using ordinary keyboard characters for the whole formula: `Text("A = P x (1 + r)^n", font_size=64, color=BRAND_WHITE)` -- use "x" for multiplication and write exponents inline as "^n" rather than true superscripts, since that is zero-risk and still reads clearly as a formula. A formula can also animate piece by piece: build each term as its OWN separate `Text()` object (the amount, an "x", the rate, an "=", the result), `.arrange(RIGHT, buff=0.18)` them into one VGroup, and reveal them in sequence with a LaggedStart of FadeIn calls, the same way 3blue1brown reveals an equation term by term -- this gets the same piece-by-piece reveal effect with zero LaTeX dependency. Reach for this whenever a beat's content is fundamentally "X calculated from Y" rather than just "here is X."
+SHOW THE CALCULATION, NOT JUST THE RESULT, WHEN A BEAT IS ABOUT A CALCULATION: MathTex and Tex are BANNED on this channel -- they route through a LaTeX subprocess that crashes constantly on GPT-generated raw-string formulas (double-escaped backslashes, stray literal "$" signs) and every crash silently becomes a blank filler clip. When narration describes how a number is calculated (compound interest, a percentage of a percentage, tax taken off a total, an hourly rate times hours), do not just show the final number -- show the FORMULA, the same way 3blue1brown shows the equation before showing what it evaluates to, but build it with fm_formula(scene, "A = P x (1 + r)^n", duration=D) -- use "x" for multiplication and write exponents inline as "^n" rather than true superscripts. ALWAYS call fm_formula for this, NEVER type a raw `Text("...")` formula yourself: a hand-picked font_size on a formula string of unknown final length is exactly how text runs off the edges of the 16:9 frame (this has happened -- a two-line calculation overflowed past the right edge because nothing was scaling it to fit). fm_formula auto-shrinks to always fit inside the frame regardless of string length, so you never have to estimate whether your formula is "too long" -- it cannot overflow. For a calculation that simplifies to a result (e.g. "$250 x 12 x 5 = $15,000" then "-$5,000 = $10,000"), pass a LIST of strings -- `fm_formula(scene, ["$250 x 12 x 5 = $15,000", "-$5,000 = $10,000"], duration=D)` -- each becomes its own row, auto-scaled together as one group. Reach for this whenever a beat's content is fundamentally "X calculated from Y" rather than just "here is X."
 
 fm_icon (a literal pictogram: a house, a coin, a clock, a person) is a SMALL ACCENT, not a primary visual. Reach for it only to label or anchor a chart that's already doing the real work (a tiny house icon next to a "Rent" axis label), or for the rare beat that is genuinely about a single concrete object with no number or trend attached at all. If you notice you are about to make an icon the LARGEST or ONLY element in a chunk, stop -- ask whether this beat actually has a number, a comparison, a trend, a proportion, or a calculation hiding in it that a chart or formula would show instead. Nearly every finance beat does.
 When in doubt between an icon-based visual and a chart/formula-based visual for the same beat, choose the chart or formula.
@@ -3813,7 +3858,7 @@ Before picking a primitive, identify what kind of value this beat is about, then
 - A DOLLAR AMOUNT on its own -> fm_animate_single_value or fm_animate_counter, huge font_size (130+).
 - TWO OR MORE COMPARABLE AMOUNTS (income vs rent, side hustle vs job) -> fm_animate_comparison_bars or fm_animate_bullet_chart, never two separate disconnected visuals -- they must share one baseline so the eye can compare heights directly.
 - A SEQUENCE OF DEDUCTIONS from a starting amount down to a net (gross pay minus rent minus bills equals net) -> fm_animate_waterfall, one continuous chart, never separate unconnected bars for each line item.
-- A VALUE CHANGING OVER TIME (growth, decline, trend) -> fm_animate_line_chart.
+- A VALUE CHANGING OVER TIME (growth, decline, trend) -> fm_animate_line_chart for one series, fm_animate_line_chart_multi for two or more series being compared on the same chart.
 - A CONCEPT NAMED BEFORE ANY NUMBER EXISTS YET ("side hustle," "emergency fund" as an idea, not yet a value) -> fm_animate_glow_reveal or fm_animate_single_value with "?" -- see CONCEPT BEAT RULE below.
 
 === COLOR IS NOT OPTIONAL — HARD RULE ===
@@ -3868,11 +3913,25 @@ NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called
   - `BRAND_BLUE` crashed with "name \'BRAND_BLUE\' is not defined" -- this color constant was never defined and does not exist. The COMPLETE list of brand color constants in scope is exactly six: BRAND_WHITE, BRAND_GREEN, BRAND_RED, BRAND_GOLD, BRAND_GRAY, BRAND_PANEL. There is no BRAND_BLUE, BRAND_ORANGE, BRAND_PURPLE, or any other brand color -- if a beat seems to call for a color outside this set, pick the closest match from the six that actually exist (BRAND_GOLD for a neutral/highlight color, BRAND_GRAY for a muted/secondary color) rather than inventing a new constant name.
   The general rule: if you are not certain a kwarg, function name, or constant is real (not just "sounds like it should be"), prefer the simplest, most basic version of the call (fewer kwargs, plain Text instead of a fancy config option, one of the six confirmed brand colors instead of a guessed one) over guessing a more specific-sounding name that might not exist. A simpler call that works beats a fancier call that crashes the whole chunk.
 - AVOID CubicBezier FOR SIMPLE JUMP/ARC MOTION -- a real failure: `CubicBezier(*curve_jump)` crashed with "missing 1 required positional argument: \'end_anchor\'" because the unpacked list only had 3 points instead of the 4 CubicBezier always requires (start_anchor, start_handle, end_handle, end_anchor -- exactly four, never fewer). CubicBezier is easy to get wrong under time pressure. For a simple "object hops/arcs from point A to point B" motion, use `MoveAlongPath(obj, ArcBetweenPoints(point_a, point_b, angle=PI/3))` instead -- ArcBetweenPoints only needs the two endpoints and an angle, it is far less error-prone, and it produces the same kind of arcing jump motion. Reach for raw CubicBezier only if you are constructing all 4 points explicitly and have visually verified the count yourself.
+- NEVER PATCH AN ARGUMENT-COUNT OR ARGUMENT-MISMATCH ERROR WITH AN UNPACKING TRICK -- a real failure: `Arc(start_angle=PI, angle=PI, radius=0.58, stroke_width=8, *[[] for _ in range(1)])` crashed with "Arc.__init__() got multiple values for argument 'radius'" because the trailing `*[[] for _ in range(1)]` unpacks an extra empty positional argument that collides with `radius` (Arc's first positional parameter), passing it twice. This pattern -- adding a throwaway `*[...]` unpack as a "fix" for a call that seems to want more or fewer arguments -- never actually fixes anything and always crashes the chunk. If a call signature seems wrong, simplify it instead: pass every argument as an explicit keyword (`Arc(radius=0.58, start_angle=PI, angle=PI, stroke_width=8)`) and drop any unpacking entirely. Never pass the same parameter both positionally and by keyword.
+- Star's FIRST positional argument is `n` (the number of points), NOT a center point -- a real failure: `Star(ORIGIN + UR * 1, n=5, color=BRAND_GOLD, ...)` crashed with "Star.__init__() got multiple values for argument 'n'" because the coordinate was passed positionally into the `n` slot while `n=5` was ALSO passed as a keyword, the same positional/keyword collision as the Arc case above. Star's real signature is `Star(n=5, *, outer_radius=1, inner_radius=None, start_angle=..., **kwargs)` -- every parameter after `n` is keyword-only. NEVER pass a coordinate as Star's first positional argument. Build it with keywords only -- `star = Star(n=5, outer_radius=0.5, color=BRAND_GOLD, fill_color=BRAND_GOLD, fill_opacity=1.0)` -- then position it afterward with `.move_to(point)`, the same pattern used for every other shape in this codebase.
+- NEVER WRITE A BARE `_` EXPECTING IT TO MEAN "THE PREVIOUS LINE'S RESULT" -- a real failure: a multi-line `fm_card(...)` call's result was never assigned to a variable, then the very next line wrote `self.play(FadeIn(_), run_time=0.8)` and crashed with "NameError: name '_' is not defined". This is Python interactive-shell behavior (`_` holds the last evaluated expression at a REPL prompt) and does NOT apply inside a script or a method body -- `_` is just an undefined name here unless you explicitly write `_ = something`. EVERY mobject you build and intend to animate must be assigned to an explicitly named variable on the same statement that creates it (e.g. `card = fm_card(...)`), never left as a bare unassigned expression you then reference by `_` on a later line.
+- TO MAKE ANYTHING DASHED, WRAP IT IN DashedVMobject -- NEVER INVENT KWARGS ON .set_style() -- a real failure: `dashed_rect.set_style(dash_length=0.30, dash_offset=0.18, draw_border_dash_array=...)` crashed with "VMobject.set_style() got an unexpected keyword argument 'dash_length'" -- `set_style()` has no dash-related parameters at all; dashing is not a style you set on an existing mobject, it is a SEPARATE wrapper mobject. The correct pattern: build the solid shape first (`rect = Rectangle(width=2, height=1)`), then wrap it -- `dashed_rect = DashedVMobject(rect, num_dashes=20, dashed_ratio=0.5)` -- and add/animate `dashed_rect`, not the original `rect`. `DashedVMobject`'s real keyword arguments are `num_dashes`, `dashed_ratio`, `dash_offset`, and `color` -- never `dash_length` on a generic VMobject.
+- Polygon TAKES EACH VERTEX AS ITS OWN SEPARATE POSITIONAL ARGUMENT, NEVER ONE LIST -- a real failure: `Polygon([[0,1.2,0], [1,0.2,0], [0.6,-1.1,0], ...], color=BRAND_GOLD, ...)` crashed with "ValueError: setting an array element with a sequence... exceed the maximum number of dimension of 2" because passing a single list containing all the points makes Polygon treat that ENTIRE list as if it were one vertex, not six. Polygon's real signature is `Polygon(*vertices, **kwargs)` -- it needs the points unpacked. Either star-unpack a list you already built -- `Polygon(*[[0,1.2,0], [1,0.2,0], [0.6,-1.1,0]], color=BRAND_GOLD)` -- or pass each point as its own argument -- `Polygon([0,1.2,0], [1,0.2,0], [0.6,-1.1,0], color=BRAND_GOLD)`. Never pass a bare list of points as Polygon's only positional argument.
+- BRAND_* CONSTANTS ARE PLAIN HEX STRINGS, NOT ManimColor OBJECTS -- THIS IS FINE FOR color=/fill_color= KWARGS BUT NOT FOR interpolate_color() -- a real failure: `interpolate_color(BRAND_GREEN, BRAND_RED, alpha)` crashed with "AttributeError: 'str' object has no attribute 'interpolate'". Almost every Mobject color parameter (color=, fill_color=, stroke_color=) auto-converts a hex string for you, which is why BRAND_GREEN works everywhere else without issue -- but the standalone `interpolate_color()` function does NOT do that conversion, it calls `.interpolate()` directly on whatever you pass it, so a raw string crashes immediately. If a beat needs a color that shifts between two brand colors as a value changes (a progress bar shifting from green to red, a gauge fill that warns as it fills), wrap both colors first: `interpolate_color(ManimColor(BRAND_GREEN), ManimColor(BRAND_RED), alpha)`. `ManimColor` is already in scope from `from manim import *` -- no extra import needed.
 - always_redraw LAMBDAS REFERENCING A TRACKER DEFINED LATER OR IN A LOOP CRASH WITH A SCOPE ERROR: a real failure used `always_redraw(lambda: Dot(axes.c2p(t_tracker.get_value(), ...)))` and crashed with a "cannot access free variable" scope error on the tracker name. This happens when the ValueTracker the lambda refers to is created inside a loop, inside a conditional branch, or anywhere Python cannot guarantee it already has a value by the time the lambda is defined and called. The reliable pattern: create EVERY ValueTracker as a plain top-level statement directly in construct(), by itself, before any always_redraw or lambda that references it -- e.g. `t_tracker = ValueTracker(0)` on its own line, immediately followed by the always_redraw call that uses it. Never define a tracker inside a for-loop body, an if-branch, or any nested function if an always_redraw elsewhere needs to see it.
 - Line, Arc, and other VMobject-family shapes do NOT accept a generic `opacity=` kwarg in their constructor -- a real failure: `Line(p1, p2, color=BRAND_GRAY, stroke_width=2, opacity=0.35)` crashed with "Mobject.__init__() got an unexpected keyword argument 'opacity'". Set opacity via `.set_stroke(color=..., width=..., opacity=...)` or `.set_fill(color=..., opacity=...)` AFTER construction, never as a constructor kwarg: `ln = Line(p1, p2); ln.set_stroke(color=BRAND_GRAY, width=2, opacity=0.35)`.
-- MathTex, Tex, AND SingleStringMathTex ARE BANNED. Texlive itself compiles fine, but GPT-generated raw-string LaTeX reliably contains escaping bugs (writing r"\\text{...}" with a doubled backslash instead of the correct r"\text{...}", or dropping a literal "$" inside the tex string) that crash the manim subprocess outright -- a crashed chunk silently becomes a blank filler clip, which is why entire stretches of finished video have gone blank. For any formula or equation, build it from plain `Text()` only -- see the "SHOW THE CALCULATION" rule above for the exact pattern. There is no safe way to use MathTex/Tex from generated code in this pipeline; do not reach for them under any circumstance.
+- MathTex, Tex, AND SingleStringMathTex ARE BANNED. Texlive itself compiles fine, but GPT-generated raw-string LaTeX reliably contains escaping bugs (writing r"\\text{...}" with a doubled backslash instead of the correct r"\text{...}", or dropping a literal "$" inside the tex string) that crash the manim subprocess outright -- a crashed chunk silently becomes a blank filler clip, which is why entire stretches of finished video have gone blank. For any formula or equation, call fm_formula -- see the "SHOW THE CALCULATION" rule above for the exact pattern. There is no safe way to use MathTex/Tex from generated code in this pipeline; do not reach for them under any circumstance.
 - Still avoid DecimalNumber specifically (it has its own unrelated update-cycle quirks in this codebase) -- for a number that needs to animate (counting up/down, or tracking a ValueTracker), use `always_redraw` with plain `Text()` instead: `counter = always_redraw(lambda: Text(f"${tracker.get_value():,.0f}", font_size=120, color="#F5F7FA"))`, `self.add(counter)`, then `self.play(tracker.animate.set_value(34000), run_time=2)`. This gives the same live-updating effect with zero DecimalNumber dependency. If you need a live-updating value INSIDE a formula, rebuild the whole Text() string each frame via the same always_redraw pattern -- never MathTex.
-- Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, Axes, NumberLine, NumberPlane, SVGMobject, ComplexPlane, PolarPlane. Use Text() and the fm_* library instead. For line charts prefer fm_animate_line_chart (consistent styling), for bar charts use fm_animate_bar_chart. Axes, NumberLine, and NumberPlane stay banned -- do not use them even though the toolchain technically supports them, for the same GPT-reliability reasons as MathTex above. For ANY icon or symbol (house, person, clock, dollar sign, warning triangle, checkmark) use fm_icon(name, size, color) — never SVGMobject, never ImageMobject, never any class that loads external files.
+- Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, Axes, NumberLine, NumberPlane, SVGMobject, ComplexPlane, PolarPlane, Rectangle. Use Text() and the fm_* library instead. For line charts prefer fm_animate_line_chart (consistent styling), for bar charts use fm_animate_bar_chart. Axes, NumberLine, and NumberPlane stay banned -- do not use them even though the toolchain technically supports them, for the same GPT-reliability reasons as MathTex above. For ANY icon or symbol (house, person, clock, dollar sign, warning triangle, checkmark) use fm_icon(name, size, color) — never SVGMobject, never ImageMobject, never any class that loads external files.
+  QUICK SUBSTITUTION TABLE -- every one of these banned names is REJECTED by an automated safety check before rendering even starts (the chunk becomes a blank filler clip, not a crash, but still blank), so if you catch yourself about to type any of these, stop and use the replacement instead. There is no case where the banned name is the only option:
+    Rectangle(...)        -> fm_card / fm_two_cards / fm_stacked_cards (a labeled box) or fm_animate_bar_chart / fm_animate_comparison_bars / fm_animate_waterfall (a bar)
+    Axes(...)              -> fm_animate_line_chart (trend/growth curve)
+    MathTex(...) / Tex(...) -> fm_formula (any formula or calculation)
+    NumberLine(...) / NumberPlane(...) -> fm_animate_line_chart, or drop the axis and just show the data
+    SVGMobject(...)        -> fm_icon(name, size, color)
+    BarChart(...)          -> fm_animate_bar_chart
+  RoundedRectangle and SurroundingRectangle are NOT banned and are the correct choice for cards/pills/meters -- only the bare Rectangle() class is forbidden.
 - RESTRUCTURE_MOBJECTS WARNING: never call self.add() on a fm_* result AND ALSO animate its submobjects separately. The returned VGroup must be treated as an atomic unit. Wrong: `card = fm_card(...); self.add(card); self.play(FadeIn(card[0]))`. Correct: `card = fm_card(...); self.play(FadeIn(card))`. Accessing submobjects of fm_* returns (card[0], cards[1], etc.) and adding them separately to the scene causes Manim's restructure_mobjects crash.
 - NO GUESSING SUBMOBJECT INDICES: never index into a VGroup (card[1], card_show[2], etc.) unless you personally built that exact group in this same construct() and know precisely how many Mobjects you added to it, in what order. A real failure: indexing card_show[1] and card_show[2] on a group that only had 1 submobject, which crashes with IndexError: list index out of range. fm_* library functions do not document or guarantee submobject count/order as part of their contract -- never index into an fm_* return value's internals. If you need to reference a specific piece of something later (a label, an icon, a bar), keep it as its own separate named variable when you build it (e.g. `icon = fm_icon(...); label = Text(...); group = VGroup(icon, label)`), then refer to that original variable directly instead of re-deriving it by indexing the group afterward.
 - NO SELF-CONTAINING GROUPS: never add a VGroup (or a card/group built from one) into itself, into a copy of itself, or into another group that already (directly or through a shared variable) contains it. A real failure: building `card_real` and `card_show` from overlapping pieces, then calling FadeOut/animate on one while it still shares submobjects with the other -- when Manim's set_z_index walks the submobject family on a group with a circular reference, it recurses forever and crashes with RecursionError: maximum recursion depth exceeded. If two named groups in your construct() are meant to be visually related (e.g. one fading while the other glows), build each from its OWN independent VGroup() with its OWN Mobjects -- never have one variable's group literally contain the other variable's group, and never call VGroup(*existing_group) to wrap something that is already itself a VGroup.
@@ -3946,6 +4005,12 @@ ANIMATION functions (handle ALL self.play/self.wait for their duration, call onc
   fm_animate_single_value(scene, value_str, label_text, accent_color=BRAND_GOLD, duration=3.0, value_size=140, label_size=38, sublabel=None)
     Single hero number with label — for beats with one key figure and no comparison needed. Returns (value_mob, label_mob).
     Example: fm_animate_single_value(self, "$500/mo", "Monthly Side Income", BRAND_GREEN, duration=3.2)
+  fm_formula(scene, lines, font_size=60, color=BRAND_WHITE, duration=3.0)
+    Plain-Text() formula/calculation display, auto-scaled to ALWAYS fit inside the 16:9 frame regardless of string length — the ONLY way to show a formula, never a raw Text() call. lines is a string or a list of strings (one row each). Returns the formula group.
+    Example: fm_formula(self, ["$250 x 12 x 5 = $15,000", "-$5,000 = $10,000"], duration=3.5)
+  fm_animate_line_chart_multi(scene, series, duration=4.0, title_text="")
+    Two or more trend lines sharing ONE Axes for direct comparison — the ONLY safe way to compare trends, never two separate fm_animate_line_chart calls or a raw Axes. series is a list of {"y_values": [...], "label": str, "color": hex} dicts. Returns (axes, lines).
+    Example: fm_animate_line_chart_multi(self, [{"y_values": [800,820,840,860], "label": "Rent", "color": BRAND_RED}, {"y_values": [3000,3060,3120,3180], "label": "Income", "color": BRAND_GREEN}], duration=4.0)
 
 When a library function exists for what the beat needs, use it -- it is crash-proof and professionally tuned. For beats the library doesn't cover well, use raw Manim primitives as before. The library is a starting point and covers the most common beat types; it is not a cage.
 
@@ -3965,7 +4030,9 @@ Be precise about what "near-zero text" actually means, because getting this wron
 === VISUAL VOCABULARY -- A TOOLKIT TO COMBINE AND INVENT FROM, NOT A CHECKLIST TO MATCH AGAINST ===
 This is a documentary finance dashboard. The items below are examples of the technique level we're working at -- anchor to a baseline, fill instead of outline, attach a real number, track a moving point -- not an exhaustive menu where your job is to find the closest-matching name and copy its construction. Use a named one outright when it's genuinely the best fit. Combine two of them when a beat calls for it (a card that also has a small bullet-style range bar inside it; a waterfall step that fades with a gradient fill). And when a beat doesn't match any of these well, invent a new composition using the same underlying techniques (real axis or baseline, solid fill, attached number, sized-to-content box, one accent color) rather than forcing it into the nearest named shape. The fixed, non-negotiable part is never the specific shape -- it's that whatever you build has a number where a number belongs, fill instead of bare outline, and no floating shape with no axis and no value:
 - Bar comparison, ANY number of categories: ALWAYS call fm_animate_bar_chart(scene, values, names, colors, duration, title_text) -- it has no limit on category count and already handles baseline alignment, bar spacing, and label sizing correctly for 2, 3, 4, or more bars. For an income-vs-expenses-with-a-net-total breakdown specifically, use fm_animate_comparison_bars instead (it supports positive AND negative values and auto-computes the net bar). NEVER hand-build a bar chart with raw Rectangle()/Line() calls -- `Rectangle` is BANNED and will be rejected by the safety check. Hand-built bar charts are exactly what produced floating bars disconnected from the baseline, axis lines towering over the bars, and category labels overlapping value labels in past renders -- the library functions exist specifically because reinventing this by hand, per chunk, with no shared logic, reliably breaks in one of those ways. If a chunk needs short category labels to avoid crowding (4+ bars), pass short names into fm_animate_bar_chart's `names` list (e.g. "$0-250" not "$0-$250 per month") -- the function already sizes and spaces them correctly, you do not need to hand-tune font sizes or spacing yourself.
-- Trend / line chart: ALWAYS call fm_animate_line_chart(scene, y_values, end_value_label, accent_color, duration, title_text) -- it already builds the Axes internally, plots the line, fills the area under it, and places the ending value as a hero label at the line's endpoint. NEVER write `Axes(...)` directly in your own construct() -- `Axes` is BANNED and will be rejected by the safety check; only the pre-built fm_* functions are allowed to use it internally.
+- Trend / line chart, ONE series: ALWAYS call fm_animate_line_chart(scene, y_values, end_value_label, accent_color, duration, title_text) -- it already builds the Axes internally, plots the line, fills the area under it, and places the ending value as a hero label at the line's endpoint.
+- Trend / line chart, TWO OR MORE series being compared on the SAME chart (e.g. rent growth vs income growth, two income paths over time): ALWAYS call fm_animate_line_chart_multi(scene, series, duration, title_text) where series is a list of {"y_values": [...], "label": str, "color": hex} dicts -- it shares one Axes across every line and keeps the endpoint labels from colliding even when the lines end at similar values. Do NOT call fm_animate_line_chart twice and overlay the results yourself -- that builds two separate Axes that won't align.
+NEVER write `Axes(...)` directly in your own construct() for ANY trend/line-chart need, single series or multiple -- `Axes` is BANNED and will be rejected by the safety check; only the pre-built fm_* functions are allowed to use it internally. If neither fm_animate_line_chart nor fm_animate_line_chart_multi covers what the beat needs, pick a different chart type entirely (bar comparison, waterfall) rather than reaching for raw Axes.
 - Compound growth curve: same fm_animate_line_chart call as the trend chart, but compute `y_values` yourself as a Python list with deliberately accelerating values (an exponential-feeling progression, not a straight line) before passing it in -- the curvature comes from the data you hand it, not from special-casing the function call.
 - Progress / runway meter: a RoundedRectangle or Arc filling toward a target with a clearly brighter fill color than its empty track, paired with a ValueTracker-driven Text showing the current value, not just a bar with no number.
 - Gauge / security meter: an Arc track in muted gray (the unfilled dial), a SEPARATE filled Arc or Line needle in a vivid brand color showing the actual value, and the numeric value itself in Text/Text near the needle or below the gauge -- never just a bare gray arc with a colored needle and nothing else.
@@ -4192,6 +4259,47 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
                     _slot_items(recovered, [idx])
                 except Exception as e2:
                     print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
+
+    repair_targets = []
+    for idx in codegen_to_global:
+        item = all_results.get(idx)
+        if not item or not item.get("code"):
+            continue
+        ok, reason = manim_static_safety_check(item["code"])
+        if not ok:
+            repair_targets.append((idx, reason))
+
+    if repair_targets:
+        print(f"  🔧 {len(repair_targets)} chunk(s) failed the safety check, attempting one targeted repair each...")
+        for idx, reason in repair_targets:
+            print(f"    🔧 Chunk{idx} original failure: {reason}")
+            local_i = codegen_to_global.index(idx)
+            chunk = codegen_chunks[local_i]
+            hint = safety_correction_hint(reason)
+            corrected_prompt = _build_user_prompt([(idx, chunk)]) + "\n\n" + hint
+            try:
+                r = _gpt_call_for_prompt(corrected_prompt)
+                recovered = _parse_chunks_from_raw(r.choices[0].message.content)
+                if recovered:
+                    candidate = recovered[0]
+                    candidate_code = candidate.get("code", "") or ""
+                    renamed_code, _ = re.subn(
+                        r'^class\s+\w+\(', f'class Chunk{idx}(',
+                        candidate_code, count=1, flags=re.MULTILINE,
+                    )
+                    ok2, reason2 = manim_static_safety_check(renamed_code)
+                    if ok2:
+                        candidate["code"] = renamed_code
+                        candidate["class_name"] = f"Chunk{idx}"
+                        candidate["chunk_index"] = idx
+                        all_results[idx] = candidate
+                        print(f"    ✅ Chunk{idx} repaired")
+                    else:
+                        print(f"    ⚠ Chunk{idx} repair attempt still failed (original: {reason} -- retry: {reason2}), keeping original code for the renderer to reject the same way")
+                else:
+                    print(f"    ⚠ Chunk{idx} repair attempt returned no parseable code, keeping original")
+            except Exception as e:
+                print(f"    ⚠ Chunk{idx} repair attempt errored: {e}, keeping original")
 
     ordered = [all_results.get(i) for i in range(len(chunks))]
     print(f"  ✅ {sum(1 for r in ordered if r)} / {len(chunks)} total manim chunks generated")
