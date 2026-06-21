@@ -828,11 +828,19 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
     words ("a", "to", "of", "is") -- a loose substring check matches those
     against almost any nearby word, and an unbounded scan will happily grab
     a spurious match hundreds of words away, corrupting that beat's
-    end_time by hundreds of seconds. Two guards against this: word matching
-    requires an exact match unless both words are long enough (4+ chars)
-    that a substring match is actually meaningful, and a matched span is
-    discarded (falling back to sequential estimation instead) if it is
-    wildly larger than the beat's word count could plausibly justify.
+    end_time by hundreds of seconds. Three guards against this: word
+    matching requires an exact match unless both words are long enough
+    (4+ chars) that a substring match is actually meaningful; a matched
+    span is discarded if it is wildly larger than the beat's word count
+    could plausibly justify; and a matched span is discarded if the last
+    matched word lands at an earlier word-list position than the first
+    matched word. That last case happens because the unbounded fallback
+    deliberately restarts its search from the global pointer (not the
+    beat-local pointer) to recover when an earlier word in the SAME beat
+    over-advanced -- which can make a later word in the beat match a word
+    that occurs earlier in the transcript than an already-matched word,
+    producing a negative time span. A magnitude check alone does not catch
+    this, since any negative number trivially satisfies span <= ceiling.
     """
     ptr = 0
     n = len(whisper_word_list)
@@ -878,7 +886,7 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
             local_ptr = found + 1
 
         matched_ok = False
-        if start_idx is not None and end_idx is not None:
+        if start_idx is not None and end_idx is not None and end_idx >= start_idx:
             span = whisper_word_list[end_idx]['end'] - whisper_word_list[start_idx]['start']
             plausible_ceiling = max(8.0, 4.0 * max(0.3, 0.35 * len(words)))
             if span <= plausible_ceiling:
@@ -889,6 +897,9 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
             else:
                 print(f"    ⚠ Discarding implausible match for '{text[:40]}' "
                       f"({span:.1f}s span for {len(words)} words) -- estimating instead")
+        elif start_idx is not None and end_idx is not None:
+            print(f"    ⚠ Discarding non-monotonic match for '{text[:40]}' "
+                  f"(later word matched an earlier position) -- estimating instead")
 
         if not matched_ok:
             if ptr < n:
@@ -4131,6 +4142,7 @@ NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called
     NumberLine(...) / NumberPlane(...) -> fm_animate_line_chart, or drop the axis and just show the data
     SVGMobject(...)        -> fm_icon(name, size, color)
     BarChart(...)          -> fm_animate_bar_chart
+    Title(...)              -> a plain Text(heading_str, font_size=70, weight=BOLD, color=BRAND_GOLD).to_edge(UP). A beat that introduces a section, a list item, or a new named topic is NOT a reason to reach for Manim's Title class -- Title renders an underline bar and auto-positions in a way that frequently collides with content already on screen below it, and it is banned outright regardless of how heading-like the beat feels. Every section/list-item heading in this pipeline is just large bold Text positioned at the top edge, nothing more.
   RoundedRectangle and SurroundingRectangle are NOT banned and are the correct choice for cards/pills/meters -- only the bare Rectangle() class is forbidden.
 - RESTRUCTURE_MOBJECTS WARNING: never call self.add() on a fm_* result AND ALSO animate its submobjects separately. The returned VGroup must be treated as an atomic unit. Wrong: `card = fm_card(...); self.add(card); self.play(FadeIn(card[0]))`. Correct: `card = fm_card(...); self.play(FadeIn(card))`. Accessing submobjects of fm_* returns (card[0], cards[1], etc.) and adding them separately to the scene causes Manim's restructure_mobjects crash.
 - NO GUESSING SUBMOBJECT INDICES: never index into a VGroup (card[1], card_show[2], etc.) unless you personally built that exact group in this same construct() and know precisely how many Mobjects you added to it, in what order. A real failure: indexing card_show[1] and card_show[2] on a group that only had 1 submobject, which crashes with IndexError: list index out of range. fm_* library functions do not document or guarantee submobject count/order as part of their contract -- never index into an fm_* return value's internals. If you need to reference a specific piece of something later (a label, an icon, a bar), keep it as its own separate named variable when you build it (e.g. `icon = fm_icon(...); label = Text(...); group = VGroup(icon, label)`), then refer to that original variable directly instead of re-deriving it by indexing the group afterward.
