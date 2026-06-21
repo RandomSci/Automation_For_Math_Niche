@@ -3413,8 +3413,8 @@ def process_video(niche: str = "finance"):
         success = gen.create_finance_video(bg_volume=0.12, fps=30)
         current_job["progress"] = 95
 
-        final = output_file.replace(".mp4", "_cta.mp4")
-        if success and os.path.exists(final):
+        final = gen.output_path
+        if success and final and os.path.exists(final):
             current_job.update({"status": "completed", "progress": 100, "output": final})
             print(f"\n🎉 DONE: {final}")
         else:
