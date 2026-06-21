@@ -2806,6 +2806,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
 
 
 FINANCE_EXPLAINER_CTA_TEXT = "Subscribe for More"
+FINANCE_EXPLAINER_USE_BACKGROUND_MUSIC = False
 
 
 class FinanceGenerator:
@@ -3113,17 +3114,20 @@ class FinanceGenerator:
             chunk_code_list = [None] * len(chunks)
 
         print(f"\n[STEP 6] Music...")
-        bg_music = MUSIC_MAP.get(beats_result.get("detected_tone", "default"), MUSIC_MAP['default'])
-        if not os.path.exists(bg_music):
-            bg_music = MUSIC_MAP['default']
+        if FINANCE_EXPLAINER_USE_BACKGROUND_MUSIC:
+            bg_music = MUSIC_MAP.get(beats_result.get("detected_tone", "default"), MUSIC_MAP['default'])
             if not os.path.exists(bg_music):
-                for fname in (os.listdir('bg_musics') if os.path.exists('bg_musics') else []):
-                    if fname.endswith('.mp3'):
-                        bg_music = os.path.join('bg_musics', fname)
-                        break
-                else:
-                    bg_music = None
-        print(f"  🎵 {bg_music}")
+                bg_music = MUSIC_MAP['default']
+                if not os.path.exists(bg_music):
+                    for fname in (os.listdir('bg_musics') if os.path.exists('bg_musics') else []):
+                        if fname.endswith('.mp3'):
+                            bg_music = os.path.join('bg_musics', fname)
+                            break
+                    else:
+                        bg_music = None
+        else:
+            bg_music = None
+        print(f"  🎵 {bg_music if bg_music else 'disabled'}")
 
         temp_files    = []
         concat_output = "manim_concatenated.mp4"
