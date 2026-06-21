@@ -127,6 +127,58 @@ def fm_stacked_cards(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
     return cards
 
 
+def fm_clamp_to_frame(*mobjects, margin_x=0.06, margin_y=0.06):
+    """Final on-screen safety net for multi-group layouts. fm_card/fm_two_cards/
+    fm_stacked_cards/fm_concept_pills each only guarantee THEIR OWN width or
+    height fits the frame while THEY are still centered at their own origin --
+    none of them know about sibling groups, and none of them re-check the
+    frame boundary once you reposition them with .next_to(), .to_edge(),
+    .shift(), or .move_to(). A group that is individually safe at 88% of
+    frame width can still clip the camera once it's shifted toward an edge
+    to sit beside or under another group (e.g. a comparison row stacked
+    above a category-pill row, or two groups flanking each other left/right).
+    Call this LAST, after every top-level group for the chunk has been built
+    and positioned relative to each other, right before any self.play(FadeIn...).
+    Pass every top-level mobject that will be on screen together; it measures
+    their COMBINED bounding box against the real frame edges and, if anything
+    overflows, scales the whole set down (and re-centers it if needed) by the
+    minimum amount required to bring every edge back inside the safe area --
+    relative spacing between the groups is preserved, nothing is reflowed.
+    No-op if everything already fits. The passed-in mobjects are transformed
+    in place -- keep using your original variables for FadeIn/animation.
+    Example: cards = fm_two_cards(...); pills = fm_concept_pills(...)
+    pills.next_to(cards, DOWN, buff=0.6)
+    fm_clamp_to_frame(cards, pills)
+    self.play(FadeIn(cards), FadeIn(pills))"""
+    combined = VGroup(*mobjects)
+    safe_w = config.frame_width * (1 - 2 * margin_x)
+    safe_h = config.frame_height * (1 - 2 * margin_y)
+    width_scale = safe_w / combined.width if combined.width > safe_w else 1.0
+    height_scale = safe_h / combined.height if combined.height > safe_h else 1.0
+    scale_factor = min(width_scale, height_scale)
+    if scale_factor < 1.0:
+        combined.scale(scale_factor)
+    max_x = config.frame_width / 2 - margin_x * config.frame_width
+    max_y = config.frame_height / 2 - margin_y * config.frame_height
+    shift_x = 0.0
+    shift_y = 0.0
+    left = combined.get_left()[0]
+    right = combined.get_right()[0]
+    top = combined.get_top()[1]
+    bottom = combined.get_bottom()[1]
+    if left < -max_x:
+        shift_x = -max_x - left
+    elif right > max_x:
+        shift_x = max_x - right
+    if bottom < -max_y:
+        shift_y = -max_y - bottom
+    elif top > max_y:
+        shift_y = max_y - top
+    if shift_x != 0.0 or shift_y != 0.0:
+        combined.shift([shift_x, shift_y, 0])
+    return combined
+
+
 def fm_animate_counter(scene, start_val, end_val, label_text,
                         accent_color=BRAND_GOLD, prefix="$", suffix="",
                         duration=3.0, position=None, value_size=130, label_size=38):
