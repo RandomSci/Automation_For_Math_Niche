@@ -28,6 +28,47 @@ def fm_glow_around(mobject, color=None, n_layers=3):
     return VGroup(layers, mobject)
 
 
+def fm_concept_pills(labels, colors=None, panel_color=BRAND_PANEL, text_color=None,
+                      font_size=44, direction=None, spacing=0.4):
+    """Row or stack of short label-only pills (no values) for a set of related
+    concepts shown together -- e.g. ["Savings", "Investing", "Debt", "Fun"] or
+    sequential steps like ["Track", "Calculate", "Improve"]. Each label gets
+    its own outlined pill auto-sized to its text, then the whole set is
+    arranged with guaranteed non-overlapping spacing and auto-scaled to fit
+    the frame -- never hand-position these with move_to, this is the only
+    safe way to lay out multiple concept-only labels together.
+    direction: RIGHT for a horizontal row (default if <=3 labels),
+    DOWN for a vertical stack (default if >3 labels). Returns a VGroup."""
+    if colors is None:
+        colors = [BRAND_GOLD, BRAND_GREEN, BRAND_RED, BRAND_WHITE]
+    if text_color is None:
+        text_color = BRAND_WHITE
+    if direction is None:
+        direction = RIGHT if len(labels) <= 3 else DOWN
+
+    pills = VGroup()
+    for i, label in enumerate(labels):
+        c = colors[i % len(colors)]
+        txt = Text(label, font_size=font_size, color=text_color, weight=BOLD)
+        pill = SurroundingRectangle(
+            txt, buff=0.32, color=c,
+            fill_color=panel_color, fill_opacity=0.92,
+            corner_radius=0.16,
+        )
+        pills.add(VGroup(pill, txt))
+
+    pills.arrange(direction, buff=spacing)
+
+    safe_w = config.frame_width * 0.88
+    safe_h = config.frame_height * 0.78
+    if pills.width > safe_w:
+        pills.scale(safe_w / pills.width)
+    if pills.height > safe_h:
+        pills.scale(safe_h / pills.height)
+
+    return pills
+
+
 def fm_card(label_text, value_text, accent_color=BRAND_GOLD,
              panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
              label_size=32, value_size=68, buff=0.38):
