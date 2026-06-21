@@ -3956,6 +3956,9 @@ def _save_manim_failure_log(class_name: str, stderr_text: str, stdout_text: str)
     return log_path
 
 
+MANIM_CHUNK_SOURCE_DEBUG_DIR = "/tmp/finance_explainer_manim_sources"
+
+
 def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 1920,
                         h: int = 1080, fps: int = 30) -> tuple:
     """Renders ONE Manim chunk to its own exact-duration MP4 clip via the
@@ -3980,8 +3983,27 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
     config.pixel_height, and config.frame_rate directly at module
     level instead, since that is a stable Manim Community mechanism
     across versions, whereas CLI flag names/spellings can drift and an
-    unrecognized flag would fail every single chunk at once."""
+    unrecognized flag would fail every single chunk at once.
+
+    The chunk's own GPT-generated code (not the boilerplate) is always
+    written to MANIM_CHUNK_SOURCE_DEBUG_DIR/{class_name}.py before
+    rendering, success or failure -- a real failure had a chunk render
+    cleanly (no crash, no safety rejection, no duration drift) but
+    still produce a visually broken result (overlapping title and
+    content), and since work_dir is always deleted in the finally
+    block below, there was no way to ever see what code actually
+    produced it. Crash logs only exist for crashes; this exists for
+    every chunk, so a visually-bad-but-technically-successful render
+    is always diagnosable after the fact, not just a hard failure."""
     ok, reason = manim_static_safety_check(code)
+
+    try:
+        os.makedirs(MANIM_CHUNK_SOURCE_DEBUG_DIR, exist_ok=True)
+        with open(os.path.join(MANIM_CHUNK_SOURCE_DEBUG_DIR, f"{class_name}.py"), "w") as f:
+            f.write(code)
+    except Exception:
+        pass
+
     if not ok:
         return None, f"safety check rejected: {reason}"
 
@@ -4230,7 +4252,7 @@ NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called
     NumberLine(...) / NumberPlane(...) -> fm_animate_line_chart, or drop the axis and just show the data
     SVGMobject(...)        -> fm_icon(name, size, color)
     BarChart(...)          -> fm_animate_bar_chart
-    Title(...)              -> a plain Text(heading_str, font_size=70, weight=BOLD, color=BRAND_GOLD).to_edge(UP). A beat that introduces a section, a list item, or a new named topic is NOT a reason to reach for Manim's Title class -- Title renders an underline bar and auto-positions in a way that frequently collides with content already on screen below it, and it is banned outright regardless of how heading-like the beat feels. Every section/list-item heading in this pipeline is just large bold Text positioned at the top edge, nothing more.
+    Title(...)              -> a plain Text(heading_str, font_size=70, weight=BOLD, color=BRAND_GOLD). A beat that introduces a section, a list item, or a new named topic is NOT a reason to reach for Manim's Title class -- Title renders an underline bar and auto-positions in a way that frequently collides with content already on screen below it, and it is banned outright regardless of how heading-like the beat feels. Every section/list-item heading in this pipeline is just large bold Text, nothing more. CRITICAL: do NOT position this heading with .to_edge(UP) if anything else (a card, a stack, pills, a chart) is also going on screen in the same chunk -- .to_edge(UP) anchors purely to the frame boundary with zero awareness of what else is below it, which is the exact same collision Title itself had, just relocated. A real failure: a "Cash Flow" heading at .to_edge(UP) rendered clipped against the top of the frame and overlapping the income card stacked directly beneath it, because the heading and the stack were each independently positioned with no shared layout. The correct pattern when a heading has sibling content: build the heading as its own ungrouped Text, build the content as its own ungrouped VGroup (fm_stacked_cards, fm_concept_pills, etc., NOT yet faded in), combine them as `composition = VGroup(heading, content).arrange(DOWN, buff=0.5)`, then auto-scale the WHOLE composition if needed (`if composition.height > config.frame_height * 0.85: composition.scale(...)`) before centering and fading in. Only use .to_edge(UP) on a heading that is the ONLY thing in the chunk, with nothing else sharing vertical space.
   RoundedRectangle and SurroundingRectangle are NOT banned and are the correct choice for cards/pills/meters -- only the bare Rectangle() class is forbidden.
 - NO INVENTED ANIMATION CLASS NAMES: Manim's growing-entrance animations are GrowFromCenter(mobj), GrowFromEdge(mobj, edge) (edge is UP/DOWN/LEFT/RIGHT), and GrowFromPoint(mobj, point) -- there is no GrowFromBottom, GrowFromTop, GrowFromLeft, or GrowFromRight, even though those sound like they should exist by analogy. A real failure: GrowFromBottom(b) crashed with NameError because it was never a real class -- the intended effect ("grow upward from the bottom") is GrowFromEdge(b, DOWN). Before using any animation class whose name you are not 100% certain exists, prefer one already used elsewhere in this prompt's examples (FadeIn, FadeOut, GrowFromCenter, GrowFromEdge, LaggedStart, Transform) rather than guessing at a plausible-sounding variant.
 - RESTRUCTURE_MOBJECTS WARNING: never call self.add() on a fm_* result AND ALSO animate its submobjects separately. The returned VGroup must be treated as an atomic unit. Wrong: `card = fm_card(...); self.add(card); self.play(FadeIn(card[0]))`. Correct: `card = fm_card(...); self.play(FadeIn(card))`. Accessing submobjects of fm_* returns (card[0], cards[1], etc.) and adding them separately to the scene causes Manim's restructure_mobjects crash.
