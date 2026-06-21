@@ -2916,11 +2916,18 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     print(f"\n  ✓ Frames done")
 
     result = subprocess.run([
-        'ffmpeg', '-y', '-i', temp_video, '-i', video_path,
-        '-map', '0:v', '-map', '1:a',
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-        '-c:a', 'copy', output_path
-    ], capture_output=True)
+    'ffmpeg', '-y',
+    '-i', temp_video,
+    '-i', video_path,
+    '-map', '0:v',
+    '-map', '1:a',
+    '-c:v', 'copy',
+    '-c:a', 'aac',
+    '-b:a', '192k',
+    '-shortest',
+    '-movflags', '+faststart',
+    output_path
+], capture_output=True)
 
     if os.path.exists(temp_video): os.remove(temp_video)
     if result.returncode != 0:
