@@ -1036,6 +1036,95 @@ Return ONLY valid JSON:
     return final_result
 
 
+def extract_section_outline(transcript_text: str, whisper_segments: list,
+                             total_duration: float) -> list:
+    if not OPENAI_API_KEY:
+        return []
+
+    print(f"  🗂  Section outline scan...")
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    timed_lines = []
+    for seg in whisper_segments:
+        s = float(seg.get('start', 0))
+        e = float(seg.get('end', 0))
+        t = seg.get('text', '').strip()
+        if t:
+            timed_lines.append(f"[{s:.2f}s - {e:.2f}s] {t}")
+    timed_transcript = "\n".join(timed_lines)
+
+    system_prompt = f"""You are analyzing a finance/numbers explainer video's transcript to find its NAVIGATIONAL STRUCTURE, not its content.
+Total audio duration: {total_duration:.1f} seconds.
+
+YOUR JOB: Decide whether this script walks through a clear ENUMERABLE LIST of distinct items -- warning signs, reasons, steps, mistakes, rules, red flags, ways something happens -- where a viewer would benefit from an on-screen "item 3 of 9" indicator because the list is long enough to lose track of.
+
+Only identify a list if there are genuinely 3 or more distinct enumerable items with clear boundaries in the transcript. A script that is one continuous explanation, a single concept walkthrough, a story, or a before/after comparison with no list does NOT qualify -- return an empty sections array for those. That is the common case, not a rare one.
+
+If a list DOES exist, for each item give:
+- "number": 1-indexed position in the list
+- "title": a SHORT (2-5 word) label naming that specific item, written for an on-screen tag, not a sentence (e.g. "Income Under $200/mo", "18-Month Lifespan", "Taxes Eat the Income")
+- "start_time": the timestamp (from the bracketed transcript) where THIS item's discussion begins
+- "end_time": the timestamp where THIS item's discussion ends (the next item's start_time, or the total duration for the last item)
+
+Use the exact timestamps shown in the transcript brackets, do not estimate. Cover the list items in order, do not skip numbers, do not invent items that are not actually distinct beats in the transcript.
+
+Return ONLY valid JSON:
+{{
+  "has_list_structure": true,
+  "sections": [
+    {{"number": 1, "title": "Income Under $200/mo", "start_time": 12.40, "end_time": 38.10}}
+  ]
+}}
+If there is no list structure, return {{"has_list_structure": false, "sections": []}}."""
+
+    try:
+        response = _call_with_retry(lambda: gpt4o_call(client,
+            model="gpt-4.1",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Timed transcript:\n{timed_transcript}"}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=2000,
+            timeout=60,
+        ), label="Section outline")
+        result = json.loads(response.choices[0].message.content)
+        sections = result.get("sections", []) if result.get("has_list_structure") else []
+    except Exception as e:
+        print(f"  ⚠ Section outline scan failed, skipping navigation overlay: {e}")
+        return []
+
+    cleaned = []
+    for sec in sections:
+        try:
+            num   = int(sec["number"])
+            title = str(sec["title"]).strip()
+            start = max(float(sec["start_time"]), 0.0)
+            end   = min(float(sec["end_time"]), total_duration)
+            if title and end > start:
+                cleaned.append({"number": num, "title": title, "start_time": start, "end_time": end})
+        except (KeyError, ValueError, TypeError):
+            continue
+    cleaned.sort(key=lambda s: s["start_time"])
+
+    if len(cleaned) < 2:
+        print(f"  🗂  No list structure detected, skipping navigation overlay")
+        return []
+
+    print(f"  ✅ {len(cleaned)}-item list structure detected")
+    return cleaned
+
+
+def _ffmpeg_escape_text(text: str) -> str:
+    text = text.replace("\\", "\\\\")
+    text = text.replace("'", "'\\''")
+    text = text.replace(":", "\\:")
+    text = text.replace("%", "\\%")
+    text = text.replace(",", "")
+    return text
+
+
 def _build_batch_prompt(topic: str, batch: list) -> str:
     """Build the GPT Call 2 user prompt, annotating each beat with its real duration
     so GPT can set start_offset values that actually fit within the beat window."""
@@ -2806,6 +2895,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
 
 
 FINANCE_EXPLAINER_CTA_TEXT = "Subscribe for More"
+FINANCE_EXPLAINER_USE_BACKGROUND_MUSIC = False
 
 
 class FinanceGenerator:
@@ -3047,6 +3137,59 @@ class FinanceGenerator:
 
         return output_file
 
+    def _add_section_navigation_overlay(self, video_input: str, output_path: str,
+                                          sections: list, duration: float) -> str:
+        if not sections or len(sections) < 2:
+            print(f"  ⏭  No list structure detected, skipping navigation overlay")
+            shutil.copy(video_input, output_path)
+            return output_path
+
+        print(f"  🗂  Burning in {len(sections)}-item navigation overlay...")
+        total = len(sections)
+        filters = []
+
+        for i, sec in enumerate(sections):
+            num   = sec["number"]
+            title = _ffmpeg_escape_text(sec["title"])
+            start = max(min(sec["start_time"], duration - 0.1), 0.0)
+            end   = max(min(sec["end_time"], duration), start + 0.1)
+            card_end = min(start + 1.8, end)
+            label = f"{num}/{total}\\: {title}"
+
+            filters.append(
+                f"drawtext=text='{label}'"
+                f":fontcolor=white:fontsize=50:font=Arial"
+                f":box=1:boxcolor=black@0.6:boxborderw=18"
+                f":x=(w-text_w)/2:y=h*0.10"
+                f":enable='between(t\\,{start:.3f}\\,{card_end:.3f})'"
+            )
+            filters.append(
+                f"drawtext=text='{label}'"
+                f":fontcolor=white:fontsize=24:font=Arial"
+                f":box=1:boxcolor=black@0.45:boxborderw=10"
+                f":x=36:y=36"
+                f":enable='between(t\\,{start:.3f}\\,{end:.3f})'"
+            )
+            dots = ''.join('\u25CF' if j == i else '\u25CB' for j in range(total))
+            filters.append(
+                f"drawtext=text='{dots}'"
+                f":fontcolor=#FFD166:fontsize=30:font=Arial"
+                f":x=(w-text_w)/2:y=h*0.93"
+                f":enable='between(t\\,{start:.3f}\\,{end:.3f})'"
+            )
+
+        vf = ','.join(filters)
+        result = subprocess.run(
+            ['ffmpeg', '-y', '-i', video_input, '-vf', vf, '-c:a', 'copy', output_path],
+            capture_output=True
+        )
+        if result.returncode != 0:
+            print(f"  ⚠ Section nav overlay failed, shipping without it: {result.stderr.decode(errors='replace')[-200:]}")
+            subprocess.run(['ffmpeg', '-y', '-i', video_input, '-c', 'copy', output_path], capture_output=True)
+        else:
+            print(f"  ✅ Navigation overlay added")
+        return output_path
+
     def _add_cta_overlay(self, video_input: str, output_path: str, duration: float):
         end_time = round(max(duration - 4, 1), 3)
         vf = (
@@ -3090,10 +3233,18 @@ class FinanceGenerator:
 
         print(f"\n[STEP 3] GPT Call 1: Story Beats...")
         try:
-            topic_hint   = list(self.broll_dirs.keys())[0] if self.broll_dirs else "finance"
-            beats_result = analyze_story_beats(full_text, whisper_segments, topic_hint, duration)
-            topic        = beats_result.get('topic', 'finance')
-            beats        = beats_result.get('beats', [])
+            topic_hint = list(self.broll_dirs.keys())[0] if self.broll_dirs else "finance"
+            with ThreadPoolExecutor(max_workers=2) as _outer_pool:
+                _beats_future    = _outer_pool.submit(analyze_story_beats, full_text, whisper_segments, topic_hint, duration)
+                _sections_future = _outer_pool.submit(extract_section_outline, full_text, whisper_segments, duration)
+                beats_result = _beats_future.result()
+                try:
+                    sections = _sections_future.result()
+                except Exception as e:
+                    print(f"  ⚠ Section outline failed, skipping navigation overlay: {e}")
+                    sections = []
+            topic = beats_result.get('topic', 'finance')
+            beats = beats_result.get('beats', [])
 
             _whisper_words = build_whisper_word_list(whisper_segments)
             beats = realign_beat_times(beats, _whisper_words)
@@ -3113,17 +3264,20 @@ class FinanceGenerator:
             chunk_code_list = [None] * len(chunks)
 
         print(f"\n[STEP 6] Music...")
-        bg_music = MUSIC_MAP.get(beats_result.get("detected_tone", "default"), MUSIC_MAP['default'])
-        if not os.path.exists(bg_music):
-            bg_music = MUSIC_MAP['default']
+        if FINANCE_EXPLAINER_USE_BACKGROUND_MUSIC:
+            bg_music = MUSIC_MAP.get(beats_result.get("detected_tone", "default"), MUSIC_MAP['default'])
             if not os.path.exists(bg_music):
-                for fname in (os.listdir('bg_musics') if os.path.exists('bg_musics') else []):
-                    if fname.endswith('.mp3'):
-                        bg_music = os.path.join('bg_musics', fname)
-                        break
-                else:
-                    bg_music = None
-        print(f"  🎵 {bg_music}")
+                bg_music = MUSIC_MAP['default']
+                if not os.path.exists(bg_music):
+                    for fname in (os.listdir('bg_musics') if os.path.exists('bg_musics') else []):
+                        if fname.endswith('.mp3'):
+                            bg_music = os.path.join('bg_musics', fname)
+                            break
+                    else:
+                        bg_music = None
+        else:
+            bg_music = None
+        print(f"  🎵 {bg_music if bg_music else 'disabled'}")
 
         temp_files    = []
         concat_output = "manim_concatenated.mp4"
@@ -3157,6 +3311,11 @@ class FinanceGenerator:
             print(f"  ✅ Mixed")
 
             shutil.move(audio_output, self.output_path)
+
+            print(f"\n[STEP 8.5] Section navigation overlay...")
+            nav_output = self.output_path.replace(".mp4", "_nav.mp4")
+            self._add_section_navigation_overlay(self.output_path, nav_output, sections, duration)
+            self.output_path = nav_output
 
             print(f"\n[STEP 9] CTA...")
             cta_output = self.output_path.replace(".mp4", "_cta.mp4")
@@ -3254,8 +3413,8 @@ def process_video(niche: str = "finance"):
         success = gen.create_finance_video(bg_volume=0.12, fps=30)
         current_job["progress"] = 95
 
-        final = output_file.replace(".mp4", "_cta.mp4")
-        if success and os.path.exists(final):
+        final = gen.output_path
+        if success and final and os.path.exists(final):
             current_job.update({"status": "completed", "progress": 100, "output": final})
             print(f"\n🎉 DONE: {final}")
         else:
@@ -3430,7 +3589,7 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
     return True, ""
 
 
-MANIM_CHUNK_TIMEOUT_SECONDS = 45
+MANIM_CHUNK_TIMEOUT_SECONDS = 75
 MANIM_CHUNK_CACHE_DIR = "/tmp/finance_explainer_manim_cache"
 MANIM_CHUNK_MAX_DRIFT_RATIO = 0.45
 
@@ -3863,6 +4022,7 @@ Before picking a primitive, identify what kind of value this beat is about, then
 - A SEQUENCE OF DEDUCTIONS from a starting amount down to a net (gross pay minus rent minus bills equals net) -> fm_animate_waterfall, one continuous chart, never separate unconnected bars for each line item.
 - A VALUE CHANGING OVER TIME (growth, decline, trend) -> fm_animate_line_chart for one series, fm_animate_line_chart_multi for two or more series being compared on the same chart.
 - A CONCEPT NAMED BEFORE ANY NUMBER EXISTS YET ("side hustle," "emergency fund" as an idea, not yet a value) -> fm_animate_glow_reveal or fm_animate_single_value with "?" -- see CONCEPT BEAT RULE below.
+- THREE OR MORE RELATED CONCEPT NAMES shown together as a set or sequence, no values attached (e.g. "Savings, Investing, Debt, Fun" as four categories, or "Track, Calculate, Improve" as steps) -> fm_concept_pills ONLY. NEVER hand-build a row or stack of labels with individual RoundedRectangle/Text mobjects positioned via move_to or manual coordinates -- that is exactly how labels end up drawn on top of each other. fm_concept_pills is the only primitive that guarantees non-overlapping spacing for this pattern.
 
 === COLOR IS NOT OPTIONAL — HARD RULE ===
 NEVER use BRAND_GRAY (#8A94A6) as the fill color for bars, gauges, or any hero visual element. Gray communicates nothing emotionally and is invisible against the dark background.
@@ -3873,6 +4033,9 @@ EVERY bar, gauge fill, donut arc, and counter MUST use one of:
 - BRAND_GOLD (#FFD166): neutral highlight, key numbers, caution
 
 If bars are gray in your output, you have failed the emotional impact requirement. Recolor them.
+
+=== FULL OPACITY FOR CORE CONTENT — HARD RULE ===
+The actual readable content of a beat -- its main text, its card's fill, its box's stroke -- must ALWAYS render at full or near-full opacity (fill_opacity 1.0, stroke_opacity 1.0, panel fill_opacity 0.85-1.0) in its settled hold state. A real, observed failure: beats came out as a hollow, washed-out haze instead of crisp readable content -- this happens when low-opacity values meant for a glow/depth ACCENT get applied to the core content itself instead of to separate extra copies layered behind it. Glow rings (fm_animate_glow_reveal), depth layers (fm_glow_around), and any "duplicate the shape at decreasing alpha" technique are ADDITIONAL elements that sit behind or around an already fully-opaque core -- never a substitute for one, never applied to the core's own fill/stroke. If you are tempted to lower a Text() or card's own opacity for a "softer" look, do not -- add a separate glow/ring layer behind it instead and leave the primary content itself at full opacity.
 
 === NEAR-ZERO TEXT RULE — THE MOST IMPORTANT INSTRUCTION ===
 The audio narration speaks ALL the words. Your visual's ONLY job is to show what those words MEAN — never to repeat them.
@@ -3940,7 +4103,7 @@ NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called
 - NO SELF-CONTAINING GROUPS: never add a VGroup (or a card/group built from one) into itself, into a copy of itself, or into another group that already (directly or through a shared variable) contains it. A real failure: building `card_real` and `card_show` from overlapping pieces, then calling FadeOut/animate on one while it still shares submobjects with the other -- when Manim's set_z_index walks the submobject family on a group with a circular reference, it recurses forever and crashes with RecursionError: maximum recursion depth exceeded. If two named groups in your construct() are meant to be visually related (e.g. one fading while the other glows), build each from its OWN independent VGroup() with its OWN Mobjects -- never have one variable's group literally contain the other variable's group, and never call VGroup(*existing_group) to wrap something that is already itself a VGroup.
 - NEVER BUILD A CUSTOM always_redraw GAUGE: a real failure built its own live-updating gauge with `gauge = always_redraw(lambda: make_gauge()[0])` then crashed trying to VGroup() a ValueTracker that got mixed in -- this happened because fm_animate_gauge already handles its OWN internal ValueTracker, its OWN animation, and already calls scene.add() on everything itself before it returns. It does not return a drawable visual to wrap in your own always_redraw -- it returns (tracker, val_lbl, cat_lbl) for reference only, after the gauge is already on screen and already animated. If a beat needs a gauge, call fm_animate_gauge once with the final target value and let it run -- never build your own ValueTracker/always_redraw scaffolding around it or any other fm_animate_* function, they are not building blocks to wrap, they are the complete animation.
 - GAUGE RULE: gauges are for PROPORTIONS only (a value that is meaningfully full/empty against a max, e.g. "half your emergency fund," "67% of capacity"). A small raw count like "1 month of runway" is NOT a proportion and must NOT become a gauge -- see the primitive-selection table above, use fm_animate_single_value instead. Once you have genuinely decided a beat is a proportion-of-a-whole and a gauge is the right call, you MUST use fm_animate_gauge to build it rather than a custom Line needle or Arrow pointer that rotates from center — these always overlap the value text and look broken. fm_animate_gauge handles the arc fill, the value text position, and the label correctly.
-- CONCEPT BEAT RULE: when a beat names a concept but has no data yet (e.g. "Passive Income", "Side Hustle", "Emergency Fund"), use fm_animate_glow_reveal or fm_animate_single_value with a "?" as the value string. Never draw arbitrary decorative shapes (waves, spirals, random arcs) — they communicate nothing.
+- CONCEPT BEAT RULE: when a beat names a concept but has no data yet (e.g. "Passive Income", "Side Hustle", "Emergency Fund"), use fm_animate_glow_reveal or fm_animate_single_value with a "?" as the value string. Never draw arbitrary decorative shapes (waves, spirals, random arcs) — they communicate nothing. If a genuinely matching icon exists in fm_icon's fixed set (dollar, coin, house, person, clock, arrow_up, arrow_down, warning, checkmark, fire), add it as a small accent positioned OUTSIDE the text/card's own bounding box (e.g. .next_to(text, UP, buff=0.3)) so a bare concept phrase is not the only thing on screen -- this still follows the icon-misuse rules above (no icon when nothing in the fixed set genuinely fits, never overlapping the text it sits next to). When TWO concepts are introduced side by side (e.g. "Side Hustle" vs "Passive Income"), build them as two solid fm_card-style boxes (full opacity fill per the FULL OPACITY rule above, never a hollow/glow-only treatment), each optionally paired with its own outside-the-box icon accent, never as low-opacity hazy text floating with no solid container. When THREE OR MORE concept names are introduced together as a set (e.g. "Savings", "Investing", "Debt", "Fun" as four sibling categories, or "Track", "Calculate", "Improve", "Foundation" as a sequence) -- this is ALWAYS fm_concept_pills(labels), never hand-built. Do not write your own RoundedRectangle + Text loop with manually chosen positions for this pattern; fm_concept_pills already handles spacing, scaling, and color cycling safely.
 - HARD TIMING RULE: the sum of ALL self.play(run_time=X) + self.wait(X) values in your construct() must equal the chunk's given duration. Chunks that render more than 45% longer than target are rejected and replaced with a blank filler. The most common cause of rejection is calling an fm_animate_* function (which already consumes the full duration internally) AND THEN also adding self.wait() or another self.play() on top -- this doubles the length and guarantees rejection. One fm_animate_* call = the entire construct(). If you use raw Manim instead, your play/wait budget is the chunk duration, spend it all, do not go over.
 - NEVER WRITE INLINE SUBTRACTION INSIDE wait(): a real failure was `self.wait(4.5-0.5-1.0-2.2-0.8)`, which looks like it sums to exactly 0 but float rounding actually lands it at a hair below zero, and Manim raises ValueError for any non-positive wait duration. Compute your full time budget as named variables FIRST (e.g. `t_intro = 0.5`, `t_build = 1.0`, `t_hold = 2.2`, `t_fade = 0.8`), confirm the remainder makes sense, and pass the final remaining wait as a plain literal number you've already calculated, never as a live subtraction expression inside the wait() call itself.
 
@@ -3957,6 +4120,8 @@ FACTORY functions (return a VGroup, you add/animate it yourself):
     Two side-by-side cards centered at ORIGIN. Use: cards = fm_two_cards(...); self.play(FadeIn(cards))
   fm_stacked_cards(items, label_size=30, value_size=68, spacing=0.24)
     items = [(label, value_str, color), ...]. Vertical stack. Use: stack = fm_stacked_cards([("Rent","$1,400",BRAND_RED), ...]); self.play(FadeIn(stack))
+  fm_concept_pills(labels, colors=None, font_size=44, direction=None, spacing=0.4)
+    For a GROUP of related concept names shown together with NO values attached -- e.g. ["Savings","Investing","Debt","Fun"] or sequential steps like ["Track","Calculate","Improve"]. Auto-arranges with guaranteed non-overlapping spacing (horizontal row if <=3 labels, vertical stack if >3) and auto-scales to fit the frame. Use: pills = fm_concept_pills(["Savings","Investing","Debt","Fun"]); self.play(LaggedStart(*[FadeIn(p) for p in pills], lag_ratio=0.15))
   fm_glow_around(mobject, color=BRAND_GOLD, n_layers=3)
     Wrap any mobject in glow. Use: self.add(fm_glow_around(my_text, BRAND_GREEN))
 
