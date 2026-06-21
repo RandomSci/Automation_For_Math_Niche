@@ -823,6 +823,16 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
     UNBOUNDED search from the global pointer so one bad match can't strand
     every subsequent beat. If a beat truly can't be matched, estimate its
     timing sequentially rather than keeping GPT's possibly-wild guess.
+
+    The unbounded fallback search is a known hazard for short connector
+    words ("a", "to", "of", "is") -- a loose substring check matches those
+    against almost any nearby word, and an unbounded scan will happily grab
+    a spurious match hundreds of words away, corrupting that beat's
+    end_time by hundreds of seconds. Two guards against this: word matching
+    requires an exact match unless both words are long enough (4+ chars)
+    that a substring match is actually meaningful, and a matched span is
+    discarded (falling back to sequential estimation instead) if it is
+    wildly larger than the beat's word count could plausibly justify.
     """
     ptr = 0
     n = len(whisper_word_list)
@@ -830,6 +840,13 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
 
     def norm(w):
         return w.upper().strip('.,!?;:\'"()[]- ')
+
+    def matches(w, ww):
+        if ww == w:
+            return True
+        if len(w) < 4 or len(ww) < 4:
+            return False
+        return w in ww or ww in w
 
     for beat in beats:
         text = (beat.get("text") or "").strip()
@@ -845,14 +862,12 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
         for w in words:
             found = None
             for look in range(local_ptr, min(local_ptr + LOOKAHEAD, n)):
-                ww = whisper_word_list[look]['word']
-                if ww == w or w in ww or ww in w:
+                if matches(w, whisper_word_list[look]['word']):
                     found = look
                     break
             if found is None:
                 for look in range(ptr, n):
-                    ww = whisper_word_list[look]['word']
-                    if ww == w or w in ww or ww in w:
+                    if matches(w, whisper_word_list[look]['word']):
                         found = look
                         break
             if found is None:
@@ -862,11 +877,20 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
             end_idx = found
             local_ptr = found + 1
 
+        matched_ok = False
         if start_idx is not None and end_idx is not None:
-            beat["start_time"] = whisper_word_list[start_idx]['start']
-            beat["end_time"]   = whisper_word_list[end_idx]['end']
-            ptr = end_idx + 1
-        else:
+            span = whisper_word_list[end_idx]['end'] - whisper_word_list[start_idx]['start']
+            plausible_ceiling = max(8.0, 4.0 * max(0.3, 0.35 * len(words)))
+            if span <= plausible_ceiling:
+                beat["start_time"] = whisper_word_list[start_idx]['start']
+                beat["end_time"]   = whisper_word_list[end_idx]['end']
+                ptr = end_idx + 1
+                matched_ok = True
+            else:
+                print(f"    ⚠ Discarding implausible match for '{text[:40]}' "
+                      f"({span:.1f}s span for {len(words)} words) -- estimating instead")
+
+        if not matched_ok:
             if ptr < n:
                 est_start = whisper_word_list[ptr]['start']
             elif n > 0:
@@ -3147,47 +3171,57 @@ class FinanceGenerator:
         print(f"  🗂  Burning in {len(sections)}-item navigation overlay...")
         total = len(sections)
         filters = []
+        tmp_dir = tempfile.mkdtemp(prefix="navtext_")
 
-        for i, sec in enumerate(sections):
-            num   = sec["number"]
-            title = _ffmpeg_escape_text(sec["title"])
-            start = max(min(sec["start_time"], duration - 0.1), 0.0)
-            end   = max(min(sec["end_time"], duration), start + 0.1)
-            card_end = min(start + 1.8, end)
-            label = f"{num}/{total}\\: {title}"
+        try:
+            for i, sec in enumerate(sections):
+                num   = sec["number"]
+                title = sec["title"]
+                start = max(min(sec["start_time"], duration - 0.1), 0.0)
+                end   = max(min(sec["end_time"], duration), start + 0.1)
+                card_end = min(start + 1.8, end)
+                label = f"{num}/{total}: {title}"
 
-            filters.append(
-                f"drawtext=text='{label}'"
-                f":fontcolor=white:fontsize=50:font=Arial"
-                f":box=1:boxcolor=black@0.6:boxborderw=18"
-                f":x=(w-text_w)/2:y=h*0.10"
-                f":enable='between(t\\,{start:.3f}\\,{card_end:.3f})'"
-            )
-            filters.append(
-                f"drawtext=text='{label}'"
-                f":fontcolor=white:fontsize=24:font=Arial"
-                f":box=1:boxcolor=black@0.45:boxborderw=10"
-                f":x=36:y=36"
-                f":enable='between(t\\,{start:.3f}\\,{end:.3f})'"
-            )
-            dots = ''.join('\u25CF' if j == i else '\u25CB' for j in range(total))
-            filters.append(
-                f"drawtext=text='{dots}'"
-                f":fontcolor=#FFD166:fontsize=30:font=Arial"
-                f":x=(w-text_w)/2:y=h*0.93"
-                f":enable='between(t\\,{start:.3f}\\,{end:.3f})'"
-            )
+                label_path = os.path.join(tmp_dir, f"label_{i}.txt")
+                with open(label_path, "w", encoding="utf-8") as f:
+                    f.write(label)
+                label_path_ff = label_path.replace("\\", "/").replace(":", "\\:")
 
-        vf = ','.join(filters)
-        result = subprocess.run(
-            ['ffmpeg', '-y', '-i', video_input, '-vf', vf, '-c:a', 'copy', output_path],
-            capture_output=True
-        )
-        if result.returncode != 0:
-            print(f"  ⚠ Section nav overlay failed, shipping without it: {result.stderr.decode(errors='replace')[-200:]}")
-            subprocess.run(['ffmpeg', '-y', '-i', video_input, '-c', 'copy', output_path], capture_output=True)
-        else:
-            print(f"  ✅ Navigation overlay added")
+                filters.append(
+                    f"drawtext=textfile='{label_path_ff}'"
+                    f":fontcolor=white:fontsize=50:font=Arial"
+                    f":box=1:boxcolor=black@0.6:boxborderw=18"
+                    f":x=(w-text_w)/2:y=h*0.10"
+                    f":enable='between(t\\,{start:.3f}\\,{card_end:.3f})'"
+                )
+                filters.append(
+                    f"drawtext=textfile='{label_path_ff}'"
+                    f":fontcolor=white:fontsize=24:font=Arial"
+                    f":box=1:boxcolor=black@0.45:boxborderw=10"
+                    f":x=36:y=36"
+                    f":enable='between(t\\,{start:.3f}\\,{end:.3f})'"
+                )
+                dots = ''.join('\u25CF' if j == i else '\u25CB' for j in range(total))
+                filters.append(
+                    f"drawtext=text='{dots}'"
+                    f":fontcolor=#FFD166:fontsize=30:font=Arial"
+                    f":x=(w-text_w)/2:y=h*0.93"
+                    f":enable='between(t\\,{start:.3f}\\,{end:.3f})'"
+                )
+
+            vf = ','.join(filters)
+            result = subprocess.run(
+                ['ffmpeg', '-y', '-i', video_input, '-vf', vf, '-c:a', 'copy', output_path],
+                capture_output=True
+            )
+            if result.returncode != 0:
+                print(f"  ⚠ Section nav overlay failed, shipping without it: {result.stderr.decode(errors='replace')[-200:]}")
+                subprocess.run(['ffmpeg', '-y', '-i', video_input, '-c', 'copy', output_path], capture_output=True)
+            else:
+                print(f"  ✅ Navigation overlay added")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
         return output_path
 
     def _add_cta_overlay(self, video_input: str, output_path: str, duration: float):
