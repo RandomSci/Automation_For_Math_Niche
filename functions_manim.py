@@ -103,6 +103,41 @@ def fm_two_cards(left_label, left_val, left_color,
     return group
 
 
+def fm_card_row(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
+                 label_size=26, value_size=44, spacing=0.45):
+    """Row of THREE OR MORE small label+value cards side by side -- e.g. a
+    cost timeline: [("Leak","$400",BRAND_RED), ("Water Damage","$1,500",BRAND_GOLD),
+    ("Mold","$4,800",BRAND_RED), ...]. This is the horizontal generalization
+    of fm_two_cards -- guaranteed non-overlapping spacing via arrange(), then
+    auto-scaled to fit the frame width. NEVER hand-build a row of 3+ cards
+    with individual SurroundingRectangle/Text positioned via move_to or
+    manual x-coordinates -- that is exactly how adjacent cards end up
+    overlapping each other, the same failure class fm_concept_pills exists
+    to prevent for label-only pills. This is that same guarantee, but for
+    cards that pair a label WITH a value. For exactly 2 cards, prefer
+    fm_two_cards instead (larger default text). For 3+ labels with NO
+    values attached, use fm_concept_pills instead, not this.
+    items = [(label_str, value_str, accent_color_hex), ...]. Returns a
+    VGroup. FadeIn yourself, or LaggedStart per-card like fm_concept_pills."""
+    cards = VGroup()
+    for entry in items:
+        if isinstance(entry, dict):
+            label = entry.get("label", "")
+            value = entry.get("value", "")
+            color = entry.get("color", BRAND_GOLD)
+        else:
+            label, value, color = entry
+        if not isinstance(value, str):
+            value = f"${abs(value):,.0f}" if isinstance(value, (int, float)) else str(value)
+        c = fm_card(label, value, color, panel_color, text_color, label_size, value_size, buff=0.24)
+        cards.add(c)
+    cards.arrange(RIGHT, buff=spacing)
+    safe_w = config.frame_width * 0.92
+    if cards.width > safe_w:
+        cards.scale(safe_w / cards.width)
+    return cards
+
+
 def fm_stacked_cards(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
                       label_size=30, value_size=68, spacing=0.24):
     """Vertical stack of bill/expense cards.
@@ -129,13 +164,13 @@ def fm_stacked_cards(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
 
 def fm_clamp_to_frame(*mobjects, margin_x=0.06, margin_y=0.06):
     """Final on-screen safety net for multi-group layouts. fm_card/fm_two_cards/
-    fm_stacked_cards/fm_concept_pills each only guarantee THEIR OWN width or
-    height fits the frame while THEY are still centered at their own origin --
-    none of them know about sibling groups, and none of them re-check the
-    frame boundary once you reposition them with .next_to(), .to_edge(),
-    .shift(), or .move_to(). A group that is individually safe at 88% of
-    frame width can still clip the camera once it's shifted toward an edge
-    to sit beside or under another group (e.g. a comparison row stacked
+    fm_card_row/fm_stacked_cards/fm_concept_pills each only guarantee THEIR OWN
+    width or height fits the frame while THEY are still centered at their own
+    origin -- none of them know about sibling groups, and none of them
+    re-check the frame boundary once you reposition them with .next_to(),
+    .to_edge(), .shift(), or .move_to(). A group that is individually safe at
+    88% of frame width can still clip the camera once it's shifted toward an
+    edge to sit beside or under another group (e.g. a comparison row stacked
     above a category-pill row, or two groups flanking each other left/right).
     Call this LAST, after every top-level group for the chunk has been built
     and positioned relative to each other, right before any self.play(FadeIn...).
@@ -146,6 +181,13 @@ def fm_clamp_to_frame(*mobjects, margin_x=0.06, margin_y=0.06):
     relative spacing between the groups is preserved, nothing is reflowed.
     No-op if everything already fits. The passed-in mobjects are transformed
     in place -- keep using your original variables for FadeIn/animation.
+    CRITICAL: this must be the absolute LAST thing you do to a group before
+    self.play(). Calling fm_clamp_to_frame and THEN still calling .shift(),
+    .move_to(), .scale(), or VGroup(...)-combining it with something else
+    undoes the guarantee -- the renderer also auto-clamps everything passed
+    to self.play() as a final backstop, but don't rely on that as your only
+    safety net; call this explicitly whenever more than one group shares a
+    chunk.
     Example: cards = fm_two_cards(...); pills = fm_concept_pills(...)
     pills.next_to(cards, DOWN, buff=0.6)
     fm_clamp_to_frame(cards, pills)
@@ -177,6 +219,17 @@ def fm_clamp_to_frame(*mobjects, margin_x=0.06, margin_y=0.06):
     if shift_x != 0.0 or shift_y != 0.0:
         combined.shift([shift_x, shift_y, 0])
     return combined
+
+
+def _fm_collect_play_targets(anim, out):
+    sub_animations = getattr(anim, "animations", None)
+    if sub_animations:
+        for sub in sub_animations:
+            _fm_collect_play_targets(sub, out)
+        return
+    mobj = getattr(anim, "mobject", None)
+    if mobj is not None:
+        out.append(mobj)
 
 
 def fm_animate_counter(scene, start_val, end_val, label_text,
