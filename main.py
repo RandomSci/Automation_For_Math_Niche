@@ -3553,6 +3553,68 @@ def safety_correction_hint(reason: str) -> str:
     )
 
 
+_MANIM_AVAILABLE_NAMES = None
+
+
+def _get_chunk_available_names() -> set:
+    """Names a chunk can legitimately reference without defining them
+    itself: everything from manim, every fm_* library function and
+    BRAND_* constant, FinanceDashboardScene/3DScene, and Python
+    builtins. Computed once by actually executing the same boilerplate
+    every chunk gets prefixed with, so this can never drift out of
+    sync with what real chunk code actually has access to."""
+    global _MANIM_AVAILABLE_NAMES
+    if _MANIM_AVAILABLE_NAMES is None:
+        ns = {}
+        try:
+            exec(FINANCE_DASHBOARD_MANIM_BOILERPLATE, ns)
+        except Exception:
+            pass
+        names = set(ns.keys())
+        names.discard("__builtins__")
+        import builtins as _builtins_mod
+        names |= set(dir(_builtins_mod))
+        _MANIM_AVAILABLE_NAMES = names
+    return _MANIM_AVAILABLE_NAMES
+
+
+def _collect_bound_names(tree) -> set:
+    """Every name a chunk's own code binds anywhere in it -- assignments,
+    for-loop/with/comprehension targets, function and class names,
+    function parameters, import aliases, except-as names, walrus
+    targets. Deliberately not scope-precise (a name bound inside a
+    nested function counts as bound everywhere): the goal is zero
+    false positives, never flagging legitimately-scoped code, even at
+    the cost of occasionally missing a real scope bug."""
+    bound = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                bound.add(node.name)
+            all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+            for arg in all_args:
+                bound.add(arg.arg)
+            if node.args.vararg:
+                bound.add(node.args.vararg.arg)
+            if node.args.kwarg:
+                bound.add(node.args.kwarg.arg)
+        elif isinstance(node, ast.ClassDef):
+            bound.add(node.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+    return bound
+
+
 def manim_static_safety_check(code: str) -> tuple[bool, str]:
     """Parse GPT-generated Manim chunk code and reject anything unsafe
     BEFORE it's ever written to disk and executed via the `manim` CLI
@@ -3586,7 +3648,20 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
     un-banning them in the next, which is now fixed by keeping them
     banned consistently here and in the prompt text.
     Rejecting the remaining names here is instant and free, instead of
-    paying for a manim subprocess spin-up just to watch it crash."""
+    paying for a manim subprocess spin-up just to watch it crash.
+
+    Also rejects any bare name the chunk references that isn't bound
+    anywhere in its own code and isn't available from manim, the fm_*
+    library, or BRAND_* constants. Two real production crashes prompted
+    this: GPT calling GrowFromBottom (which sounds plausible by analogy
+    with GrowFromCenter/GrowFromEdge but isn't a real Manim class) and a
+    plain variable-name typo (defining emerg_lbl, then referencing
+    emer_lbl in a VGroup() call a few lines later). Both are NameError
+    at runtime regardless of cause -- a hallucinated class and a typo
+    are indistinguishable to Python -- so both are caught the same way,
+    before the slow manim subprocess ever starts instead of after it
+    crashes partway through rendering.
+    """
     for pattern in MANIM_FORBIDDEN_PATTERNS:
         if re.search(pattern, code):
             bare = pattern.replace(r'\b', '')
@@ -3630,6 +3705,19 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
     if non_class_non_import:
         kinds = sorted({type(n).__name__ for n in non_class_non_import})
         return False, f"unexpected top-level statement(s) outside the class/imports: {kinds}"
+
+    bound_names = _collect_bound_names(tree)
+    available_names = _get_chunk_available_names()
+    loaded_names = {
+        node.id for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    undefined = sorted(
+        n for n in loaded_names
+        if n not in bound_names and n not in available_names
+    )
+    if undefined:
+        return False, f"references undefined name(s) not found anywhere in manim, the fm_* library, or this chunk's own code: {', '.join(undefined[:5])}"
 
     return True, ""
 
@@ -4144,6 +4232,7 @@ NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called
     BarChart(...)          -> fm_animate_bar_chart
     Title(...)              -> a plain Text(heading_str, font_size=70, weight=BOLD, color=BRAND_GOLD).to_edge(UP). A beat that introduces a section, a list item, or a new named topic is NOT a reason to reach for Manim's Title class -- Title renders an underline bar and auto-positions in a way that frequently collides with content already on screen below it, and it is banned outright regardless of how heading-like the beat feels. Every section/list-item heading in this pipeline is just large bold Text positioned at the top edge, nothing more.
   RoundedRectangle and SurroundingRectangle are NOT banned and are the correct choice for cards/pills/meters -- only the bare Rectangle() class is forbidden.
+- NO INVENTED ANIMATION CLASS NAMES: Manim's growing-entrance animations are GrowFromCenter(mobj), GrowFromEdge(mobj, edge) (edge is UP/DOWN/LEFT/RIGHT), and GrowFromPoint(mobj, point) -- there is no GrowFromBottom, GrowFromTop, GrowFromLeft, or GrowFromRight, even though those sound like they should exist by analogy. A real failure: GrowFromBottom(b) crashed with NameError because it was never a real class -- the intended effect ("grow upward from the bottom") is GrowFromEdge(b, DOWN). Before using any animation class whose name you are not 100% certain exists, prefer one already used elsewhere in this prompt's examples (FadeIn, FadeOut, GrowFromCenter, GrowFromEdge, LaggedStart, Transform) rather than guessing at a plausible-sounding variant.
 - RESTRUCTURE_MOBJECTS WARNING: never call self.add() on a fm_* result AND ALSO animate its submobjects separately. The returned VGroup must be treated as an atomic unit. Wrong: `card = fm_card(...); self.add(card); self.play(FadeIn(card[0]))`. Correct: `card = fm_card(...); self.play(FadeIn(card))`. Accessing submobjects of fm_* returns (card[0], cards[1], etc.) and adding them separately to the scene causes Manim's restructure_mobjects crash.
 - NO GUESSING SUBMOBJECT INDICES: never index into a VGroup (card[1], card_show[2], etc.) unless you personally built that exact group in this same construct() and know precisely how many Mobjects you added to it, in what order. A real failure: indexing card_show[1] and card_show[2] on a group that only had 1 submobject, which crashes with IndexError: list index out of range. fm_* library functions do not document or guarantee submobject count/order as part of their contract -- never index into an fm_* return value's internals. If you need to reference a specific piece of something later (a label, an icon, a bar), keep it as its own separate named variable when you build it (e.g. `icon = fm_icon(...); label = Text(...); group = VGroup(icon, label)`), then refer to that original variable directly instead of re-deriving it by indexing the group afterward.
 - NO SELF-CONTAINING GROUPS: never add a VGroup (or a card/group built from one) into itself, into a copy of itself, or into another group that already (directly or through a shared variable) contains it. A real failure: building `card_real` and `card_show` from overlapping pieces, then calling FadeOut/animate on one while it still shares submobjects with the other -- when Manim's set_z_index walks the submobject family on a group with a circular reference, it recurses forever and crashes with RecursionError: maximum recursion depth exceeded. If two named groups in your construct() are meant to be visually related (e.g. one fading while the other glows), build each from its OWN independent VGroup() with its OWN Mobjects -- never have one variable's group literally contain the other variable's group, and never call VGroup(*existing_group) to wrap something that is already itself a VGroup.
@@ -4163,7 +4252,7 @@ FACTORY functions (return a VGroup, you add/animate it yourself):
   fm_card(label_text, value_text, accent_color=BRAND_GOLD, panel_color=BRAND_PANEL, text_color=BRAND_WHITE, label_size=36, value_size=90, buff=0.45)
     Auto-sized SurroundingRectangle card. Always fits text correctly. Use: c = fm_card("Salary", "$4,200", BRAND_GREEN); self.play(FadeIn(c))
   fm_two_cards(left_label, left_val, left_color, right_label, right_val, right_color, label_size=34, value_size=80, spacing=1.1)
-    Two side-by-side cards centered at ORIGIN. Use: cards = fm_two_cards(...); self.play(FadeIn(cards))
+    Two side-by-side cards centered at ORIGIN. Returns exactly VGroup(left_card, right_card) -- result[0] is the left card, result[1] is the right card, there is no result[2]. A real failure: result[2].shift(UP*0.2) on a 2-element group crashed with IndexError. If you need to single out one card (a glow, a shift), index 0 or 1 only -- never assume a third element exists for "the box" or "the content" separately. Use: cards = fm_two_cards(...); self.play(FadeIn(cards))
   fm_stacked_cards(items, label_size=30, value_size=68, spacing=0.24)
     items = [(label, value_str, color), ...]. Vertical stack. Use: stack = fm_stacked_cards([("Rent","$1,400",BRAND_RED), ...]); self.play(FadeIn(stack))
   fm_concept_pills(labels, colors=None, font_size=44, direction=None, spacing=0.4)
@@ -4214,7 +4303,7 @@ ANIMATION functions (handle ALL self.play/self.wait for their duration, call onc
     Dramatic text with expanding glow rings — chapter titles, major reveals, hook moments. Returns (text_mob, rings).
     Example: fm_animate_glow_reveal(self, "Corporate Paycheck", BRAND_RED, duration=3.0, subtitle="The Only Source")
   fm_animate_timeline(scene, events, accent_color=BRAND_GOLD, duration=4.0, show_index=False)
-    Horizontal timeline: dots on a line, labels alternating above/below (no overlapping text). events = list of str. Returns (dots, labels).
+    Horizontal timeline: dots on a line, labels alternating above/below (no overlapping text). events = list of str. Returns (dots, labels), where dots has EXACTLY len(events) elements -- never a fixed number. A real failure: code called this with a 3-item events list, then assumed a 4th dot existed and indexed dots[3], crashing with IndexError. If you need to reference a specific dot afterward (e.g. to anchor an icon next to the first or last event), index using the SAME events list length you actually passed in (dots[0] and dots[len(events)-1] are always safe; any index in between must be less than len(events)), never a number you didn't verify against your own events list.
     Example: fm_animate_timeline(self, ["Start", "Checkpoint", "Breakdown", "Warning Sign"], BRAND_GOLD, duration=4.0)
   fm_animate_single_value(scene, value_str, label_text, accent_color=BRAND_GOLD, duration=3.0, value_size=140, label_size=38, sublabel=None)
     Single hero number with label — for beats with one key figure and no comparison needed. Returns (value_mob, label_mob).
