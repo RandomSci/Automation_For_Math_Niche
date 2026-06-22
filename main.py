@@ -28,8 +28,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 current_job = {"status": "idle", "progress": 0, "output": None, "error": None, "started_at": None}
 
-OUTPUT_WIDTH  = 1920
-OUTPUT_HEIGHT = 1080
+OUTPUT_WIDTH  = 3840
+OUTPUT_HEIGHT = 2160
+
+# High-quality YouTube export settings. 4K helps YouTube preserve sharp text/charts.
+ENCODE_PRESET = os.environ.get("FINANCE_ENCODE_PRESET", "medium")
+ENCODE_CRF    = os.environ.get("FINANCE_ENCODE_CRF", "15")
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 
@@ -781,8 +786,9 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
 
     r = subprocess.run([
         'ffmpeg', '-y', '-i', raw_path,
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
-        '-pix_fmt', 'yuv420p', '-r', str(fps), '-an', output_path
+        '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+        '-tune', 'animation', '-pix_fmt', 'yuv420p',
+        '-r', str(fps), '-an', '-movflags', '+faststart', output_path
     ], capture_output=True)
     os.remove(raw_path)
     if r.returncode != 0:
@@ -3108,18 +3114,16 @@ class FinanceGenerator:
         return segments
 
     def _make_black_filler(self, output_file: str, dur: float, fps: int = 30) -> str:
-        """Generate a black video segment of exact duration — used when broll clip fails."""
-        cmd = [
-            'ffmpeg', '-y',
-            '-f', 'lavfi', '-i', f'color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r={fps}:d={dur}',
-            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
-            '-pix_fmt', 'yuv420p', '-r', str(fps), '-an', '-t', str(dur),
-            output_file
-        ]
-        r = subprocess.run(cmd, capture_output=True)
-        if r.returncode != 0:
-            raise Exception(f"Black filler failed: {r.stderr.decode()[-200:]}")
-        return output_file
+        """Legacy b-roll fallback. Never output a pure black/void screen."""
+        return _make_safe_still_fallback(
+            output_file,
+            title="Visual Pause",
+            subtitle="The explanation continues",
+            duration=dur,
+            w=OUTPUT_WIDTH,
+            h=OUTPUT_HEIGHT,
+            fps=fps,
+        )
 
     def process_segment_to_file(self, segment: dict, output_file: str,
                                 fps: int = 30, progress_callback=None) -> str:
@@ -3143,8 +3147,9 @@ class FinanceGenerator:
 
         vf = [f"fps={fps}"] + vf
         vf += ["eq=brightness=0.02:contrast=1.05:saturation=1.1", "format=yuv420p"]
-        cmd += ['-vf', ','.join(vf), '-c:v', 'libx264', '-preset', 'ultrafast',
-                '-crf', '23', '-pix_fmt', 'yuv420p', '-r', str(fps), '-an', output_file]
+        cmd += ['-vf', ','.join(vf), '-c:v', 'libx264', '-preset', ENCODE_PRESET,
+                '-crf', ENCODE_CRF, '-tune', 'animation', '-pix_fmt', 'yuv420p',
+                '-r', str(fps), '-movflags', '+faststart', '-an', output_file]
 
         success  = False
         err_text = ""
@@ -3174,7 +3179,7 @@ class FinanceGenerator:
         if not success:
             err_line = err_text.strip().splitlines()[-1] if err_text.strip() else "unknown error"
             print(f"\n  ⚠ Clip failed ({os.path.basename(source_file)}): {err_line[:150]}")
-            print(f"  ⚠ Using black filler ({dur:.2f}s)")
+            print(f"  ⚠ Using branded fallback filler ({dur:.2f}s)")
             return self._make_black_filler(output_file, dur, fps)
 
         return output_file
@@ -3229,7 +3234,10 @@ class FinanceGenerator:
 
             vf = ','.join(filters)
             result = subprocess.run(
-                ['ffmpeg', '-y', '-i', video_input, '-vf', vf, '-c:a', 'copy', output_path],
+                ['ffmpeg', '-y', '-i', video_input, '-vf', vf,
+                 '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+                 '-tune', 'animation', '-pix_fmt', 'yuv420p',
+                 '-c:a', 'copy', '-movflags', '+faststart', output_path],
                 capture_output=True
             )
             if result.returncode != 0:
@@ -3251,7 +3259,10 @@ class FinanceGenerator:
             f":x=(w-text_w)/2:y=h*0.91:enable='gt(t\\,{end_time})'"
         )
         result = subprocess.run(
-            ['ffmpeg', '-y', '-i', video_input, '-vf', vf, '-c:a', 'copy', output_path],
+            ['ffmpeg', '-y', '-i', video_input, '-vf', vf,
+             '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+             '-tune', 'animation', '-pix_fmt', 'yuv420p',
+             '-c:a', 'copy', '-movflags', '+faststart', output_path],
             capture_output=True
         )
         if result.returncode != 0:
@@ -3694,6 +3705,26 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             return False, f"references dunder attribute '{node.attr}'"
 
+        # Manim coordinate-system reverse transforms are a recurring crash source.
+        # GPT often calls axes.p2c((x, y)) with a two-value tuple, but Manim expects
+        # a real 3D point for point-to-coordinates conversion. For generated code,
+        # the safe direction is always data -> point via c2p, or better, an fm_* helper.
+        if isinstance(node, ast.Attribute) and node.attr in {"p2c", "point_to_coords", "point_to_number"}:
+            return False, f"references unsafe coordinate reverse-transform '{node.attr}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
+
+        if isinstance(node, ast.Call):
+            fn = node.func
+            fn_name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
+
+            if fn_name in {"p2c", "point_to_coords", "point_to_number"}:
+                return False, f"calls unsafe coordinate reverse-transform '{fn_name}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
+
+            # Real crash: Polygon([[x,y,z], [x,y,z], ...]) passes ONE nested list
+            # as the first vertex. Manim Polygon expects Polygon([x,y,z], [x,y,z], ...).
+            # Reject it before wasting a render.
+            if fn_name == "Polygon" and len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
+                return False, "Polygon received one nested list of vertices; use Polygon(*points) or avoid Polygon and use fm_icon/fm_card/fm_* helpers"
+
     class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
     if len(class_defs) != 1:
         return False, f"expected exactly one top-level class definition, found {len(class_defs)}"
@@ -3878,8 +3909,9 @@ def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
     cmd = [
         'ffmpeg', '-y', '-i', raw_path,
         '-vf', vf, '-r', str(fps),
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
-        '-pix_fmt', 'yuv420p', '-an', '-t', str(target_duration),
+        '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+        '-tune', 'animation', '-pix_fmt', 'yuv420p',
+        '-an', '-t', str(target_duration), '-movflags', '+faststart',
         out_path,
     ]
     result = subprocess.run(cmd, capture_output=True)
@@ -3890,27 +3922,154 @@ def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
     return out_path, ""
 
 
-def _make_dashboard_filler(out_path: str, duration: float, w: int = 1920,
-                            h: int = 1080, fps: int = 30) -> str:
-    """Exact-duration filler clip for any chunk that fails safety check,
-    crashes, times out, or drifts past MANIM_CHUNK_MAX_DRIFT_RATIO --
-    uses the bare dashboard background color rather than black, since
-    the whole video already sits on this color and a navy frame reads
-    as a quiet beat rather than a visible error flash. This is the
-    last-resort fallback only -- see _make_held_frame_filler for the
-    preferred fallback used for short silence gaps, which holds the
-    previous chunk's actual final frame instead of cutting to blank."""
+def _pil_font(size: int, bold: bool = True):
+    """Best-effort font loader for fallback cards."""
+    try:
+        from PIL import ImageFont
+        path = get_primary_font_path(bold=bold)
+        if path:
+            return ImageFont.truetype(path, size=size)
+    except Exception:
+        pass
+    from PIL import ImageFont
+    return ImageFont.load_default()
+
+
+def _wrap_text_for_width(draw, text: str, font, max_width: int, max_lines: int = 3) -> list:
+    words = re.sub(r'\s+', ' ', (text or '').strip()).split()
+    if not words:
+        return []
+    lines, cur = [], ''
+    for word in words:
+        trial = (cur + ' ' + word).strip()
+        try:
+            bbox = draw.textbbox((0, 0), trial, font=font)
+            tw = bbox[2] - bbox[0]
+        except Exception:
+            tw = len(trial) * 18
+        if tw <= max_width or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = word
+            if len(lines) >= max_lines:
+                break
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    if len(lines) == max_lines and len(' '.join(words)) > len(' '.join(lines)):
+        lines[-1] = lines[-1].rstrip('.,;:') + '...'
+    return lines
+
+
+def _chunk_fallback_subtitle(chunk: dict) -> str:
+    beats = chunk.get('beats') or []
+    text = ' '.join((b.get('text') or '').strip() for b in beats if isinstance(b, dict)).strip()
+    text = re.sub(r'\s+', ' ', text)
+    if not text:
+        return 'The explanation continues'
+    return text[:210].rstrip()
+
+
+def _make_safe_still_fallback(out_path: str, title: str, subtitle: str, duration: float,
+                              w: int = 1920, h: int = 1080, fps: int = 30) -> str:
+    """Creates a non-blank exact-duration fallback video.
+
+    This is the anti-void safety net. When a GPT-authored Manim chunk crashes,
+    the viewer still sees a branded finance card with the current idea instead
+    of an empty navy/black screen. It intentionally does NOT mention the error.
+    """
+    from PIL import Image, ImageDraw
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    frame_path = os.path.join(os.path.dirname(out_path) or '.', f"_fallback_{os.path.basename(out_path)}.png")
+
+    img = Image.new('RGB', (int(w), int(h)), '#0B111A')
+    draw = ImageDraw.Draw(img)
+
+    grid_color = (32, 43, 56)
+    step = max(80, int(min(w, h) * 0.075))
+    for x in range(0, int(w), step):
+        draw.line([(x, 0), (x, h)], fill=grid_color, width=max(1, w // 1800))
+    for y in range(0, int(h), step):
+        draw.line([(0, y), (w, y)], fill=grid_color, width=max(1, h // 1000))
+
+    card_w = int(w * 0.70)
+    card_h = int(h * 0.38)
+    x0 = (w - card_w) // 2
+    y0 = (h - card_h) // 2
+    x1 = x0 + card_w
+    y1 = y0 + card_h
+    radius = int(min(w, h) * 0.035)
+    draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, fill='#111A24', outline='#38D996', width=max(4, w // 420))
+
+    title_font = _pil_font(max(54, int(h * 0.055)), bold=True)
+    body_font = _pil_font(max(38, int(h * 0.038)), bold=True)
+    tag_font = _pil_font(max(26, int(h * 0.026)), bold=True)
+
+    title = title or 'Key Idea'
+    subtitle = subtitle or 'The explanation continues'
+
+    tb = draw.textbbox((0, 0), title, font=title_font)
+    tx = (w - (tb[2] - tb[0])) // 2
+    ty = y0 + int(card_h * 0.16)
+    draw.text((tx, ty), title, fill='#FFD166', font=title_font)
+
+    lines = _wrap_text_for_width(draw, subtitle, body_font, int(card_w * 0.82), max_lines=3)
+    line_h = int(h * 0.055)
+    start_y = y0 + int(card_h * 0.40)
+    for j, line in enumerate(lines):
+        bb = draw.textbbox((0, 0), line, font=body_font)
+        lx = (w - (bb[2] - bb[0])) // 2
+        draw.text((lx, start_y + j * line_h), line, fill='#F5F7FA', font=body_font)
+
+    tag = 'continuing'
+    bb = draw.textbbox((0, 0), tag, font=tag_font)
+    pad_x = int(w * 0.018)
+    pad_y = int(h * 0.010)
+    pill = [x1 - (bb[2]-bb[0]) - pad_x*3, y1 - int(h*0.070), x1 - pad_x, y1 - int(h*0.020)]
+    draw.rounded_rectangle(pill, radius=int(h*0.018), fill='#0B111A', outline='#8A94A6', width=max(2, w//900))
+    draw.text((pill[0] + pad_x, pill[1] + pad_y), tag, fill='#8A94A6', font=tag_font)
+
+    img.save(frame_path, quality=95)
+
     cmd = [
-        'ffmpeg', '-y',
-        '-f', 'lavfi', '-i', f'color=c=0x0B111A:s={w}x{h}:r={fps}:d={duration}',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
-        '-pix_fmt', 'yuv420p', '-r', str(fps), '-an', '-t', str(duration),
-        out_path,
+        'ffmpeg', '-y', '-loop', '1', '-i', frame_path,
+        '-t', str(max(float(duration), 0.05)),
+        '-vf', f'scale={int(w)}:{int(h)},fps={int(fps)},format=yuv420p',
+        '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+        '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
+        '-an', '-movflags', '+faststart', out_path,
     ]
     result = subprocess.run(cmd, capture_output=True)
+    try:
+        os.remove(frame_path)
+    except Exception:
+        pass
     if result.returncode != 0:
-        raise Exception(f"dashboard filler failed: {result.stderr.decode(errors='replace')[-200:]}")
+        raise Exception(f"safe fallback failed: {result.stderr.decode(errors='replace')[-300:]}")
     return out_path
+
+
+def _make_chunk_fallback(out_path: str, chunk: dict, duration: float, w: int = 1920,
+                         h: int = 1080, fps: int = 30, reason: str = "") -> str:
+    return _make_safe_still_fallback(
+        out_path,
+        title="Key Idea",
+        subtitle=_chunk_fallback_subtitle(chunk or {}),
+        duration=duration,
+        w=w, h=h, fps=fps,
+    )
+
+
+def _make_dashboard_filler(out_path: str, duration: float, w: int = 1920,
+                            h: int = 1080, fps: int = 30) -> str:
+    return _make_safe_still_fallback(
+        out_path,
+        title="Next Idea",
+        subtitle="The explanation continues",
+        duration=duration,
+        w=w, h=h, fps=fps,
+    )
 
 
 def _make_held_frame_filler(prev_clip_path: str, out_path: str, duration: float,
@@ -3928,9 +4087,10 @@ def _make_held_frame_filler(prev_clip_path: str, out_path: str, duration: float,
         return None
     cmd_loop = [
         'ffmpeg', '-y', '-loop', '1', '-i', frame_path, '-t', str(duration),
-        '-vf', f'scale={w}:{h}', '-r', str(fps),
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
-        '-pix_fmt', 'yuv420p', '-an', out_path,
+        '-vf', f'scale={w}:{h},fps={fps},format=yuv420p',
+        '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+        '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
+        '-an', '-movflags', '+faststart', out_path,
     ]
     result2 = subprocess.run(cmd_loop, capture_output=True)
     try:
@@ -4045,12 +4205,20 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
     work_dir = tempfile.mkdtemp(prefix="manim_chunk_")
     script_path = os.path.join(work_dir, "chunk_scene.py")
     try:
+        boilerplate = (
+            FINANCE_DASHBOARD_MANIM_BOILERPLATE
+            .replace("config.pixel_width = 1920", f"config.pixel_width = {int(w)}")
+            .replace("config.pixel_height = 1080", f"config.pixel_height = {int(h)}")
+            .replace("config.frame_rate = 30", f"config.frame_rate = {int(fps)}")
+        )
         with open(script_path, "w") as f:
-            f.write(FINANCE_DASHBOARD_MANIM_BOILERPLATE)
+            f.write(boilerplate)
             f.write(code)
 
+        # -qh forces 1080p. For 4K output, Manim must be told to render 2160p.
+        quality_flag = "-qk" if int(w) >= 3840 and int(h) >= 2160 else "-qh"
         cmd = [
-            "manim", "-qh", "--disable_caching",
+            "manim", quality_flag, "--disable_caching",
             "--media_dir", work_dir,
             script_path, class_name,
         ]
@@ -4411,7 +4579,7 @@ NEVER write `Axes(...)` directly in your own construct() for ANY trend/line-char
 - Treadmill / moving-backward metaphor: a flat or rising baseline Line with a value label, a second element animated moving backward or failing to keep pace -- communicates "running in place" without needing a human figure.
 - Leaky bucket / faucet: a container shape with a fill level and its current amount labeled, small Dot "drips" leaving through a gap faster than the fill rises.
 - Portfolio stack: a small countable pile of 3-6 solid-filled coin or bar shapes stacked vertically or diagonally (like a neat pile of chips, not a grid), the TOTAL dollar value as a hero Text beside or below it, a yield percentage as a smaller number if relevant.
-- Inflation vs earnings: built on a real `Axes` object, two lines plotted on shared axes (one flat, one rising), each line ending in its own labeled value, the gap between them visibly widening over the animation.
+- Inflation vs earnings: use fm_animate_line_chart_multi or fm_animate_comparison_bars. Never use raw Axes/NumberPlane/NumberLine for generated chunks.
 - Replaceability / runway gauge: an Arc gauge from 0 to 6+ months (gray track, colored filled progress), needle landing on the actual computed runway value, that value shown as a number near the needle.
 - Bullet chart: a compact single horizontal bar that packs three things at once -- a muted gray background band showing the acceptable/target range, a thin tick mark showing the specific target value, and a solid brand-color bar drawn on top showing the actual value reaching toward or past that tick. Excellent for "are you hitting the target or not" beats (e.g. side income vs. the 6-month runway target, actual cash flow vs. break-even) since it shows actual, target, and the gap in one compact object instead of three separate ones.
 - Gradient fill under a curve: for compound growth, inflation gap, or any "area under the line" beat, build the filled region as a Polygon following the curve's points down to the baseline, then call `region.set_color_by_gradient(ACCENT_COLOR, "#111A24")` so it reads as a glowing accent at the curve and fades toward the dark panel color at the baseline, rather than a flat single-color fill.
@@ -4447,6 +4615,14 @@ When a beat needs custom geometry the fm_* library doesn't cover, the bar is pro
 - Motion that reveals structure: build the shape via Create/DrawBorderThenFill rather than a single FadeIn, so the viewer watches it form rather than just appear.
 A simple checkmark in a flat-colored circle, or any single uniform-color silhouette standing alone with nothing else going on, fails this bar -- it looks like a placeholder app icon, not a finished frame of a finance documentary. If you cannot make a custom shape look premium with the time/duration available, fall back to a chart-based primitive instead (a counter, a small bar, a donut) -- a well-executed simple chart always beats a flat custom shape that looks unfinished.
 
+=== PRODUCTION SAFETY RULES — DO NOT BREAK THESE ===
+Use the fm_* helpers as your default. They exist to prevent overlap, clipping, and wrong coordinate math.
+Never call axes.p2c, point_to_coords, or point_to_number. If you need a point on a chart, use axes.c2p(x, y), but preferably use fm_animate_line_chart or fm_animate_line_chart_multi instead.
+Never write Polygon([[...], [...], ...]). If Polygon is absolutely necessary, use Polygon(*points), but prefer fm_icon, fm_card, fm_card_row, fm_concept_pills, or an fm_animate_* chart helper.
+Never place two large numbers, cards, or labels at ORIGIN independently. Combine them into one VGroup, arrange it with .arrange(), then call fm_clamp_to_frame as the last layout step.
+For three or more cards, use fm_card_row or fm_stacked_cards. Do not manually create a row with individual move_to coordinates.
+
+
 === ESTABLISHING SHOTS: WHEN AND HOW TO USE THE 3D BASE CLASS ===
 Most chunks should use FinanceDashboardScene (flat 2D) -- it is not heavier and is the right default. Occasionally, for a chunk introducing a new hero card or chart for the first time, or a chapter-opening beat, subclass FinanceDashboard3DScene instead so that one hero object tilts in from an angle and settles flat, like a dashboard panel rotating into view. Build the hero object as a single VGroup, give it a starting rotation before your first self.play (e.g. `hero.rotate(60 * DEGREES, axis=UP)`), then settle it with `self.play(Rotate(hero, angle=-60 * DEGREES, axis=UP, run_time=...))`. Rotate the object itself, not the camera, unless you specifically intend a slow establishing pan. Use this sparingly -- an occasional establishing beat, not a constant gimmick. The background is already locked flat for you via add_fixed_in_frame_mobjects, so it will not rotate even while your hero object does.
 
@@ -4455,7 +4631,7 @@ White, primary numbers/text: "#F5F7FA". Market green, growth/gains/positive: "#3
 
 === QUALITY BAR ===
 - Real Manim primitives, not approximations: Transform(a, b) for one shape/number becoming another, ValueTracker + Text for any number counting up or down, Create()/Write()/FadeIn()/FadeOut() with real run_time and rate_func easing (smooth, there_and_back, rush_into) -- never an instant snap unless a deliberate "shock cut" is specifically right for a warning beat.
-- For bar charts and multi-category comparisons, use fm_animate_bar_chart or fm_animate_comparison_bars -- they already build real tick marks/baseline/axis lines by hand with zero BarChart dependency (BarChart itself is banned and will be rejected). For trend lines, prefer fm_animate_line_chart, or Manim's built-in Axes directly (Axes is allowed, only BarChart is banned) when you need a chart shape the library doesn't cover.
+- For bar charts and multi-category comparisons, use fm_animate_bar_chart, fm_card_row, fm_animate_waterfall, or fm_animate_comparison_bars -- they already build safe spacing and chart structure. For trend lines, use fm_animate_line_chart or fm_animate_line_chart_multi. Never use raw Axes, NumberLine, NumberPlane, BarChart, Rectangle, Polygon([[...]]), or manual rows of cards. Those patterns are banned because they caused crashes or overlapping visuals.
 - Fill, don't just outline: bars, gauge progress arcs, donut segments, and card bodies should be solid or semi-solid fills in brand colors, not bare strokes -- a thin outline alone reads as faint and unfinished against the dark background.
 - Glow/emphasis: layer 2-3 duplicate copies of a shape at increasing scale and decreasing opacity behind the main shape, rather than leaving it flat.
 - Legible at video scale: hero numbers around font_size 90-140, supporting labels 28-40.
@@ -4689,8 +4865,9 @@ def concat_manim_clips(clip_paths: list, output_path: str) -> str:
     if result.returncode != 0:
         cmd_reencode = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
                          '-i', concat_list_path,
-                         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
-                         '-pix_fmt', 'yuv420p', output_path]
+                         '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+                         '-tune', 'animation', '-pix_fmt', 'yuv420p',
+                         '-movflags', '+faststart', output_path]
         result2 = subprocess.run(cmd_reencode, capture_output=True)
         if result2.returncode != 0:
             raise Exception(f"chunk concat failed: {result2.stderr.decode(errors='replace')[-300:]}")
@@ -4707,13 +4884,13 @@ def _render_or_fill_one_chunk(chunk_index: int, chunk: dict, item, w: int, h: in
     fallback_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"filler_{chunk_index:04d}_{target_duration:.3f}.mp4")
 
     if not item or not item.get("code") or not item.get("class_name"):
-        _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+        _make_chunk_fallback(fallback_path, chunk, target_duration, w, h, fps, "no chunk code generated")
         return chunk_index, fallback_path, "no chunk code generated"
 
     clip_path, err = render_manim_chunk(item["code"], item["class_name"],
                                          target_duration, w, h, fps)
     if not clip_path:
-        _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+        _make_chunk_fallback(fallback_path, chunk, target_duration, w, h, fps, err)
         return chunk_index, fallback_path, err
     return chunk_index, clip_path, ""
 
@@ -4764,7 +4941,7 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
             except Exception as e:
                 target_duration = round(max(chunks[i]["end_time"] - chunks[i]["start_time"], 0.05), 3)
                 fallback_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"filler_{i:04d}_{target_duration:.3f}.mp4")
-                _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+                _make_chunk_fallback(fallback_path, chunks[i], target_duration, w, h, fps, f"worker exception: {e}")
                 idx, path, err = i, fallback_path, f"worker exception: {e}"
 
             clip_paths[idx] = path
