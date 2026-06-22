@@ -31,7 +31,6 @@ current_job = {"status": "idle", "progress": 0, "output": None, "error": None, "
 OUTPUT_WIDTH  = 3840
 OUTPUT_HEIGHT = 2160
 
-# High-quality YouTube export settings. 4K helps YouTube preserve sharp text/charts.
 ENCODE_PRESET = os.environ.get("FINANCE_ENCODE_PRESET", "medium")
 ENCODE_CRF    = os.environ.get("FINANCE_ENCODE_CRF", "15")
 
