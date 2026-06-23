@@ -3512,6 +3512,8 @@ MANIM_FORBIDDEN_NAMES = {
     "MathTex", "Tex", "SingleStringMathTex",
     "Axes", "NumberLine", "NumberPlane",
     "Rectangle",
+    "DashedLine", "DashedVMobject",
+    "Ellipse",
 }
 MANIM_FORBIDDEN_PATTERNS = [
     r'\bDecimalNumber\b',
@@ -3521,6 +3523,8 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'\bMathTex\b', r'\bSingleStringMathTex\b', r'\bTex\b',
     r'\bAxes\b', r'\bNumberLine\b', r'\bNumberPlane\b',
     r'\bRectangle\b',
+    r'\bDashedLine\b', r'\bDashedVMobject\b',
+    r'\bEllipse\b',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
@@ -4442,6 +4446,9 @@ NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called
 - MathTex, Tex, AND SingleStringMathTex ARE BANNED. Texlive itself compiles fine, but GPT-generated raw-string LaTeX reliably contains escaping bugs (writing r"\\text{...}" with a doubled backslash instead of the correct r"\text{...}", or dropping a literal "$" inside the tex string) that crash the manim subprocess outright -- a crashed chunk silently becomes a blank filler clip, which is why entire stretches of finished video have gone blank. For any formula or equation, call fm_formula -- see the "SHOW THE CALCULATION" rule above for the exact pattern. There is no safe way to use MathTex/Tex from generated code in this pipeline; do not reach for them under any circumstance.
 - Still avoid DecimalNumber specifically (it has its own unrelated update-cycle quirks in this codebase) -- for a number that needs to animate (counting up/down, or tracking a ValueTracker), use `always_redraw` with plain `Text()` instead: `counter = always_redraw(lambda: Text(f"${tracker.get_value():,.0f}", font_size=120, color="#F5F7FA"))`, `self.add(counter)`, then `self.play(tracker.animate.set_value(34000), run_time=2)`. This gives the same live-updating effect with zero DecimalNumber dependency. If you need a live-updating value INSIDE a formula, rebuild the whole Text() string each frame via the same always_redraw pattern -- never MathTex.
 - Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, Axes, NumberLine, NumberPlane, SVGMobject, ComplexPlane, PolarPlane, Rectangle. Use Text() and the fm_* library instead. For line charts prefer fm_animate_line_chart (consistent styling), for bar charts use fm_animate_bar_chart. Axes, NumberLine, and NumberPlane stay banned -- do not use them even though the toolchain technically supports them, for the same GPT-reliability reasons as MathTex above. For ANY icon or symbol (house, person, clock, dollar sign, warning triangle, checkmark) use fm_icon(name, size, color) — never SVGMobject, never ImageMobject, never any class that loads external files.
+- Also banned (produced real visual artifacts in actual output): DashedLine and DashedVMobject -- a DashedLine appearing as a stray dotted artifact on a rendered line chart is a real failure from a prior run, caused by GPT adding a decorative dashed element at a chart midpoint. Use a plain Line() or VMobject with set_stroke() if a continuous line element is needed; there is no use case on this channel where a dashed/dotted line reads as a financial insight rather than a visual glitch. Ellipse is also banned -- it was used as a decorative "start marker" at the beginning of a line chart, producing a random colored oval hanging at the left edge of the chart with no meaning. There is no correct use of Ellipse on this channel; use Dot or Circle for point markers.
+- LINE CHART COLOR RULE: fm_animate_line_chart accent_color must be BRAND_GOLD (neutral/general trend) or BRAND_GREEN (positive surplus direction) -- NEVER BRAND_RED. A real failure: a cashflow-dip beat used accent_color=BRAND_RED, producing a red line chart where the gradient fill under the curve became a muddy dark-red smear against the navy background, making the chart nearly unreadable. The DANGER/RED emotional rule applies to bar charts, cards, gauges, and waterfall steps -- not to the accent_color of a single-series line chart. If a beat needs to communicate a negative/dangerous cashflow trend, use fm_animate_comparison_bars or fm_animate_waterfall with BRAND_RED bars rather than a red line chart.
+- GAUGE ICON PLACEMENT RULE: never position fm_icon() elements at or near the fill arc's endpoint. The fill arc animates from 0 to its final angle via ValueTracker -- its endpoint moves during the animation, and placing an icon at fill_arc.get_end() or at a guessed coordinate near the arc tip causes the icon to overlap the arc at a random mid-animation position. A real failure: a warning icon and dollar icon were placed at the arc endpoint, overlapping the arc and each other at 7:12 in a rendered video. Icons in gauge chunks must be placed below the gauge (cat_lbl is already there), or to the side of the full composition -- never chasing the arc's moving tip.
   QUICK SUBSTITUTION TABLE -- every one of these banned names is REJECTED by an automated safety check before rendering even starts (the chunk becomes a blank filler clip, not a crash, but still blank), so if you catch yourself about to type any of these, stop and use the replacement instead. There is no case where the banned name is the only option:
     Rectangle(...)        -> fm_card / fm_two_cards / fm_stacked_cards (a labeled box) or fm_animate_bar_chart / fm_animate_comparison_bars / fm_animate_waterfall (a bar)
     Axes(...)              -> fm_animate_line_chart (trend/growth curve)

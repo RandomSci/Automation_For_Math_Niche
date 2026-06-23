@@ -457,13 +457,22 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
 
     end_dot = Dot(axes.c2p(n - 1, y_values[-1]), color=accent_color, radius=0.13)
     end_lbl = Text(end_value_label, font_size=38, color=accent_color, weight=BOLD)
-    _dot_x = axes.c2p(n - 1, y_values[-1])[0]
+    _dot_pt = axes.c2p(n - 1, y_values[-1])
+    _dot_x  = _dot_pt[0]
+    _dot_y  = _dot_pt[1]
     _safe_right = config.frame_width * 0.38
-    _lbl_dir = UR if _dot_x < _safe_right else UL
-    end_lbl.next_to(end_dot, _lbl_dir, buff=0.15)
+    _low_thresh = -config.frame_height * 0.20
+    if _dot_y < _low_thresh:
+        _lbl_dir = UP
+    else:
+        _lbl_dir = UR if _dot_x < _safe_right else UL
+    end_lbl.next_to(end_dot, _lbl_dir, buff=0.18)
     _frame_right_edge = config.frame_width / 2 - 0.25
+    _frame_left_edge  = -config.frame_width / 2 + 0.25
     if end_lbl.get_right()[0] > _frame_right_edge:
         end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
+    if end_lbl.get_left()[0] < _frame_left_edge:
+        end_lbl.shift(RIGHT * (_frame_left_edge - end_lbl.get_left()[0]))
 
     if title_text:
         ttl = Text(title_text, font_size=30, color=BRAND_GRAY)
@@ -532,13 +541,22 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
 
         end_dot = Dot(axes.c2p(n - 1, y_values[-1]), color=color, radius=0.11)
         end_lbl = Text(s.get("label", ""), font_size=26, color=color, weight=BOLD)
-        _dot_x = axes.c2p(n - 1, y_values[-1])[0]
+        _dot_pt2 = axes.c2p(n - 1, y_values[-1])
+        _dot_x   = _dot_pt2[0]
+        _dot_y2  = _dot_pt2[1]
         _safe_right = config.frame_width * 0.38
-        _lbl_dir = UR if _dot_x < _safe_right else UL
+        _low_thresh2 = -config.frame_height * 0.20
+        if _dot_y2 < _low_thresh2:
+            _lbl_dir = UP
+        else:
+            _lbl_dir = UR if _dot_x < _safe_right else UL
         end_lbl.next_to(end_dot, _lbl_dir, buff=0.12)
         _frame_right_edge = config.frame_width / 2 - 0.25
+        _frame_left_edge2 = -config.frame_width / 2 + 0.25
         if end_lbl.get_right()[0] > _frame_right_edge:
             end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
+        if end_lbl.get_left()[0] < _frame_left_edge2:
+            end_lbl.shift(RIGHT * (_frame_left_edge2 - end_lbl.get_left()[0]))
         end_dots.append(end_dot)
         end_lbls.append(end_lbl)
 
