@@ -233,7 +233,8 @@ def _build_sfx_audio_inputs(clip_paths, chunk_code_list):
             dur = float(r.stdout.strip())
         except Exception:
             dur = 4.5
-        code = chunk_code_list[i] if i < len(chunk_code_list) else None
+        item = chunk_code_list[i] if i < len(chunk_code_list) else None
+        code = item.get("code", "") if isinstance(item, dict) else (item or "")
         sfx_key = _detect_sfx_for_chunk(code)
         sfx_file = _sfx_path(sfx_key) if sfx_key else None
         if sfx_file and (t - last_sfx_t) >= MIN_GAP:
