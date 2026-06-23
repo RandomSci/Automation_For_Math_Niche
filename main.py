@@ -169,12 +169,12 @@ MUSIC_MAP = {
 SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sfx")
 
 SFX_MAP = {
-    "graph_whoosh":    ("alexzavesa-swoosh-1-463607.mp3",          -22),
-    "card_pop":        ("universfield-new-notification-010-352755.mp3", -20),
-    "solution_chime":  ("universfield-new-notification-013-363676.mp3", -23),
-    "warning_ping":    ("universfield-new-notification-014-363678.mp3", -24),
-    "problem_hit":     ("freesound_community-punch-boxing-02wav-14897.mp3", -26),
-    "tiny_click":      ("dragon-studio-mouse-click-4-393911.mp3",   -22),
+    "graph_whoosh":    ("alexzavesa-swoosh-1-463607.mp3",          -6),
+    "card_pop":        ("universfield-new-notification-010-352755.mp3", -6),
+    "solution_chime":  ("universfield-new-notification-013-363676.mp3", -8),
+    "warning_ping":    ("universfield-new-notification-014-363678.mp3", -6),
+    "problem_hit":     ("freesound_community-punch-boxing-02wav-14897.mp3", -8),
+    "tiny_click":      ("dragon-studio-mouse-click-4-393911.mp3",   -8),
 }
 
 def _sfx_path(key):
@@ -3477,7 +3477,7 @@ class FinanceGenerator:
             n_mix = len(mix_labels)
             mix_in = ''.join(mix_labels)
             fc_parts.append(
-                f'{mix_in}amix=inputs={n_mix}:duration=first:dropout_transition=2,aresample=48000[aout]'
+                f'{mix_in}amix=inputs={n_mix}:duration=first:dropout_transition=2:normalize=0,aresample=48000[aout]'
             )
             fc = ';'.join(fc_parts)
 

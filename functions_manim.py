@@ -55,7 +55,7 @@ def fm_concept_pills(labels, colors=None, panel_color=BRAND_PANEL, text_color=No
         txt = Text(label, font_size=font_size, color=text_color, weight=BOLD)
         pill = SurroundingRectangle(
             txt, buff=0.32, color=c,
-            fill_color=panel_color, fill_opacity=0.92,
+            fill_color=panel_color, fill_opacity=1.0,
             corner_radius=0.16,
         )
         pill_groups.append(VGroup(pill, txt))
@@ -92,7 +92,7 @@ def fm_card(label_text, value_text, accent_color=BRAND_GOLD,
     box = SurroundingRectangle(
         content, buff=buff,
         color=accent_color,
-        fill_color=panel_color, fill_opacity=0.88,
+        fill_color=panel_color, fill_opacity=1.0,
         corner_radius=0.18,
     )
     return VGroup(box, content)
@@ -462,7 +462,7 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
 
     pts        = [axes.c2p(i, y_values[i]) for i in range(n)]
     line       = VMobject()
-    line.set_points_as_corners(pts)
+    line.set_points_smoothly(pts)
     line.set_stroke(color=accent_color, width=4.5, opacity=0.95)
 
     baseline_y = y_lo
@@ -470,7 +470,7 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
     fill_region = Polygon(*fill_pts, fill_opacity=0.20, stroke_width=0)
     fill_region.set_color_by_gradient(accent_color, BRAND_BG)
 
-    end_dot = Dot(axes.c2p(n - 1, y_values[-1]), color=accent_color, radius=0.13)
+    end_dot = Dot(pts[-1], color=accent_color, radius=0.13)
     end_lbl = Text(end_value_label, font_size=38, color=accent_color, weight=BOLD)
     _dot_pt = axes.c2p(n - 1, y_values[-1])
     _dot_x  = _dot_pt[0]
@@ -550,11 +550,11 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
         color    = s.get("color", BRAND_GREEN)
         pts      = [axes.c2p(i, y_values[i]) for i in range(n)]
         line     = VMobject()
-        line.set_points_as_corners(pts)
+        line.set_points_smoothly(pts)
         line.set_stroke(color=color, width=4.5, opacity=0.95)
         lines.append(line)
 
-        end_dot = Dot(axes.c2p(n - 1, y_values[-1]), color=color, radius=0.11)
+        end_dot = Dot(pts[-1], color=color, radius=0.11)
         end_lbl = Text(s.get("label", ""), font_size=26, color=color, weight=BOLD)
         _dot_pt2 = axes.c2p(n - 1, y_values[-1])
         _dot_x   = _dot_pt2[0]
