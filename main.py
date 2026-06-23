@@ -165,6 +165,84 @@ MUSIC_MAP = {
     "default":   "bg_musics/finance_ambient.mp3",
 }
 
+
+SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sfx")
+
+SFX_MAP = {
+    "graph_whoosh":    ("graph_whoosh.mp3",       -22),
+    "card_pop":        ("card_pop.mp3",            -20),
+    "solution_chime":  ("solution_chime_01.mp3",   -23),
+    "warning_ping":    ("warning_ping.mp3",         -24),
+    "problem_hit":     ("problem_hit.mp3",          -28),
+    "tiny_click":      ("tiny_click_01.mp3",        -24),
+}
+
+def _sfx_path(key):
+    entry = SFX_MAP.get(key)
+    if not entry:
+        return None
+    fname, _ = entry
+    p = os.path.join(SFX_DIR, fname)
+    return p if os.path.exists(p) else None
+
+def _detect_sfx_for_chunk(code: str) -> str:
+    if not code:
+        return None
+    c = code.lower()
+    if "fm_animate_line_chart" in c or "fm_animate_line_chart_multi" in c:
+        return "graph_whoosh"
+    if "fm_animate_waterfall" in c or "fm_animate_comparison_bars" in c:
+        if "brand_red" in c or "warning" in c or "danger" in c or "debt" in c:
+            return "problem_hit"
+        return "graph_whoosh"
+    if "fm_animate_gauge" in c or "fm_animate_donut" in c:
+        if "brand_red" in c or "warning" in c:
+            return "warning_ping"
+        return "solution_chime"
+    if "fm_animate_bar_chart" in c:
+        if "brand_red" in c:
+            return "warning_ping"
+        return "tiny_click"
+    if "fm_animate_counter" in c or "fm_animate_single_value" in c:
+        return "tiny_click"
+    if "fm_card" in c or "fm_two_cards" in c or "fm_stacked_cards" in c or "fm_card_row" in c:
+        if "brand_red" in c:
+            return "problem_hit"
+        return "card_pop"
+    if "fm_animate_glow_reveal" in c or "fm_animate_text_reveal" in c:
+        return "solution_chime"
+    if "fm_concept_pills" in c or "fm_animate_timeline" in c:
+        return "card_pop"
+    return None
+
+def _build_sfx_audio_inputs(clip_paths, chunk_code_list):
+    sfx_events = []
+    t = 0.0
+    MIN_GAP = 6.0
+    last_sfx_t = -MIN_GAP
+    for i, clip in enumerate(clip_paths):
+        if not clip or not os.path.exists(clip):
+            t += 4.5
+            continue
+        try:
+            r = subprocess.run(
+                ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', clip],
+                capture_output=True, text=True
+            )
+            dur = float(r.stdout.strip())
+        except Exception:
+            dur = 4.5
+        code = chunk_code_list[i] if i < len(chunk_code_list) else None
+        sfx_key = _detect_sfx_for_chunk(code)
+        sfx_file = _sfx_path(sfx_key) if sfx_key else None
+        if sfx_file and (t - last_sfx_t) >= MIN_GAP:
+            _, vol_db = SFX_MAP[sfx_key]
+            sfx_events.append((t, sfx_file, vol_db))
+            last_sfx_t = t
+        t += dur
+    return sfx_events
+
 FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
 FONT_BLACK_CANDIDATES = [
@@ -3353,24 +3431,62 @@ class FinanceGenerator:
             print(f"  ✅ {len(clip_paths)} chunks concatenated -> {concat_output}")
 
             print(f"\n[STEP 8] Audio mix...")
+            sfx_events = _build_sfx_audio_inputs(clip_paths, chunk_code_list)
+            print(f"  🔊 SFX events: {len(sfx_events)}")
+
             cmd = ['ffmpeg', '-y', '-i', concat_output, '-i', self.audio_path]
+            n_inputs = 2
+
             if bg_music and os.path.exists(bg_music):
                 cmd += ['-i', bg_music]
-                fc = (
-                    f'[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=1.0[voice];'
-                    f'[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
-                    f'volume={bg_volume},aloop=loop=-1:size=2e+09[bg];'
-                    f'[voice][bg]amix=inputs=2:duration=first:dropout_transition=2,aresample=48000[aout]'
-                )
-                cmd += ['-filter_complex', fc, '-map', '0:v', '-map', '[aout]']
+                bg_idx = n_inputs
+                n_inputs += 1
             else:
-                cmd += ['-map', '0:v', '-map', '1:a']
+                bg_idx = None
+
+            sfx_indices = []
+            for (_t, sfx_file, _vol) in sfx_events:
+                cmd += ['-i', sfx_file]
+                sfx_indices.append(n_inputs)
+                n_inputs += 1
+
+            fc_parts = []
+            fc_parts.append(
+                f'[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=1.0[voice]'
+            )
+            mix_labels = ['[voice]']
+
+            if bg_idx is not None:
+                fc_parts.append(
+                    f'[{bg_idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                    f'volume={bg_volume},aloop=loop=-1:size=2e+09[bg]'
+                )
+                mix_labels.append('[bg]')
+
+            for k, (t_start, _sfx_file, vol_db) in enumerate(sfx_events):
+                idx = sfx_indices[k]
+                vol_linear = 10 ** (vol_db / 20.0)
+                label = f'[sfx{k}]'
+                fc_parts.append(
+                    f'[{idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                    f'volume={vol_linear:.4f},adelay={int(t_start*1000)}|{int(t_start*1000)},apad{label}'
+                )
+                mix_labels.append(label)
+
+            n_mix = len(mix_labels)
+            mix_in = ''.join(mix_labels)
+            fc_parts.append(
+                f'{mix_in}amix=inputs={n_mix}:duration=first:dropout_transition=2,aresample=48000[aout]'
+            )
+            fc = ';'.join(fc_parts)
+
+            cmd += ['-filter_complex', fc, '-map', '0:v', '-map', '[aout]']
             cmd += ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
                     '-ar', '48000', '-ac', '2', '-t', str(duration), audio_output]
             r = subprocess.run(cmd, capture_output=True)
             if r.returncode != 0:
-                raise Exception(f"Audio failed: {r.stderr.decode()[-200:]}")
-            print(f"  ✅ Mixed")
+                raise Exception(f"Audio failed: {r.stderr.decode()[-400:]}")
+            print(f"  ✅ Mixed ({n_mix} audio streams)")
 
             shutil.move(audio_output, self.output_path)
 
@@ -3514,7 +3630,6 @@ MANIM_FORBIDDEN_NAMES = {
     "Rectangle",
     "DashedLine", "DashedVMobject",
     "Ellipse",
-    "Square",
 }
 MANIM_FORBIDDEN_PATTERNS = [
     r'\bDecimalNumber\b',
@@ -3526,7 +3641,6 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'\bRectangle\b',
     r'\bDashedLine\b', r'\bDashedVMobject\b',
     r'\bEllipse\b',
-    r'\bSquare\b',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
@@ -4450,9 +4564,6 @@ NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called
 - Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, Axes, NumberLine, NumberPlane, SVGMobject, ComplexPlane, PolarPlane, Rectangle. Use Text() and the fm_* library instead. For line charts prefer fm_animate_line_chart (consistent styling), for bar charts use fm_animate_bar_chart. Axes, NumberLine, and NumberPlane stay banned -- do not use them even though the toolchain technically supports them, for the same GPT-reliability reasons as MathTex above. For ANY icon or symbol (house, person, clock, dollar sign, warning triangle, checkmark) use fm_icon(name, size, color) — never SVGMobject, never ImageMobject, never any class that loads external files.
 - Also banned (produced real visual artifacts in actual output): DashedLine and DashedVMobject -- a DashedLine appearing as a stray dotted artifact on a rendered line chart is a real failure from a prior run, caused by GPT adding a decorative dashed element at a chart midpoint. Use a plain Line() or VMobject with set_stroke() if a continuous line element is needed; there is no use case on this channel where a dashed/dotted line reads as a financial insight rather than a visual glitch. Ellipse is also banned -- it was used as a decorative "start marker" at the beginning of a line chart, producing a random colored oval hanging at the left edge of the chart with no meaning. There is no correct use of Ellipse on this channel; use Dot or Circle for point markers.
 - LINE CHART COLOR RULE: fm_animate_line_chart accent_color must be BRAND_GOLD (neutral/general trend) or BRAND_GREEN (positive surplus direction) -- NEVER BRAND_RED. A real failure: a cashflow-dip beat used accent_color=BRAND_RED, producing a red line chart where the gradient fill under the curve became a muddy dark-red smear against the navy background, making the chart nearly unreadable. The DANGER/RED emotional rule applies to bar charts, cards, gauges, and waterfall steps -- not to the accent_color of a single-series line chart. If a beat needs to communicate a negative/dangerous cashflow trend, use fm_animate_comparison_bars or fm_animate_waterfall with BRAND_RED bars rather than a red line chart.
-- ICON-CARD GROUPING RULE: when a beat places an fm_icon() next to or near an fm_card/fm_two_cards/fm_stacked_cards output, both elements MUST be wrapped into a single VGroup and arranged together before any positioning. A real failure: a card "Emergency Fund $6,000" was placed at center, then an arrow_up icon was separately placed to the right of it using .next_to() on its own -- the icon appeared floating disconnected in mid-frame with no visual relationship to the card. The correct pattern: build the card, build the icon, then do composition = VGroup(card, icon).arrange(RIGHT, buff=0.4) and position the composition as one unit. Never scene.add() a card and an icon independently in the same chunk without first grouping them.
-- EVERY VISUAL ELEMENT MUST HAVE A TEXT LABEL: a visual that has no text on it is not a chart, it is a colored shape. A real failure: two horizontal rounded bars appeared on screen, one gray and one red, with a warning triangle icon -- but no text labels, no values, no category names. The bars communicated nothing. Every bar, gauge, card, pill, and shape that represents data must have at minimum one Text label attached to it showing either a value or a category name. If you are building anything other than a pure animation transition, it must have text on it before scene.add() is called.
-- GRAY AS FILL COLOR IS BANNED: BRAND_GRAY (#8A94A6) must never be used as a fill color for any shape, card, or figure. A real failure: a person figure was built using a Circle for the head and a body shape filled with BRAND_GRAY, producing a flat gray silhouette that disappeared against the dark background. Gray is only for de-emphasized structural elements like unfilled gauge tracks and faint grid lines -- never the primary filled shape in a composition. Use BRAND_WHITE, BRAND_GOLD, BRAND_GREEN, or BRAND_RED for any filled shape that is meant to be seen.
 - GAUGE ICON PLACEMENT RULE: never position fm_icon() elements at or near the fill arc's endpoint. The fill arc animates from 0 to its final angle via ValueTracker -- its endpoint moves during the animation, and placing an icon at fill_arc.get_end() or at a guessed coordinate near the arc tip causes the icon to overlap the arc at a random mid-animation position. A real failure: a warning icon and dollar icon were placed at the arc endpoint, overlapping the arc and each other at 7:12 in a rendered video. Icons in gauge chunks must be placed below the gauge (cat_lbl is already there), or to the side of the full composition -- never chasing the arc's moving tip.
   QUICK SUBSTITUTION TABLE -- every one of these banned names is REJECTED by an automated safety check before rendering even starts (the chunk becomes a blank filler clip, not a crash, but still blank), so if you catch yourself about to type any of these, stop and use the replacement instead. There is no case where the banned name is the only option:
     Rectangle(...)        -> fm_card / fm_two_cards / fm_stacked_cards (a labeled box) or fm_animate_bar_chart / fm_animate_comparison_bars / fm_animate_waterfall (a bar)
