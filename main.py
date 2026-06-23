@@ -28,8 +28,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 current_job = {"status": "idle", "progress": 0, "output": None, "error": None, "started_at": None}
 
-OUTPUT_WIDTH  = 3840
-OUTPUT_HEIGHT = 2160
+OUTPUT_WIDTH  = 1920
+OUTPUT_HEIGHT = 1080
 
 ENCODE_PRESET = os.environ.get("FINANCE_ENCODE_PRESET", "medium")
 ENCODE_CRF    = os.environ.get("FINANCE_ENCODE_CRF", "15")
@@ -3880,7 +3880,7 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
     return True, ""
 
 
-MANIM_CHUNK_TIMEOUT_SECONDS = 75
+MANIM_CHUNK_TIMEOUT_SECONDS = 180
 MANIM_CHUNK_CACHE_DIR = "/tmp/finance_explainer_manim_cache"
 MANIM_CHUNK_MAX_DRIFT_RATIO = 0.45
 
