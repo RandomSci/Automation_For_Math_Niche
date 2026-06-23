@@ -5050,6 +5050,20 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
     gap_indices = [i for i in range(n) if chunks[i].get("is_gap")]
     print(f"  🎬 Rendering {len(content_indices)} content chunk(s) across up to {max_workers} parallel workers...")
 
+    import time as _render_time
+    _render_start = _render_time.time()
+
+    def _fmt_ts(seconds):
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m{s:02d}s"
+
+    def _chunk_video_ts(chunk_idx):
+        try:
+            t = float(chunks[chunk_idx].get("start_time", 0.0))
+            return f"~{_fmt_ts(t)} in video"
+        except Exception:
+            return ""
+
     done = 0
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         futures = {
@@ -5069,10 +5083,12 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
 
             clip_paths[idx] = path
             done += 1
+            elapsed = _render_time.time() - _render_start
             if err:
-                print(f"  ⚠ Chunk {idx}: {err[:160]} -- filled with dashboard background [{done}/{len(content_indices)}]")
+                vts = _chunk_video_ts(idx)
+                print(f"  ⚠ Chunk {idx} ({vts}): {err[:160]} -- filler [{done}/{len(content_indices)}] | elapsed {_fmt_ts(elapsed)}")
             if done % 10 == 0 or done == len(content_indices):
-                print(f"  ⚙️  Manim chunk progress: {done}/{len(content_indices)}")
+                print(f"  ⚙️  Manim chunk progress: {done}/{len(content_indices)} | elapsed {_fmt_ts(elapsed)}")
 
     if gap_indices:
         print(f"  ⏸  Filling {len(gap_indices)} silence gap(s) by holding the previous frame...")
