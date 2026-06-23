@@ -60,7 +60,8 @@ def fm_concept_pills(labels, colors=None, panel_color=BRAND_PANEL, text_color=No
         )
         pill_groups.append(VGroup(pill, txt))
 
-    if direction == RIGHT and len(pill_groups) >= 4:
+    import numpy as _np
+    if len(pill_groups) >= 4 and _np.array_equal(direction, RIGHT):
         mid = (len(pill_groups) + 1) // 2
         row1 = VGroup(*pill_groups[:mid])
         row2 = VGroup(*pill_groups[mid:])
@@ -1156,9 +1157,9 @@ def fm_icon(name, size=1.0, color=BRAND_GOLD):
         g.add(mark)
 
     elif name == "fire":
-        outer = Ellipse(width=0.44*s, height=0.68*s)
+        outer = Circle(radius=0.34 * s).stretch(0.44 / 0.68, dim=0)
         outer.set_fill(color, opacity=0.88).set_stroke(color, width=1.0)
-        inner = Ellipse(width=0.24*s, height=0.45*s)
+        inner = Circle(radius=0.225 * s).stretch(0.24 / 0.45, dim=0)
         inner.set_fill(BRAND_WHITE, opacity=0.45).shift(DOWN * 0.04 * s)
         g.add(outer, inner)
 
