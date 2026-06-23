@@ -46,7 +46,10 @@ def fm_concept_pills(labels, colors=None, panel_color=BRAND_PANEL, text_color=No
     if direction is None:
         direction = RIGHT if len(labels) <= 3 else DOWN
 
-    pills = VGroup()
+    safe_w = config.frame_width * 0.88
+    safe_h = config.frame_height * 0.78
+
+    pill_groups = []
     for i, label in enumerate(labels):
         c = colors[i % len(colors)]
         txt = Text(label, font_size=font_size, color=text_color, weight=BOLD)
@@ -55,12 +58,19 @@ def fm_concept_pills(labels, colors=None, panel_color=BRAND_PANEL, text_color=No
             fill_color=panel_color, fill_opacity=0.92,
             corner_radius=0.16,
         )
-        pills.add(VGroup(pill, txt))
+        pill_groups.append(VGroup(pill, txt))
 
-    pills.arrange(direction, buff=spacing)
+    if direction == RIGHT and len(pill_groups) >= 4:
+        mid = (len(pill_groups) + 1) // 2
+        row1 = VGroup(*pill_groups[:mid])
+        row2 = VGroup(*pill_groups[mid:])
+        row1.arrange(RIGHT, buff=spacing)
+        row2.arrange(RIGHT, buff=spacing)
+        pills = VGroup(row1, row2).arrange(DOWN, buff=spacing * 1.1)
+    else:
+        pills = VGroup(*pill_groups)
+        pills.arrange(direction, buff=spacing)
 
-    safe_w = config.frame_width * 0.88
-    safe_h = config.frame_height * 0.78
     if pills.width > safe_w:
         pills.scale(safe_w / pills.width)
     if pills.height > safe_h:
