@@ -169,12 +169,12 @@ MUSIC_MAP = {
 SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sfx")
 
 SFX_MAP = {
-    "graph_whoosh":    ("graph_whoosh.mp3",       -22),
-    "card_pop":        ("card_pop.mp3",            -20),
-    "solution_chime":  ("solution_chime_01.mp3",   -23),
-    "warning_ping":    ("warning_ping.mp3",         -24),
-    "problem_hit":     ("problem_hit.mp3",          -28),
-    "tiny_click":      ("tiny_click_01.mp3",        -24),
+    "graph_whoosh":    ("alexzavesa-swoosh-1-463607.mp3",          -22),
+    "card_pop":        ("universfield-new-notification-010-352755.mp3", -20),
+    "solution_chime":  ("universfield-new-notification-013-363676.mp3", -23),
+    "warning_ping":    ("universfield-new-notification-014-363678.mp3", -24),
+    "problem_hit":     ("freesound_community-punch-boxing-02wav-14897.mp3", -26),
+    "tiny_click":      ("dragon-studio-mouse-click-4-393911.mp3",   -22),
 }
 
 def _sfx_path(key):
@@ -3829,14 +3829,14 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
         # GPT often calls axes.p2c((x, y)) with a two-value tuple, but Manim expects
         # a real 3D point for point-to-coordinates conversion. For generated code,
         # the safe direction is always data -> point via c2p, or better, an fm_* helper.
-        if isinstance(node, ast.Attribute) and node.attr in {"p2c", "point_to_coords", "point_to_number"}:
+        if isinstance(node, ast.Attribute) and node.attr in {"p2c", "point_to_coords", "point_to_number", "normalized"}:
             return False, f"references unsafe coordinate reverse-transform '{node.attr}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
 
         if isinstance(node, ast.Call):
             fn = node.func
             fn_name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
 
-            if fn_name in {"p2c", "point_to_coords", "point_to_number"}:
+            if fn_name in {"p2c", "point_to_coords", "point_to_number", "normalized"}:
                 return False, f"calls unsafe coordinate reverse-transform '{fn_name}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
 
             # Real crash: Polygon([[x,y,z], [x,y,z], ...]) passes ONE nested list

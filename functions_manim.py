@@ -252,16 +252,20 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
         position = ORIGIN
     tracker = ValueTracker(float(start_val))
     end_f   = float(end_val)
-    use_decimal = isinstance(end_val, float) or abs(end_val) < 100
+    is_whole = float(end_val) == int(float(end_val))
+    use_decimal = isinstance(end_val, float) and not is_whole
 
     def _num():
         v = tracker.get_value()
-        s = f"{prefix}{v:,.1f}{suffix}" if use_decimal else f"{prefix}{int(v):,}{suffix}"
+        if use_decimal:
+            s = f"{prefix}{v:,.1f}{suffix}"
+        else:
+            s = f"{prefix}{int(round(v)):,}{suffix}"
         return Text(s, font_size=value_size, color=BRAND_WHITE, weight=BOLD).move_to(position)
 
     counter = always_redraw(_num)
     lbl = Text(label_text, font_size=label_size, color=accent_color)
-    lbl.next_to(position, DOWN, buff=0.55)
+    lbl.next_to(position, DOWN, buff=0.85)
     scene.add(counter, lbl)
 
     anim_t = max(min(duration * 0.78, duration - 0.25), 0.1)
@@ -948,10 +952,10 @@ def fm_animate_single_value(scene, value_str, label_text,
     val_mob = Text(value_str, font_size=value_size, color=BRAND_WHITE, weight=BOLD)
     lbl_mob = Text(label_text, font_size=label_size, color=accent_color)
 
-    group = VGroup(val_mob, lbl_mob).arrange(DOWN, buff=0.32)
+    group = VGroup(val_mob, lbl_mob).arrange(DOWN, buff=0.55)
     if sublabel:
         sub = Text(sublabel, font_size=28, color=sublabel_color)
-        group = VGroup(val_mob, lbl_mob, sub).arrange(DOWN, buff=0.28)
+        group = VGroup(val_mob, lbl_mob, sub).arrange(DOWN, buff=0.48)
     group.move_to(ORIGIN)
 
     intro_t = max(min(duration * 0.38, 1.1), 0.1)
