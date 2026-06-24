@@ -216,6 +216,7 @@ def _detect_sfx_for_chunk(code: str) -> str:
     return None
 
 def _build_sfx_audio_inputs(clip_paths, chunk_code_list):
+    return []
     sfx_events = []
     t = 0.0
     MIN_GAP = 6.0
@@ -3829,7 +3830,7 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
         # GPT often calls axes.p2c((x, y)) with a two-value tuple, but Manim expects
         # a real 3D point for point-to-coordinates conversion. For generated code,
         # the safe direction is always data -> point via c2p, or better, an fm_* helper.
-        if isinstance(node, ast.Attribute) and node.attr in {"p2c", "point_to_coords", "point_to_number", "normalized"}:
+        if isinstance(node, ast.Attribute) and node.attr in {"p2c", "point_to_coords", "point_to_number", "normalized", "point_at_angle"}:
             return False, f"references unsafe coordinate reverse-transform '{node.attr}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
 
         if isinstance(node, ast.Call):
@@ -3844,6 +3845,38 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
             # Reject it before wasting a render.
             if fn_name == "Polygon" and len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
                 return False, "Polygon received one nested list of vertices; use Polygon(*points) or avoid Polygon and use fm_icon/fm_card/fm_* helpers"
+
+            if fn_name == "rotate" and any(
+                (isinstance(kw.arg, str) and kw.arg == "run_time")
+                for kw in node.keywords
+            ):
+                return False, "rotate() does not accept run_time kwarg -- pass run_time to self.play() instead: self.play(obj.animate.rotate(...), run_time=X)"
+
+            if fn_name in {"fm_animate_gauge", "fm_animate_donut", "fm_animate_counter",
+                           "fm_animate_line_chart", "fm_animate_line_chart_multi",
+                           "fm_animate_single_value", "fm_animate_glow_reveal",
+                           "fm_animate_icon_grid", "fm_animate_comparison_bars",
+                           "fm_animate_bar_chart", "fm_animate_waterfall",
+                           "fm_animate_stacked_cards", "fm_animate_bullet_chart",
+                           "fm_animate_timeline", "fm_animate_text_reveal"}:
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Subscript) and child is not node:
+                        pass
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript):
+            val = node.value
+            if isinstance(val, ast.Call):
+                fn = val.func
+                fn_name2 = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
+                if fn_name2 in {"fm_animate_gauge", "fm_animate_donut", "fm_animate_counter",
+                                "fm_animate_line_chart", "fm_animate_line_chart_multi",
+                                "fm_animate_single_value", "fm_animate_glow_reveal",
+                                "fm_animate_icon_grid", "fm_animate_comparison_bars",
+                                "fm_animate_bar_chart", "fm_animate_waterfall",
+                                "fm_animate_stacked_cards", "fm_animate_bullet_chart",
+                                "fm_animate_timeline", "fm_animate_text_reveal"}:
+                    return False, f"indexing the return value of {fn_name2}() is unsafe -- these functions return None or a fixed-arity tuple; store the return in a named variable and index that, checking the documented arity first"
 
     class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
     if len(class_defs) != 1:
@@ -4671,6 +4704,14 @@ ANIMATION functions (handle ALL self.play/self.wait for their duration, call onc
 When a library function exists for what the beat needs, use it -- it is crash-proof and professionally tuned. For beats the library doesn't cover well, use raw Manim primitives as before. The library is a starting point and covers the most common beat types; it is not a cage.
 
 ONE FULL-SCREEN ANIMATE PRIMITIVE PER CHUNK, NEVER TWO STACKED TOGETHER: fm_animate_gauge, fm_animate_donut, fm_animate_single_value, fm_animate_glow_reveal, fm_animate_icon_grid, fm_animate_comparison_bars, fm_animate_bar_chart, fm_animate_line_chart, and fm_animate_waterfall are each already a COMPLETE, self-contained visual that defaults to centering itself at ORIGIN. A real, confirmed failure: a single chunk called fm_animate_icon_grid(...) AND fm_animate_single_value(...) (or fm_animate_glow_reveal with a subtitle) back to back -- both defaulted to the same central position, and the result was three separate text blocks and a full icon grid all stacked directly on top of each other, completely unreadable. These functions were not designed to be layered -- each one already fills the available frame space on its own. Pick exactly ONE of these per chunk that best matches what the beat needs. If you genuinely believe two numbers need to appear in the same chunk (e.g. two values being compared), that is almost always a sign you should be calling fm_animate_comparison_bars or fm_two_cards with BOTH values passed in as part of ONE call -- not two separate primitive calls placed in the same construct(). Likewise, never call fm_animate_gauge or fm_animate_donut twice in the same chunk to show two side-by-side proportions -- if you have two values to compare against each other (not each against its own separate max), that is a comparison, not two proportions, and fm_animate_comparison_bars is correct, not two gauges.
+
+THREE MORE CONFIRMED REAL CRASHES -- AVOID THESE SPECIFICALLY:
+
+- rotate() does NOT accept run_time as a kwarg: `obj.animate.rotate(-PI/4, about_point=p, run_time=0.5)` crashes with TypeError. run_time belongs to self.play(), never to the method call inside .animate. Correct: `self.play(obj.animate.rotate(-PI/4, about_point=p), run_time=0.5)`.
+
+- point_at_angle() does NOT exist on Arc in this Manim version. Crashes with AttributeError. To get a point on an arc, use `arc.point_from_proportion(t)` where t is 0.0 (start) to 1.0 (end).
+
+- NEVER index the return value of an fm_animate_* function directly: `gauge = fm_animate_gauge(...); icon.next_to(gauge[1], UP)` crashes with IndexError because fm_animate_gauge returns a tuple (tracker, val_lbl, cat_lbl), not a subscriptable VGroup. Unpack to named variables first: `tracker, val_lbl, cat_lbl = fm_animate_gauge(...)`, then reference `cat_lbl` by name. Even better: just call fm_animate_gauge as a bare statement with no assignment if you do not need the returned references at all.
 
 RETURN-VALUE UNPACKING IS A REAL, RECURRING CRASH SOURCE: every ANIMATION function above states its exact return tuple in its description (e.g. "Returns (tracker, pct_lbl, cat_lbl)"). A confirmed real failure: calling `(tracker, pct_lbl) = fm_animate_donut(...)` against a function documented as returning THREE values, not two -- `ValueError: too many values to unpack`. Before writing any line that unpacks an fm_animate_* call into named variables, re-read that exact function's "Returns (...)" text above and count the names in your unpacking statement against the count in that line. If you do not need the returned values at all (most calls), do not unpack them -- just call the function as a bare statement: `fm_animate_donut(self, 67, "Label", BRAND_RED, duration=3.2)` with no assignment, which is always safe regardless of arity.
 

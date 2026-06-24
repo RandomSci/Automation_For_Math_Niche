@@ -669,9 +669,10 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
         val_lbl  = Text(val_str, font_size=22, color=c, weight=BOLD)
         val_lbl.next_to(bar, DOWN if (v < 0) else UP, buff=0.08)
         cat_lbl  = Text(step.get("label", ""), font_size=18, color=BRAND_GRAY)
-        cat_lbl.move_to([x_pos, cat_row_y, 0])
-        if v < 0 and val_lbl.get_bottom()[1] < cat_lbl.get_top()[1] + 0.05:
-            cat_lbl.next_to(val_lbl, DOWN, buff=0.12)
+        if v < 0:
+            cat_lbl.next_to(val_lbl, DOWN, buff=0.10)
+        else:
+            cat_lbl.next_to(bar, DOWN, buff=0.08)
         labels.add(VGroup(val_lbl, cat_lbl))
 
     all_elements = VGroup(baseline, bars, labels)
