@@ -481,13 +481,8 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
         _lbl_dir = UP
     else:
         _lbl_dir = UR if _dot_x < _safe_right else UL
-    end_lbl.next_to(end_dot, _lbl_dir, buff=0.18)
     _frame_right_edge = config.frame_width / 2 - 0.25
     _frame_left_edge  = -config.frame_width / 2 + 0.25
-    if end_lbl.get_right()[0] > _frame_right_edge:
-        end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
-    if end_lbl.get_left()[0] < _frame_left_edge:
-        end_lbl.shift(RIGHT * (_frame_left_edge - end_lbl.get_left()[0]))
 
     if title_text:
         ttl = Text(title_text, font_size=30, color=BRAND_GRAY)
@@ -499,6 +494,13 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
     label_t = 0.4
     hold_t  = max(duration - grow_t - label_t, 0.05)
     scene.play(Create(line), run_time=grow_t, rate_func=smooth)
+    curve_end = line.get_end()
+    end_dot.move_to(curve_end)
+    end_lbl.next_to(end_dot, _lbl_dir, buff=0.18)
+    if end_lbl.get_right()[0] > _frame_right_edge:
+        end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
+    if end_lbl.get_left()[0] < _frame_left_edge:
+        end_lbl.shift(RIGHT * (_frame_left_edge - end_lbl.get_left()[0]))
     scene.play(FadeIn(end_dot), Write(end_lbl), run_time=label_t)
     scene.wait(hold_t)
     return axes, line, end_dot
@@ -545,6 +547,7 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
     lines    = []
     end_dots = []
     end_lbls = []
+    _lbl_dirs = []
     for s in series:
         y_values = s["y_values"]
         color    = s.get("color", BRAND_GREEN)
@@ -562,27 +565,12 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
         _safe_right = config.frame_width * 0.38
         _low_thresh2 = -config.frame_height * 0.20
         if _dot_y2 < _low_thresh2:
-            _lbl_dir = UP
+            _lbl_dir2 = UP
         else:
-            _lbl_dir = UR if _dot_x < _safe_right else UL
-        end_lbl.next_to(end_dot, _lbl_dir, buff=0.12)
-        _frame_right_edge = config.frame_width / 2 - 0.25
-        _frame_left_edge2 = -config.frame_width / 2 + 0.25
-        if end_lbl.get_right()[0] > _frame_right_edge:
-            end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
-        if end_lbl.get_left()[0] < _frame_left_edge2:
-            end_lbl.shift(RIGHT * (_frame_left_edge2 - end_lbl.get_left()[0]))
+            _lbl_dir2 = UR if _dot_x < _safe_right else UL
         end_dots.append(end_dot)
         end_lbls.append(end_lbl)
-
-    order   = sorted(range(len(series)), key=lambda i: series[i]["y_values"][-1], reverse=True)
-    min_gap = 0.4
-    for k in range(1, len(order)):
-        prev_i = order[k - 1]
-        cur_i  = order[k]
-        gap = end_lbls[prev_i].get_bottom()[1] - end_lbls[cur_i].get_top()[1]
-        if gap < min_gap:
-            end_lbls[cur_i].shift(DOWN * (min_gap - gap))
+        _lbl_dirs.append(_lbl_dir2)
 
     if title_text:
         ttl = Text(title_text, font_size=30, color=BRAND_GRAY)
@@ -594,6 +582,26 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
     label_t = 0.45
     hold_t  = max(duration - grow_t - label_t, 0.05)
     scene.play(*[Create(l) for l in lines], run_time=grow_t, rate_func=smooth)
+
+    _frame_right_edge = config.frame_width / 2 - 0.25
+    _frame_left_edge2 = -config.frame_width / 2 + 0.25
+    for i, (line_obj, end_dot, end_lbl, ldir) in enumerate(zip(lines, end_dots, end_lbls, _lbl_dirs)):
+        end_dot.move_to(line_obj.get_end())
+        end_lbl.next_to(end_dot, ldir, buff=0.12)
+        if end_lbl.get_right()[0] > _frame_right_edge:
+            end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
+        if end_lbl.get_left()[0] < _frame_left_edge2:
+            end_lbl.shift(RIGHT * (_frame_left_edge2 - end_lbl.get_left()[0]))
+
+    order   = sorted(range(len(series)), key=lambda i: series[i]["y_values"][-1], reverse=True)
+    min_gap = 0.4
+    for k in range(1, len(order)):
+        prev_i = order[k - 1]
+        cur_i  = order[k]
+        gap = end_lbls[prev_i].get_bottom()[1] - end_lbls[cur_i].get_top()[1]
+        if gap < min_gap:
+            end_lbls[cur_i].shift(DOWN * (min_gap - gap))
+
     scene.play(
         *[FadeIn(d) for d in end_dots],
         *[Write(l) for l in end_lbls],
@@ -830,9 +838,9 @@ def fm_animate_bullet_chart(scene, actual, target, range_low, range_high,
     bar = always_redraw(_bar)
 
     target_lbl = Text(f"Target: ${int(target):,}", font_size=26, color=BRAND_WHITE)
-    target_lbl.next_to(tick, UP, buff=0.22).shift(position)
+    target_lbl.next_to(tick, UP, buff=0.22)
     actual_lbl = Text(f"${int(actual):,}", font_size=42, color=accent_color, weight=BOLD)
-    actual_lbl.next_to(band, DOWN, buff=0.32).shift(position)
+    actual_lbl.next_to(band, DOWN, buff=0.32)
     cat_lbl    = Text(label_text, font_size=30, color=BRAND_GRAY)
     cat_lbl.next_to(actual_lbl, DOWN, buff=0.15)
 
@@ -1064,6 +1072,15 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
     baseline = Line([-total_w / 2 - edge_margin, zero_y, 0], [total_w / 2 + edge_margin, zero_y, 0])
     baseline.set_stroke(BRAND_GRAY, width=2.2, opacity=0.55)
     scene.add(baseline)
+
+    min_gap = 0.08
+    for k in range(1, len(cat_labels)):
+        prev = cat_labels[k - 1]
+        cur  = cat_labels[k]
+        overlap = prev.get_right()[0] - cur.get_left()[0] + min_gap
+        if overlap > 0:
+            cur.shift(RIGHT * (overlap / 2))
+            prev.shift(LEFT * (overlap / 2))
 
     chart = VGroup(bars, val_labels, cat_labels)
 
