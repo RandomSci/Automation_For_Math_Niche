@@ -1,5 +1,69 @@
 from manim import *
 import math
+import numpy as _fmnp
+
+
+def _fm_smooth_tangents(points):
+    """Clamped Catmull-Rom tangents: interior points use the centered
+    difference, endpoints use a one-sided difference so the curve never
+    extrapolates past points[0] or points[-1]. Each tangent's x-component
+    is additionally clamped so a handle never reaches backward past the
+    neighbouring anchor in x -- without this, a sharp peak/valley makes the
+    smoothed stroke briefly loop backward in x, which reads as a broken
+    chart. For a left-to-right trend line x is monotonic, so this clamp is
+    safe and only ever shortens an over-long handle."""
+    pts = [_fmnp.array(p, dtype=float) for p in points]
+    n = len(pts)
+    tangents = []
+    for i in range(n):
+        if i == 0:
+            t = pts[1] - pts[0]
+        elif i == n - 1:
+            t = pts[-1] - pts[-2]
+        else:
+            t = (pts[i + 1] - pts[i - 1]) * 0.5
+        tangents.append(t)
+    for i in range(n):
+        tx = tangents[i][0]
+        if tx <= 1e-9:
+            continue
+        if i < n - 1:
+            seg_dx = pts[i + 1][0] - pts[i][0]
+            if seg_dx > 0 and tx / 3.0 > seg_dx:
+                tangents[i] = tangents[i] * (3.0 * seg_dx / tx)
+        tx = tangents[i][0]
+        if tx <= 1e-9:
+            continue
+        if i > 0:
+            seg_dx = pts[i][0] - pts[i - 1][0]
+            if seg_dx > 0 and tx / 3.0 > seg_dx:
+                tangents[i] = tangents[i] * (3.0 * seg_dx / tx)
+    return pts, tangents
+
+
+def _fm_set_line_smooth(vmobject, points):
+    """Set a VMobject's path to a smooth curve through `points` that does
+    NOT overshoot its endpoints, using Manim's documented cubic-bezier
+    builder (start_new_path + add_cubic_bezier_curve_to). Manim's built-in
+    set_points_smoothly() fits C2 handles that bulge the stroke PAST the
+    final anchor -- that overshoot is exactly why the end-of-line dot
+    looked like it stopped short of the curve tip. With clamped tangents
+    the rendered stroke ends exactly on points[-1], so a dot placed at
+    points[-1] sits precisely on the visible end of the line.
+    Use this for any trend line that carries an end-dot marker."""
+    pts, tangents = _fm_smooth_tangents(points)
+    n = len(pts)
+    if n < 2:
+        return vmobject
+    vmobject.start_new_path(pts[0])
+    for i in range(n - 1):
+        p0 = pts[i]
+        p1 = pts[i + 1]
+        h1 = p0 + tangents[i] / 3.0
+        h2 = p1 - tangents[i + 1] / 3.0
+        vmobject.add_cubic_bezier_curve_to(h1, h2, p1)
+    return vmobject
+
 
 BRAND_WHITE = "#F5F7FA"
 BRAND_GREEN = "#38D996"
@@ -462,7 +526,7 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
 
     pts        = [axes.c2p(i, y_values[i]) for i in range(n)]
     line       = VMobject()
-    line.set_points_smoothly(pts)
+    _fm_set_line_smooth(line, pts)
     line.set_stroke(color=accent_color, width=4.5, opacity=0.95)
 
     baseline_y = y_lo
@@ -494,7 +558,7 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
     label_t = 0.4
     hold_t  = max(duration - grow_t - label_t, 0.05)
     scene.play(Create(line), run_time=grow_t, rate_func=smooth)
-    curve_end = line.get_end()
+    curve_end = pts[-1]
     end_dot.move_to(curve_end)
     end_lbl.next_to(end_dot, _lbl_dir, buff=0.18)
     if end_lbl.get_right()[0] > _frame_right_edge:
@@ -548,14 +612,16 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
     end_dots = []
     end_lbls = []
     _lbl_dirs = []
+    _end_pts = []
     for s in series:
         y_values = s["y_values"]
         color    = s.get("color", BRAND_GREEN)
         pts      = [axes.c2p(i, y_values[i]) for i in range(n)]
         line     = VMobject()
-        line.set_points_smoothly(pts)
+        _fm_set_line_smooth(line, pts)
         line.set_stroke(color=color, width=4.5, opacity=0.95)
         lines.append(line)
+        _end_pts.append(pts[-1])
 
         end_dot = Dot(pts[-1], color=color, radius=0.11)
         end_lbl = Text(s.get("label", ""), font_size=26, color=color, weight=BOLD)
@@ -586,7 +652,7 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
     _frame_right_edge = config.frame_width / 2 - 0.25
     _frame_left_edge2 = -config.frame_width / 2 + 0.25
     for i, (line_obj, end_dot, end_lbl, ldir) in enumerate(zip(lines, end_dots, end_lbls, _lbl_dirs)):
-        end_dot.move_to(line_obj.get_end())
+        end_dot.move_to(_end_pts[i])
         end_lbl.next_to(end_dot, ldir, buff=0.12)
         if end_lbl.get_right()[0] > _frame_right_edge:
             end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
