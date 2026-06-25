@@ -3021,7 +3021,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     print(f"  ✅ Render complete: {output_path}")
 
 
-FINANCE_EXPLAINER_CTA_TEXT = "Subscribe for More"
+FINANCE_EXPLAINER_CTA_TEXT = "Subscribe to Math Unlocked"
 FINANCE_EXPLAINER_USE_BACKGROUND_MUSIC = False
 
 
@@ -3429,6 +3429,15 @@ class FinanceGenerator:
             print(f"\n[STEP 7] Rendering Manim chunks (parallel) + concatenating...")
             clip_paths = render_all_manim_chunks(chunks, chunk_code_list,
                                                   w=OUTPUT_WIDTH, h=OUTPUT_HEIGHT, fps=fps)
+
+            print(f"  🎬 Rendering Math Unlocked intro clip...")
+            intro_path = render_intro_clip(w=OUTPUT_WIDTH, h=OUTPUT_HEIGHT, fps=fps, duration=5.0)
+            if intro_path:
+                clip_paths = [intro_path] + clip_paths
+                print(f"  ✅ Intro prepended -> {intro_path}")
+            else:
+                print(f"  ⚠ Intro skipped, continuing without it")
+
             concat_manim_clips(clip_paths, concat_output)
             print(f"  ✅ {len(clip_paths)} chunks concatenated -> {concat_output}")
 
@@ -3563,7 +3572,7 @@ def process_video(niche: str = "finance"):
     global current_job
     try:
         current_job["progress"] = 5
-        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/vaults_narration.mp3"
+        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Math_Niche/main/Audio_Voice/vaults_narration.mp3"
         audio_file  = "Audio_Voice/vaults_narration.mp3"
         output_file = "vaults_output.mp4"
         trans_file  = f"{os.path.splitext(audio_file)[0]}_transcription.json"
@@ -5009,6 +5018,180 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
     ordered = [all_results.get(i) for i in range(len(chunks))]
     print(f"  ✅ {sum(1 for r in ordered if r)} / {len(chunks)} total manim chunks generated")
     return ordered
+
+
+MATH_UNLOCKED_INTRO_QUOTES = [
+    ("All models are wrong, but some are useful.", "George Box"),
+    ("Statistics is the grammar of science.", "Karl Pearson"),
+    ("It is easy to lie with statistics, but easier to lie without them.", "Frederick Mosteller"),
+    ("Probability is the most important concept in modern science.", "Bertrand Russell"),
+    ("The introduction of numbers as coordinates is an act of violence.", "Hermann Weyl"),
+    ("Mathematics is the art of giving the same name to different things.", "Henri Poincare"),
+    ("Pure mathematics is, in its way, the poetry of logical ideas.", "Albert Einstein"),
+    ("Algebra is the offer made by the devil to the mathematician.", "Michael Atiyah"),
+    ("A year spent in artificial intelligence is enough to make one believe in God.", "Alan Perlis"),
+    ("The question of whether a computer can think is no more interesting than whether a submarine can swim.", "Edsger Dijkstra"),
+    ("The purpose of computing is insight, not numbers.", "Richard Hamming"),
+    ("An algorithm must be seen to be believed.", "Donald Knuth"),
+    ("The calculus is the greatest aid we have to the appreciation of physical truth.", "W.B. Smith"),
+    ("Geometry is knowledge of the eternally existent.", "Pythagoras"),
+    ("Geometry is the archetype of the beauty of the world.", "Johannes Kepler"),
+    ("The shortest path between two truths in the real domain passes through the complex domain.", "Jacques Hadamard"),
+    ("Probability is common sense reduced to calculation.", "Pierre-Simon Laplace"),
+    ("Statistical thinking will one day be as necessary for efficient citizenship as the ability to read and write.", "H.G. Wells"),
+    ("The goal of statistics is to gain understanding from data.", "David Freedman"),
+    ("Any sufficiently advanced technology is indistinguishable from magic.", "Arthur C. Clarke"),
+    ("Intelligence is the ability to adapt to change.", "Stephen Hawking"),
+    ("The measure of intelligence is the ability to change.", "Albert Einstein"),
+    ("Beware of bugs in the above code; I have only proved it correct, not tried it.", "Donald Knuth"),
+    ("Simplicity is the ultimate sophistication.", "Leonardo da Vinci"),
+    ("First, solve the problem. Then, write the code.", "John Johnson"),
+    ("We can only see a short distance ahead, but we can see plenty there that needs to be done.", "Alan Turing"),
+    ("A computer would deserve to be called intelligent if it could deceive a human into believing it was human.", "Alan Turing"),
+    ("Mathematics is not about numbers, equations, or algorithms. It is about understanding.", "William Paul Thurston"),
+    ("The essence of mathematics lies in its freedom.", "Georg Cantor"),
+    ("The only way to learn mathematics is to do mathematics.", "Paul Halmos"),
+    ("A mathematician is a device for turning coffee into theorems.", "Paul Erdos"),
+    ("The moving power of mathematical invention is not reasoning but imagination.", "Augustus De Morgan"),
+    ("Small differences in initial conditions produce very great ones in the final phenomena.", "Henri Poincare"),
+    ("Space is not simply the background to events, it is a physical entity.", "Roger Penrose"),
+    ("If your experiment needs statistics, you ought to have done a better experiment.", "Ernest Rutherford"),
+    ("Do not worry about your difficulties in mathematics. I can assure you mine are still greater.", "Albert Einstein"),
+    ("Mathematics reveals its secrets only to those who approach it with pure love.", "Archimedes"),
+    ("In mathematics the art of asking questions is more valuable than solving problems.", "Georg Cantor"),
+    ("The brain is wider than the sky.", "Emily Dickinson"),
+    ("It has become appallingly obvious that our technology has exceeded our humanity.", "Albert Einstein"),
+    ("The question is not whether machines can think, but whether men do.", "B.F. Skinner"),
+    ("Learning is not attained by chance. It must be sought for with ardor and attended to with diligence.", "Abigail Adams"),
+    ("Mathematics is the language in which God has written the universe.", "Galileo Galilei"),
+    ("To ask the right question is harder than to answer it.", "Georg Cantor"),
+    ("Nature does not hurry, yet everything is accomplished.", "Lao Tzu"),
+    ("The theory of probabilities is at bottom nothing but common sense reduced to calculus.", "Pierre-Simon Laplace"),
+    ("What we cannot compute, we cannot understand.", "Richard Hamming"),
+    ("The computer was born to solve problems that did not exist before.", "Bill Gates"),
+    ("Imagination is more important than knowledge.", "Albert Einstein"),
+    ("If people do not believe that mathematics is simple, it is only because they do not realize how complicated life is.", "John von Neumann"),
+]
+
+
+def render_intro_clip(w: int = 1920, h: int = 1080, fps: int = 30,
+                      duration: float = 5.0) -> str:
+    import random as _random
+    quote_text, quote_author = _random.choice(MATH_UNLOCKED_INTRO_QUOTES)
+
+    intro_code = f'''from manim import *
+import math
+
+BRAND_WHITE = "#F5F7FA"
+BRAND_GOLD  = "#FFD166"
+BRAND_PANEL = "#111A24"
+BRAND_BG    = "#0B1628"
+
+class MathUnlockedIntro(Scene):
+    def construct(self):
+        self.camera.background_color = BRAND_BG
+
+        p1 = [-1.4, 1.4, 0]
+        p2 = [1.4, 1.4, 0]
+        p3 = [0.0, -1.4, 0]
+        left_line  = Line(p1, p3, stroke_width=9).set_stroke(color=BRAND_GOLD, opacity=1.0)
+        right_line = Line(p2, p3, stroke_width=9).set_stroke(color=BRAND_GOLD, opacity=1.0)
+        top_line   = Line(p1, p2, stroke_width=9).set_stroke(color=BRAND_GOLD, opacity=1.0)
+        logo = VGroup(top_line, left_line, right_line)
+
+        glow_layers = VGroup()
+        for i in range(4, 0, -1):
+            gl = logo.copy()
+            gl.set_stroke(color=BRAND_GOLD, width=9 + i * 6,
+                          opacity=max(0.06 - i * 0.012, 0.01))
+            glow_layers.add(gl)
+        logo_group = VGroup(glow_layers, logo)
+        logo_group.move_to(ORIGIN + UP * 0.6)
+
+        raw_quote = {repr(quote_text)}
+        raw_author = {repr(quote_author)}
+        max_w = config.frame_width * 0.78
+
+        quote_mob = Text(
+            raw_quote, font_size=36, color=BRAND_WHITE,
+            weight=NORMAL, line_spacing=1.4,
+        )
+        if quote_mob.width > max_w:
+            quote_mob.scale_to_fit_width(max_w)
+
+        author_mob = Text(
+            "— " + raw_author, font_size=30, color=BRAND_GOLD,
+        )
+        if author_mob.width > max_w:
+            author_mob.scale_to_fit_width(max_w)
+
+        text_group = VGroup(quote_mob, author_mob).arrange(DOWN, buff=0.32)
+        text_group.move_to(ORIGIN + DOWN * 2.2)
+
+        t_draw   = 1.2
+        t_glow   = 0.5
+        t_quote  = 0.8
+        t_hold   = max(duration - t_draw - t_glow - t_quote - 0.5, 0.8)
+        t_fade   = 0.5
+
+        self.play(
+            LaggedStart(
+                Create(top_line),
+                Create(left_line),
+                Create(right_line),
+                lag_ratio=0.25,
+            ),
+            run_time=t_draw, rate_func=smooth,
+        )
+        self.play(FadeIn(glow_layers), run_time=t_glow, rate_func=smooth)
+        self.play(
+            LaggedStart(
+                FadeIn(quote_mob, shift=UP * 0.18),
+                FadeIn(author_mob, shift=UP * 0.12),
+                lag_ratio=0.35,
+            ),
+            run_time=t_quote, rate_func=smooth,
+        )
+        self.wait(t_hold)
+        self.play(
+            FadeOut(VGroup(logo_group, text_group)),
+            run_time=t_fade, rate_func=smooth,
+        )
+'''
+
+    os.makedirs(MANIM_CHUNK_CACHE_DIR, exist_ok=True)
+    intro_path = os.path.join(MANIM_CHUNK_CACHE_DIR, "intro_clip.mp4")
+    script_path = os.path.join(MANIM_CHUNK_CACHE_DIR, "intro_scene.py")
+
+    with open(script_path, "w") as f:
+        f.write(intro_code)
+
+    cmd = [
+        "manim", script_path, "MathUnlockedIntro",
+        "--format=mp4",
+        f"--pixel_width={w}", f"--pixel_height={h}",
+        f"--frame_rate={fps}",
+        "--media_dir", MANIM_CHUNK_CACHE_DIR,
+        "--output_file", "intro_clip",
+        "-q", "h",
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=120)
+    if result.returncode != 0:
+        print(f"  ⚠ Intro clip render failed: {result.stderr.decode(errors='replace')[-300:]}")
+        return None
+
+    for root, dirs, files in os.walk(MANIM_CHUNK_CACHE_DIR):
+        for fname in files:
+            if fname == "intro_clip.mp4" and root != MANIM_CHUNK_CACHE_DIR:
+                found = os.path.join(root, fname)
+                shutil.copy(found, intro_path)
+                return intro_path
+
+    if os.path.exists(intro_path):
+        return intro_path
+
+    print("  ⚠ Intro clip file not found after render")
+    return None
 
 
 def concat_manim_clips(clip_paths: list, output_path: str) -> str:
