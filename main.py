@@ -1157,11 +1157,14 @@ Return ONLY valid JSON:
     return final_result
 
 
-def extract_section_outline(transcript_text: str, whisper_segments: list, total_duration: float) -> list:
+def extract_section_outline(transcript_text: str, whisper_segments: list,
+                             total_duration: float) -> list:
     if not OPENAI_API_KEY:
         return []
+
     print(f"  🗂  Section outline scan...")
     client = OpenAI(api_key=OPENAI_API_KEY)
+
     timed_lines = []
     for seg in whisper_segments:
         s = float(seg.get('start', 0))
@@ -1170,20 +1173,31 @@ def extract_section_outline(transcript_text: str, whisper_segments: list, total_
         if t:
             timed_lines.append(f"[{s:.2f}s - {e:.2f}s] {t}")
     timed_transcript = "\n".join(timed_lines)
-    system_prompt = """You are analyzing a finance/numbers explainer video's transcript to find its NAVIGATIONAL STRUCTURE, not its content.
-Total audio duration: """ + f"{total_duration:.1f}" + """ seconds.
 
-YOUR JOB: Decide whether this script walks through a clear ENUMERABLE LIST of distinct items. Only identify a list if there are genuinely 3 or more distinct enumerable items with clear boundaries.
-If a list exists return the sections. Otherwise return empty sections.
+    system_prompt = f"""You are analyzing a finance/numbers explainer video's transcript to find its NAVIGATIONAL STRUCTURE, not its content.
+Total audio duration: {total_duration:.1f} seconds.
+
+YOUR JOB: Decide whether this script walks through a clear ENUMERABLE LIST of distinct items -- warning signs, reasons, steps, mistakes, rules, red flags, ways something happens -- where a viewer would benefit from an on-screen "item 3 of 9" indicator because the list is long enough to lose track of.
+
+Only identify a list if there are genuinely 3 or more distinct enumerable items with clear boundaries in the transcript. A script that is one continuous explanation, a single concept walkthrough, a story, or a before/after comparison with no list does NOT qualify -- return an empty sections array for those. That is the common case, not a rare one.
+
+If a list DOES exist, for each item give:
+- "number": 1-indexed position in the list
+- "title": a SHORT (2-5 word) label naming that specific item, written for an on-screen tag, not a sentence (e.g. "Income Under $200/mo", "18-Month Lifespan", "Taxes Eat the Income")
+- "start_time": the timestamp (from the bracketed transcript) where THIS item's discussion begins
+- "end_time": the timestamp where THIS item's discussion ends (the next item's start_time, or the total duration for the last item)
+
+Use the exact timestamps shown in the transcript brackets, do not estimate. Cover the list items in order, do not skip numbers, do not invent items that are not actually distinct beats in the transcript.
 
 Return ONLY valid JSON:
-{
+{{
   "has_list_structure": true,
   "sections": [
-    {"number": 1, "title": "Short Title", "start_time": 12.4, "end_time": 38.1}
+    {{"number": 1, "title": "Income Under $200/mo", "start_time": 12.40, "end_time": 38.10}}
   ]
-}
-If no list: {"has_list_structure": false, "sections": []}"""
+}}
+If there is no list structure, return {{"has_list_structure": false, "sections": []}}."""
+
     try:
         response = _call_with_retry(lambda: gpt4o_call(client,
             model="gpt-4.1",
@@ -1201,23 +1215,27 @@ If no list: {"has_list_structure": false, "sections": []}"""
     except Exception as e:
         print(f"  ⚠ Section outline scan failed, skipping navigation overlay: {e}")
         return []
+
     cleaned = []
     for sec in sections:
         try:
-            num = int(sec["number"])
+            num   = int(sec["number"])
             title = str(sec["title"]).strip()
             start = max(float(sec["start_time"]), 0.0)
-            end = min(float(sec["end_time"]), total_duration)
+            end   = min(float(sec["end_time"]), total_duration)
             if title and end > start:
                 cleaned.append({"number": num, "title": title, "start_time": start, "end_time": end})
         except (KeyError, ValueError, TypeError):
             continue
     cleaned.sort(key=lambda s: s["start_time"])
+
     if len(cleaned) < 2:
-        print(f"  🗂 No list structure detected, skipping navigation overlay")
+        print(f"  🗂  No list structure detected, skipping navigation overlay")
         return []
+
     print(f"  ✅ {len(cleaned)}-item list structure detected")
     return cleaned
+
 
 def _ffmpeg_escape_text(text: str) -> str:
     text = text.replace("\\", "\\\\")
