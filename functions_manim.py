@@ -983,18 +983,27 @@ def fm_animate_icon_grid(scene, total, filled, label_text,
         dot.move_to([x, y, 0])
         icons.add(dot)
 
-    icons.move_to(position + UP * 0.4)
+    icons.move_to(ORIGIN + UP * 0.6)
 
     pct     = filled / max(total, 1) * 100
-    pct_lbl = Text(f"{pct:.0f}%", font_size=72, color=BRAND_WHITE, weight=BOLD)
-    cat_lbl = Text(label_text, font_size=30, color=accent_color) if label_text else None
+    pct_lbl = Text(f"{pct:.0f}%", font_size=64, color=BRAND_WHITE, weight=BOLD)
+    cat_lbl = Text(label_text, font_size=28, color=accent_color) if label_text else None
 
     labels = VGroup(pct_lbl) if not cat_lbl else VGroup(pct_lbl, cat_lbl)
     if cat_lbl:
-        labels.arrange(RIGHT, buff=0.4)
-    labels.next_to(icons, DOWN, buff=0.32)
+        labels.arrange(RIGHT, buff=0.35)
 
-    fm_clamp_to_frame(icons, labels)
+    full_group = VGroup(icons, labels)
+    labels.next_to(icons, DOWN, buff=0.40)
+
+    safe_h_total = config.frame_height * 0.88
+    if full_group.height > safe_h_total:
+        full_group.scale(safe_h_total / full_group.height)
+    full_group.move_to(ORIGIN)
+
+    bottom_edge = full_group.get_bottom()[1]
+    if bottom_edge < -config.frame_height * 0.44:
+        full_group.shift(UP * (-config.frame_height * 0.44 - bottom_edge))
 
     anim_t = max(min(duration * 0.68, duration - 0.4), 0.1)
     hold_t = max(duration - anim_t, 0.05)

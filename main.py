@@ -4,6 +4,7 @@ import json
 import random
 import math
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import requests
 import traceback
@@ -3664,6 +3665,8 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'camera\.frame',
     r'\bLaggedStartMap\b',
     r'include_tip.*axis_config|axis_config.*include_tip',
+    r'\bLine\s*\([^)]*stroke_color\s*=',
+    r'\bVMobject\s*\(\s*\*\s*\[',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math", "random"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
@@ -3714,23 +3717,97 @@ _MANIM_AVAILABLE_NAMES = None
 
 def _get_chunk_available_names() -> set:
     """Names a chunk can legitimately reference without defining them
-    itself: everything from manim, every fm_* library function and
-    BRAND_* constant, MathScene/MathScene3D, and Python
-    builtins. Computed once by actually executing the same boilerplate
-    every chunk gets prefixed with, so this can never drift out of
-    sync with what real chunk code actually has access to."""
+    itself. Built by parsing the boilerplate and functions_manim source
+    with AST (not exec, which silently fails when manim is not importable
+    in the checker process) plus a hardcoded comprehensive set of manim
+    public names and Python builtins."""
     global _MANIM_AVAILABLE_NAMES
-    if _MANIM_AVAILABLE_NAMES is None:
-        ns = {}
+    if _MANIM_AVAILABLE_NAMES is not None:
+        return _MANIM_AVAILABLE_NAMES
+
+    names = set()
+    import builtins as _builtins_mod
+    names |= set(dir(_builtins_mod))
+
+    names |= {
+        "Scene", "ThreeDScene", "VGroup", "Group", "Mobject", "VMobject",
+        "Text", "Paragraph", "MarkupText", "Tex", "MathTex", "BulletedList",
+        "Circle", "Square", "Rectangle", "RoundedRectangle", "Triangle",
+        "Polygon", "RegularPolygon", "Arc", "ArcBetweenPoints", "Annulus",
+        "Arrow", "Line", "TipableVMobject", "DoubleArrow",
+        "Dot", "SmallDot", "Cross", "Star",
+        "Axes", "NumberPlane", "NumberLine",
+        "Create", "Write", "FadeIn", "FadeOut", "GrowFromCenter",
+        "GrowFromEdge", "GrowFromPoint", "DrawBorderThenFill",
+        "Transform", "ReplacementTransform", "TransformFromCopy",
+        "MoveToTarget", "Restore", "ApplyMethod", "AnimationGroup",
+        "LaggedStart", "Succession", "Wait", "Flash", "ShowPassingFlash",
+        "SurroundingRectangle", "BackgroundRectangle", "Underline",
+        "FocusOn", "Indicate", "Wiggle", "Circumscribe",
+        "ValueTracker", "always_redraw",
+        "UP", "DOWN", "LEFT", "RIGHT", "IN", "OUT",
+        "UL", "UR", "DL", "DR", "ORIGIN",
+        "TAU", "PI", "DEGREES",
+        "WHITE", "BLACK", "GRAY", "GREY", "BLUE", "GREEN", "RED",
+        "YELLOW", "ORANGE", "PINK", "PURPLE", "TEAL", "GOLD",
+        "LIGHT_GRAY", "DARK_GRAY", "LIGHT_GREY", "DARK_GREY",
+        "BLUE_A", "BLUE_B", "BLUE_C", "BLUE_D", "BLUE_E",
+        "GREEN_A", "GREEN_B", "GREEN_C", "GREEN_D", "GREEN_E",
+        "RED_A", "RED_B", "RED_C", "RED_D", "RED_E",
+        "YELLOW_A", "YELLOW_B", "YELLOW_C", "YELLOW_D", "YELLOW_E",
+        "GOLD_A", "GOLD_B", "GOLD_C", "GOLD_D", "GOLD_E",
+        "TEAL_A", "TEAL_B", "TEAL_C", "TEAL_D", "TEAL_E",
+        "MAROON_A", "MAROON_B", "MAROON_C", "MAROON_D", "MAROON_E",
+        "PURPLE_A", "PURPLE_B", "PURPLE_C", "PURPLE_D",
+        "PURE_RED", "PURE_GREEN", "PURE_BLUE", "DARK_BLUE", "DARK_BROWN",
+        "BOLD", "NORMAL", "ITALIC", "OBLIQUE", "THIN", "LIGHT",
+        "MEDIUM", "SEMIBOLD", "HEAVY", "ULTRABOLD", "ULTRAHEAVY",
+        "smooth", "linear", "rush_from", "rush_into",
+        "ease_in_sine", "ease_out_sine", "ease_in_out_sine",
+        "ease_in_quad", "ease_out_quad", "ease_in_out_quad",
+        "ease_in_cubic", "ease_out_cubic", "ease_in_out_cubic",
+        "ease_in_bounce", "ease_out_bounce", "ease_in_out_bounce",
+        "ease_in_elastic", "ease_out_elastic", "ease_in_out_elastic",
+        "config", "np", "math", "random",
+        "ManimColor", "ParametricFunction", "ImplicitFunction",
+        "OpenGLMobject", "OpenGLVMobject",
+        "ThreeDAxes", "Surface", "Sphere",
+    }
+
+    if _FUNCTIONS_MANIM_CODE:
         try:
-            exec(MATH_SCENE_MANIM_BOILERPLATE, ns)
+            fm_tree = ast.parse(_FUNCTIONS_MANIM_CODE)
+            for node in fm_tree.body:
+                if isinstance(node, ast.FunctionDef):
+                    names.add(node.name)
+                elif isinstance(node, ast.Assign):
+                    for t in node.targets:
+                        if isinstance(t, ast.Name):
+                            names.add(t.id)
+                elif isinstance(node, ast.AnnAssign):
+                    if isinstance(node.target, ast.Name):
+                        names.add(node.target.id)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for alias in node.names:
+                        names.add(alias.asname or alias.name)
         except Exception:
             pass
-        names = set(ns.keys())
-        names.discard("__builtins__")
-        import builtins as _builtins_mod
-        names |= set(dir(_builtins_mod))
-        _MANIM_AVAILABLE_NAMES = names
+
+    try:
+        bp_tree = ast.parse(MATH_SCENE_MANIM_BOILERPLATE)
+        for node in ast.walk(bp_tree):
+            if isinstance(node, ast.FunctionDef):
+                names.add(node.name)
+            elif isinstance(node, ast.ClassDef):
+                names.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        names.add(t.id)
+    except Exception:
+        pass
+
+    _MANIM_AVAILABLE_NAMES = names
     return _MANIM_AVAILABLE_NAMES
 
 
@@ -4076,16 +4153,10 @@ def _ffprobe_duration_seconds(path: str) -> float:
 
 
 def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
-                          w: int = 1920, h: int = 1080, fps: int = 30) -> tuple:
-    """Forces a rendered Manim chunk onto an exact target duration,
-    independent of whether the GPT-authored run_time/wait math inside
-    the chunk was correct -- never trusts the chunk's own animation
-    timing to be the timeline truth. Measures the actual rendered
-    length via ffprobe, then retimes the whole clip with setpts so it
-    lands exactly on target. If the raw render is wildly off (beyond
-    MANIM_CHUNK_MAX_DRIFT_RATIO), a speed change would look broken
-    rather than subtle, so this rejects the chunk entirely instead of
-    warping it -- the caller falls back to a dashboard filler."""
+                          w: int = 1920, h: int = 1080, fps: int = 30,
+                          max_drift: float = None) -> tuple:
+    if max_drift is None:
+        max_drift = MANIM_CHUNK_MAX_DRIFT_RATIO
     try:
         actual = _ffprobe_duration_seconds(raw_path)
     except Exception as e:
@@ -4095,9 +4166,9 @@ def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
         return None, "rendered chunk reported zero or negative duration"
 
     drift = abs(actual - target_duration) / target_duration
-    if drift > MANIM_CHUNK_MAX_DRIFT_RATIO:
+    if drift > max_drift:
         import sys
-        print(f"  ⚠ duration drift {drift*100:.0f}% exceeds {MANIM_CHUNK_MAX_DRIFT_RATIO*100:.0f}% limit — rejecting chunk, falling back to filler", file=sys.stderr)
+        print(f"  ⚠ duration drift {drift*100:.0f}% exceeds {max_drift*100:.0f}% limit — rejecting chunk, falling back to filler", file=sys.stderr)
         return None, f"rendered duration drifted {drift*100:.0f}% from target ({actual:.2f}s vs {target_duration:.2f}s)"
 
     speed_ratio = target_duration / actual
@@ -4168,63 +4239,31 @@ def _chunk_fallback_subtitle(chunk: dict) -> str:
 
 def _make_safe_still_fallback(out_path: str, title: str, subtitle: str, duration: float,
                               w: int = 1920, h: int = 1080, fps: int = 30) -> str:
-    """Creates a non-blank exact-duration fallback video.
-
-    This is the anti-void safety net. When a GPT-authored Manim chunk crashes,
-    the viewer still sees a branded finance card with the current idea instead
-    of an empty navy/black screen. It intentionally does NOT mention the error.
-    """
+    """Creates a clean dark fallback frame — just the background with
+    a subtle math symbol ticker across the top. No card, no text that
+    talks about itself. Viewers see the background; the audio continues."""
     from PIL import Image, ImageDraw
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
     frame_path = os.path.join(os.path.dirname(out_path) or '.', f"_fallback_{os.path.basename(out_path)}.png")
 
-    img = Image.new('RGB', (int(w), int(h)), '#0B111A')
+    img = Image.new('RGB', (int(w), int(h)), '#060F1A')
     draw = ImageDraw.Draw(img)
 
-    grid_color = (32, 43, 56)
-    step = max(80, int(min(w, h) * 0.075))
+    grid_color = (14, 28, 44)
+    step = max(96, int(min(w, h) * 0.09))
     for x in range(0, int(w), step):
-        draw.line([(x, 0), (x, h)], fill=grid_color, width=max(1, w // 1800))
+        draw.line([(x, 0), (x, h)], fill=grid_color, width=max(1, w // 2000))
     for y in range(0, int(h), step):
-        draw.line([(0, y), (w, y)], fill=grid_color, width=max(1, h // 1000))
+        draw.line([(0, y), (w, y)], fill=grid_color, width=max(1, h // 1200))
 
-    card_w = int(w * 0.70)
-    card_h = int(h * 0.38)
-    x0 = (w - card_w) // 2
-    y0 = (h - card_h) // 2
-    x1 = x0 + card_w
-    y1 = y0 + card_h
-    radius = int(min(w, h) * 0.035)
-    draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, fill='#111A24', outline='#38D996', width=max(4, w // 420))
-
-    title_font = _pil_font(max(54, int(h * 0.055)), bold=True)
-    body_font = _pil_font(max(38, int(h * 0.038)), bold=True)
-    tag_font = _pil_font(max(26, int(h * 0.026)), bold=True)
-
-    title = title or 'Key Idea'
-    subtitle = subtitle or 'The explanation continues'
-
-    tb = draw.textbbox((0, 0), title, font=title_font)
-    tx = (w - (tb[2] - tb[0])) // 2
-    ty = y0 + int(card_h * 0.16)
-    draw.text((tx, ty), title, fill='#FFD166', font=title_font)
-
-    lines = _wrap_text_for_width(draw, subtitle, body_font, int(card_w * 0.82), max_lines=3)
-    line_h = int(h * 0.055)
-    start_y = y0 + int(card_h * 0.40)
-    for j, line in enumerate(lines):
-        bb = draw.textbbox((0, 0), line, font=body_font)
-        lx = (w - (bb[2] - bb[0])) // 2
-        draw.text((lx, start_y + j * line_h), line, fill='#F5F7FA', font=body_font)
-
-    tag = 'continuing'
-    bb = draw.textbbox((0, 0), tag, font=tag_font)
-    pad_x = int(w * 0.018)
-    pad_y = int(h * 0.010)
-    pill = [x1 - (bb[2]-bb[0]) - pad_x*3, y1 - int(h*0.070), x1 - pad_x, y1 - int(h*0.020)]
-    draw.rounded_rectangle(pill, radius=int(h*0.018), fill='#0B111A', outline='#8A94A6', width=max(2, w//900))
-    draw.text((pill[0] + pad_x, pill[1] + pad_y), tag, fill='#8A94A6', font=tag_font)
+    sym_font = _pil_font(max(28, int(h * 0.030)), bold=False)
+    symbols = "∇  Σ  ∫  π  ≈  ∂  μ  σ  ∇  Σ  ∫  π  ≈  ∂  μ  σ  ∇  Σ  ∫  π"
+    sym_color = (22, 45, 68)
+    try:
+        draw.text((int(w * 0.03), int(h * 0.03)), symbols, fill=sym_color, font=sym_font)
+    except Exception:
+        pass
 
     img.save(frame_path, quality=95)
 
@@ -4344,6 +4383,59 @@ def _save_manim_failure_log(class_name: str, stderr_text: str, stdout_text: str)
 MANIM_CHUNK_SOURCE_DEBUG_DIR = "/tmp/math_unlocked_manim_sources"
 
 
+def _ai_debug_manim_crash(original_code: str, error_output: str, class_name: str) -> str:
+    """AI first-line-of-defense: when Manim crashes, extract the traceback
+    and ask GPT-4.1 to fix the specific error. Returns fixed code string,
+    or empty string if fix fails or API is unavailable. One attempt only."""
+    if not OPENAI_API_KEY:
+        return ""
+    error_lines = []
+    in_tb = False
+    for line in error_output.split("\n"):
+        if any(x in line for x in ["Traceback", "Error", "TypeError", "AttributeError", "NameError", "ValueError", "IndexError"]):
+            in_tb = True
+        if in_tb:
+            error_lines.append(line)
+        if len(error_lines) > 25:
+            break
+    error_summary = "\n".join(error_lines[:25]).strip()
+    if not error_summary:
+        return ""
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4.1",
+            max_tokens=3000,
+            temperature=0.1,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a Manim crash debugger. Fix the specific Python error shown. "
+                        "Return the complete fixed Python code starting with 'from manim import *'. "
+                        "Keep the same class name. Fix only the crash — nothing else. "
+                        "Never use: stroke_color= on Line(), VMobject(*[...]), LaggedStartMap, "
+                        "camera.frame, MathTex, Tex, Ellipse, DashedLine. "
+                        "Line color must use: line = Line(p1, p2); line.set_stroke(COLOR, width=N). "
+                        "Return raw Python only, no markdown, no comments."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Class: {class_name}\n\nError:\n{error_summary}\n\nCode:\n{original_code}",
+                },
+            ],
+        )
+        fixed = response.choices[0].message.content.strip()
+        if fixed.startswith("```"):
+            fixed = fixed.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        if "from manim import" in fixed and f"class {class_name}" in fixed:
+            return fixed
+        return ""
+    except Exception:
+        return ""
+
+
 def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 1920,
                         h: int = 1080, fps: int = 30) -> tuple:
     """Renders ONE Manim chunk to its own exact-duration MP4 clip via the
@@ -4429,13 +4521,40 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
         if result.returncode != 0:
             log_path = _save_manim_failure_log(class_name, result.stderr, result.stdout)
             summary = _extract_manim_error_summary(result.stderr, result.stdout)
+            fixed_code = _ai_debug_manim_crash(code, result.stderr + "\n" + result.stdout, class_name)
+            if fixed_code and fixed_code != code:
+                ok2, _ = manim_static_safety_check(fixed_code)
+                if ok2:
+                    try:
+                        with open(script_path, "w") as f:
+                            f.write(boilerplate)
+                            f.write(fixed_code)
+                        result2 = subprocess.run(
+                            cmd, cwd=work_dir, capture_output=True, text=True,
+                            timeout=MANIM_CHUNK_TIMEOUT_SECONDS,
+                        )
+                        if result2.returncode == 0:
+                            produced2 = glob.glob(os.path.join(work_dir, "**", f"{class_name}.mp4"), recursive=True)
+                            if produced2:
+                                locked2, _ = _lock_chunk_duration(
+                                    produced2[0], duration, cached_path, w, h, fps,
+                                    max_drift=1.2 if duration >= 25.0 else MANIM_CHUNK_MAX_DRIFT_RATIO,
+                                )
+                                if locked2:
+                                    print(f"    🤖 AI debugger fixed {class_name}", file=sys.stderr)
+                                    return locked2, ""
+                    except Exception:
+                        pass
             return None, f"manim subprocess failed (exit {result.returncode}), full log: {log_path}\n{summary}"
 
         produced = glob.glob(os.path.join(work_dir, "**", f"{class_name}.mp4"), recursive=True)
         if not produced:
             return None, "manim reported success but no output .mp4 was found"
 
-        locked_path, lock_err = _lock_chunk_duration(produced[0], duration, cached_path, w, h, fps)
+        locked_path, lock_err = _lock_chunk_duration(
+            produced[0], duration, cached_path, w, h, fps,
+            max_drift=1.2 if duration >= 25.0 else MANIM_CHUNK_MAX_DRIFT_RATIO,
+        )
         if not locked_path:
             return None, lock_err
 
@@ -4801,7 +4920,11 @@ If your construct() has more than 2 Text() objects that are not numbers or 1-3 c
 - self.camera.frame does NOT exist on MathScene (which uses Cairo renderer). NEVER write self.camera.frame.animate.scale() or any camera.frame access. MathScene has no movable camera frame. To zoom in on something, use scene.add() and .scale() on the mobjects themselves.
 - LaggedStartMap is BANNED. It crashes when the animation class requires more than one argument (e.g. GrowFromEdge needs an edge, Write has arg limits). Always use LaggedStart with a list comprehension instead: LaggedStart(*[GrowFromEdge(b, DOWN) for b in bars], lag_ratio=0.2) or LaggedStart(*[Write(t) for t in texts], lag_ratio=0.3).
 - Axes axis_config dict must NOT contain include_tip. Pass include_tip separately or omit it entirely: Axes(x_range=[...], axis_config={"color": BRAND_GRAY, "stroke_opacity": 0.45, "include_numbers": False}). include_tip inside axis_config crashes in Manim Community v0.20.1.
-- NEVER pass None into VGroup() or fm_clamp_to_frame(). Both crash on None. fm_animate_bell_curve returns (curve, fill_region, label_mob) where label_mob can be None if label_text="". fm_animate_scatter returns (dots, reg_line) where reg_line is None if show_regression=False. Always filter: use only named variables you know are not None, or check before grouping.
+- NEVER pass stroke_color= as a kwarg to Line(). It crashes. Correct: line = Line(p1, p2); line.set_stroke(BRAND_GREEN, width=3). Wrong: Line(p1, p2, stroke_color=BRAND_GREEN). This will crash with AttributeError.
+- NEVER build a VMobject by passing a list with * spread: VMobject(*[Line(...) for ...]) crashes. Instead build individual Lines and add them to a VGroup: VGroup(*[Line(...) for ...]).
+- SCENE ISOLATION: Each construct() starts with a completely empty scene. You cannot reference or build on objects from a previous concept's construct(). Every construct must be fully self-contained — create everything it needs, animate it, done. No holdovers.
+- CONCEPT CHUNK TIMING: For concept-level chunks covering 30-90 seconds, use self.wait() between animation phases to match beat timestamps. The total of all run_time + wait values must equal the chunk duration. Do not add extra self.wait() that pushes the total beyond the duration.
+- NEVER accumulate objects on screen without FadeOut — if you add an object with self.add() or self.play(FadeIn(...)), it stays visible for the rest of the construct unless you explicitly FadeOut it. This causes objects from beat 1 to still be visible on beat 10, creating the overlap mess seen in output.
 - fm_glow_around() returns a VGroup -- it is safe to FadeIn but must be stored in a variable first. NEVER pass it inline as part of a multi-arg FadeIn call alongside other mobs in the same self.play() if any of those other mobs might be None.
 - GrowFromEdge() takes edge as the SECOND POSITIONAL argument, not a keyword. Correct: GrowFromEdge(mob, DOWN). Wrong: GrowFromEdge(mob, direction=DOWN). This will crash.
 - fm_animate_number_line tick_labels must be a list of strings/numbers or None -- NEVER pass True or False.
