@@ -1157,14 +1157,11 @@ Return ONLY valid JSON:
     return final_result
 
 
-def extract_section_outline(transcript_text: str, whisper_segments: list,
-                             total_duration: float) -> list:
+def extract_section_outline(transcript_text: str, whisper_segments: list, total_duration: float) -> list:
     if not OPENAI_API_KEY:
         return []
-
     print(f"  🗂  Section outline scan...")
     client = OpenAI(api_key=OPENAI_API_KEY)
-
     timed_lines = []
     for seg in whisper_segments:
         s = float(seg.get('start', 0))
@@ -1173,69 +1170,97 @@ def extract_section_outline(transcript_text: str, whisper_segments: list,
         if t:
             timed_lines.append(f"[{s:.2f}s - {e:.2f}s] {t}")
     timed_transcript = "\n".join(timed_lines)
+    system_prompt = """You are an expert Manim developer creating clean, safe code for a math explainer video.
 
-    system_prompt = f"""You are analyzing a finance/numbers explainer video's transcript to find its NAVIGATIONAL STRUCTURE, not its content.
-Total audio duration: {total_duration:.1f} seconds.
-
-YOUR JOB: Decide whether this script walks through a clear ENUMERABLE LIST of distinct items -- warning signs, reasons, steps, mistakes, rules, red flags, ways something happens -- where a viewer would benefit from an on-screen "item 3 of 9" indicator because the list is long enough to lose track of.
-
-Only identify a list if there are genuinely 3 or more distinct enumerable items with clear boundaries in the transcript. A script that is one continuous explanation, a single concept walkthrough, a story, or a before/after comparison with no list does NOT qualify -- return an empty sections array for those. That is the common case, not a rare one.
-
-If a list DOES exist, for each item give:
-- "number": 1-indexed position in the list
-- "title": a SHORT (2-5 word) label naming that specific item, written for an on-screen tag, not a sentence (e.g. "Income Under $200/mo", "18-Month Lifespan", "Taxes Eat the Income")
-- "start_time": the timestamp (from the bracketed transcript) where THIS item's discussion begins
-- "end_time": the timestamp where THIS item's discussion ends (the next item's start_time, or the total duration for the last item)
-
-Use the exact timestamps shown in the transcript brackets, do not estimate. Cover the list items in order, do not skip numbers, do not invent items that are not actually distinct beats in the transcript.
+STRICT SAFETY RULES - VIOLATION WILL BE REJECTED:
+- ONLY use functions from the fm_* library: fm_animate_counter, fm_animate_bar_chart, fm_animate_gauge, fm_animate_donut, fm_animate_line_chart, fm_animate_line_chart_multi, fm_animate_waterfall, fm_animate_text_reveal, fm_animate_icon_grid, fm_animate_stacked_cards, fm_animate_bullet_chart, fm_animate_glow_reveal, fm_animate_timeline, fm_animate_single_value, fm_formula, fm_animate_comparison_bars, fm_animate_data_table, fm_animate_vector, fm_animate_matrix, fm_animate_bell_curve, fm_animate_scatter, fm_animate_probability_bar, fm_animate_number_line, fm_concept_pills, fm_card, fm_two_cards, fm_card_row, fm_stacked_cards, fm_glow_around, fm_clamp_to_frame.
+- NEVER use: fm_icon, interpolate_color, plot_line_graph, Brace, GrowArrow, there_and_back, MathTex, Tex, DecimalNumber, SVGMobject, BarChart, MarkupText, Integer, Variable, BulletedList, Title, Paragraph.
+- Use only these basic Manim objects when needed: Line, Arrow, Circle, Dot, Rectangle, RoundedRectangle, Polygon, VGroup, always_redraw, ValueTracker, LaggedStart, Create, FadeIn, GrowFromEdge, GrowFromCenter, Write.
+- One main fm_animate_* visual per chunk. Use self.wait() for timing.
+- Axes: always use x_length and y_length. axis_config only with color, stroke_opacity, include_numbers.
+- Return clean valid Python code only.
 
 Return ONLY valid JSON:
-{{
-  "has_list_structure": true,
-  "sections": [
-    {{"number": 1, "title": "Income Under $200/mo", "start_time": 12.40, "end_time": 38.10}}
+{
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "class_name": "Chunk0",
+      "code": "from manim import *\\n\\nclass Chunk0(MathScene):\\n    def construct(self):\\n        ..."
+    }
   ]
-}}
-If there is no list structure, return {{"has_list_structure": false, "sections": []}}."""
-
-    try:
-        response = _call_with_retry(lambda: gpt4o_call(client,
-            model="gpt-4.1",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Timed transcript:\n{timed_transcript}"}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=2000,
-            timeout=60,
-        ), label="Section outline")
-        result = json.loads(response.choices[0].message.content)
-        sections = result.get("sections", []) if result.get("has_list_structure") else []
-    except Exception as e:
-        print(f"  ⚠ Section outline scan failed, skipping navigation overlay: {e}")
-        return []
-
-    cleaned = []
-    for sec in sections:
+}"""
+    def _build_user_prompt(batch_items):
+        lines = []
+        for global_idx, chunk in batch_items:
+            duration = round(chunk["end_time"] - chunk["start_time"], 2)
+            chunk_text = " ".join(b.get("text", "") for b in chunk.get("beats", []))
+            lines.append(f'Chunk {global_idx}: duration={duration}s, class_name="Chunk{global_idx}", narration="{chunk_text}"')
+        return "Generate Manim code for these chunks:\n" + "\n".join(lines)
+    def _gpt_call_for_prompt(user_prompt, max_tokens=4000):
+        def _do():
+            return gpt4o_call(client, model="gpt-4.1", max_tokens=max_tokens, response_format={"type": "json_schema", "json_schema": {"name": "manim_chunks", "strict": True, "schema": {"type": "object", "properties": {"chunks": {"type": "array", "items": {"type": "object", "properties": {"chunk_index": {"type": "integer"}, "class_name": {"type": "string"}, "code": {"type": "string"}}, "required": ["chunk_index", "class_name", "code"], "additionalProperties": False}}}, "required": ["chunks"], "additionalProperties": False}}}, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}])
+        return _call_with_retry(_do, label="Manim chunk call")
+    def _parse_chunks_from_raw(raw_text):
+        raw = raw_text.strip()
         try:
-            num   = int(sec["number"])
-            title = str(sec["title"]).strip()
-            start = max(float(sec["start_time"]), 0.0)
-            end   = min(float(sec["end_time"]), total_duration)
-            if title and end > start:
-                cleaned.append({"number": num, "title": title, "start_time": start, "end_time": end})
-        except (KeyError, ValueError, TypeError):
+            return json.loads(raw).get("chunks", [])
+        except:
+            pass
+        chunks_out = []
+        arr_start = raw.find('"chunks"')
+        if arr_start < 0:
+            return chunks_out
+        bracket = raw.find('[', arr_start)
+        if bracket < 0:
+            return chunks_out
+        decoder = json.JSONDecoder()
+        pos = bracket + 1
+        while pos < len(raw):
+            stripped = raw[pos:]
+            lstripped = stripped.lstrip(' \t\n\r,')
+            if not lstripped or lstripped[0] in (']', '}'):
+                break
+            offset = len(stripped) - len(lstripped)
+            try:
+                obj, end = decoder.raw_decode(lstripped)
+                if isinstance(obj, dict) and "code" in obj and "class_name" in obj:
+                    chunks_out.append(obj)
+                pos += offset + end
+                while pos < len(raw) and raw[pos] in (' ', '\t', '\n', '\r', ','):
+                    pos += 1
+            except:
+                break
+        return chunks_out
+    def _slot_items(returned_items, batch_global_indices):
+        for i, item in enumerate(returned_items):
+            if i >= len(batch_global_indices):
+                break
+            global_idx = batch_global_indices[i]
+            expected_class_name = f"Chunk{global_idx}"
+            raw_code = item.get("code", "")
+            renamed_code = re.sub(r'^class\s+\w+\(', f'class {expected_class_name}(', raw_code, count=1, flags=re.MULTILINE)
+            item["code"] = renamed_code
+            item["class_name"] = expected_class_name
+            item["chunk_index"] = global_idx
+            all_results[global_idx] = item
+    all_results = {}
+    codegen_chunks = []
+    codegen_to_global = []
+    n_batches = max(1, math.ceil(len(codegen_chunks) / 3))
+    for batch_idx in range(n_batches):
+        local_batch = codegen_chunks[batch_idx*3:(batch_idx+1)*3]
+        if not local_batch:
             continue
-    cleaned.sort(key=lambda s: s["start_time"])
-
-    if len(cleaned) < 2:
-        print(f"  🗂  No list structure detected, skipping navigation overlay")
-        return []
-
-    print(f"  ✅ {len(cleaned)}-item list structure detected")
-    return cleaned
-
+        batch_global_indices = codegen_to_global[batch_idx*3:(batch_idx+1)*3]
+        try:
+            response = _gpt_call_for_prompt(_build_user_prompt(list(zip(batch_global_indices, local_batch))))
+            returned = _parse_chunks_from_raw(response.choices[0].message.content)
+            _slot_items(returned, batch_global_indices)
+        except Exception as e:
+            print(f"  ⚠ Batch failed: {e}")
+    ordered = [all_results.get(i) for i in range(len(codegen_chunks))]
+    return ordered
 
 def _ffmpeg_escape_text(text: str) -> str:
     text = text.replace("\\", "\\\\")
