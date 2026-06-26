@@ -322,7 +322,7 @@ def _probe_clip_health(filepath: str) -> tuple[bool, str]:
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Vaults of History v3 starting...")
+    print("🚀 Math Unlocked YouTube Content Generator Starting...")
     broll_dirs = ['space_vids','ancient_ruins_vids','cosmic_vids',
                   'dark_sky_vids','temple_vids']
     print("📁 Broll folder audit:")
