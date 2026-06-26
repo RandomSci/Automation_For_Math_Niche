@@ -3646,8 +3646,11 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'get_graph\s*\([^)]*x_range',
     r'set_style\s*\([^)]*dash_length_ratio',
     r'\binterpolate_color\b',
+    r'Arrow\s*\([^)]*\bleft\s*=',
+    r'Arrow\s*\([^)]*\bright\s*=',
+    r'GrowFromEdge\s*\([^)]*\bdirection\s*=',
 ]
-MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
+MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math", "random"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
     "MathTex": "fm_formula",
     "Tex": "fm_formula",
@@ -4606,9 +4609,16 @@ If your construct() has more than 2 Text() objects that are not numbers or 1-3 c
 - fm_animate_line_chart end_value_label can be None or a string -- both are safe.
 - fm_animate_icon_grid label_text can be "" for no label -- NEVER pass None.
 - fm_card_row() does NOT accept a buff= keyword argument. Its spacing is controlled by the spacing= parameter.
+- fm_two_cards() accepts an optional buff= kwarg that is silently ignored. Use spacing= to control card gap.
 - fm_animate_line_chart_multi series must be a list of dicts: [{"y_values": [...], "color": BRAND_GREEN, "label": "Series A"}, ...]. NOT a list of plain lists.
 - When iterating over a list of floats/numbers: for i, val in enumerate(my_list) -- NOT for i, (a, b) in enumerate(my_list) which assumes tuples.
-- NEVER reference a variable on the right side of its own assignment: bar = Rectangle(...).move_to([i, bar.height/2, 0]) is an UnboundLocalError because bar doesn't exist yet when .move_to() is evaluated. Compute bar_h first, then set bar, then move it.
+- NEVER reference a variable on the right side of its own assignment: bar = Rectangle(...).move_to([i, bar.height/2, 0]) is an UnboundLocalError because bar doesn't exist yet. Compute bar_h first, then set bar, then move it.
+- Arrow() uses start= and end= parameters, NOT left= or right=. Correct: Arrow(start=LEFT*0.5, end=RIGHT*0.5). Wrong: Arrow(left=LEFT*0.5, right=RIGHT*0.5). This will crash.
+- GrowFromEdge() takes edge as the SECOND POSITIONAL argument, not a keyword. Correct: GrowFromEdge(mob, DOWN). Wrong: GrowFromEdge(mob, direction=DOWN). This will crash.
+- fm_animate_number_line tick_labels must be a list of strings/numbers or None -- NEVER pass True or False.
+- fm_formula() lines must be PLAIN TEXT ONLY -- no backslashes, curly braces, \varepsilon, \frac, subscript notation like X_{obs}. Write it as plain readable text: "X_obs = X_process + epsilon". fm_formula renders with Text() not LaTeX.
+- VGroup() only accepts VMobject instances -- NEVER pass a plain Python list or tuple. If fm_animate_line_chart returns (axes, line, dot), unpack it: axes, line, dot = fm_animate_line_chart(self, ...).
+- import random is ALLOWED in chunk code. Use it freely.
 - 16:9 FRAME AWARENESS: The frame is 16 units wide × 9 units tall (frame_width=14.22, frame_height=8.0). Never position objects beyond x=±6.5 or y=±3.8. Use fm_clamp_to_frame() for complex layouts.
 - DURATION RULE: ONE self.play() call or ONE fm_animate_* call per chunk. If your chunk has more than one self.play() call AND one fm_animate_* call, you are over-filling the chunk duration and it WILL drift. Pick one visual action per chunk.
 
@@ -4633,10 +4643,12 @@ fm_animate_probability_bar(scene, outcomes, label_text, accent_color, duration, 
   outcomes=list of (label_str, probability_float). Bar heights = probability values 0-1.
 
 fm_animate_number_line(scene, value, min_val, max_val, label_text, accent_color, duration, position, line_length, tick_labels)
-  Animated dot moving to target value on a number line.
+  Animated dot moving to target value on a number line. tick_labels must be a list or None -- never True/False.
 
 fm_formula(scene, lines, font_size, color, duration, position)
-  lines: single string or list of strings. Auto-scaled. Use "x" for multiply, "^n" for exponent. Never MathTex.
+  lines: single string or list of strings. PLAIN TEXT ONLY -- no backslashes, no curly braces, no LaTeX syntax.
+  Write readable text: "x^2 + y^2 = r^2" or "P(A|B) = P(B|A) x P(A) / P(B)".
+  NEVER write LaTeX like "\varepsilon_{noise}" -- those render as literal characters.
 
 fm_animate_counter(scene, start_val, end_val, label_text, accent_color, prefix, suffix, duration, position, value_size, label_size)
   prefix and suffix default to empty string (not "$"). Pass prefix="$" only if showing currency.
