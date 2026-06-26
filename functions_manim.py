@@ -214,7 +214,10 @@ def fm_stacked_cards(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
 
 
 def fm_clamp_to_frame(*mobjects, margin_x=0.06, margin_y=0.06):
-    combined = VGroup(*mobjects)
+    valid = [m for m in mobjects if m is not None]
+    if not valid:
+        return None
+    combined = VGroup(*valid)
     safe_w = config.frame_width * (1 - 2 * margin_x)
     safe_h = config.frame_height * (1 - 2 * margin_y)
     width_scale = safe_w / combined.width if combined.width > safe_w else 1.0

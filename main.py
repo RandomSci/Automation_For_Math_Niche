@@ -3373,30 +3373,42 @@ class MathUnlockedGenerator:
         whisper_segments = transcription.get('segments', [])
         print(f"  ✅ {len(full_text)} chars, {len(whisper_segments)} segments")
 
-        print(f"\n[STEP 3] GPT Call 1: Story Beats...")
+        print(f"\n[STEP 3] GPT Call 1: Story Beats + Concept Segmentation...")
         try:
             topic_hint = list(self.broll_dirs.keys())[0] if self.broll_dirs else "finance"
-            with ThreadPoolExecutor(max_workers=2) as _outer_pool:
+            with ThreadPoolExecutor(max_workers=3) as _outer_pool:
                 _beats_future    = _outer_pool.submit(analyze_story_beats, full_text, whisper_segments, topic_hint, duration)
                 _sections_future = _outer_pool.submit(extract_section_outline, full_text, whisper_segments, duration)
+                _concepts_future = _outer_pool.submit(segment_into_concepts, full_text, whisper_segments, duration)
                 beats_result = _beats_future.result()
                 try:
                     sections = _sections_future.result()
                 except Exception as e:
                     print(f"  ⚠ Section outline failed, skipping navigation overlay: {e}")
                     sections = []
+                try:
+                    concept_segments = _concepts_future.result()
+                except Exception as e:
+                    print(f"  ⚠ Concept segmentation failed, will use chunk-level fallback: {e}")
+                    concept_segments = []
             topic = beats_result.get('topic', 'finance')
             beats = beats_result.get('beats', [])
 
             _whisper_words = build_whisper_word_list(whisper_segments)
             beats = realign_beat_times(beats, _whisper_words)
             print(f"  🎯 Realigned {len(beats)} beat timestamps to Whisper word boundaries")
+            if concept_segments:
+                print(f"  🧩 {len(concept_segments)} concept segment(s) identified")
         except Exception as e:
             raise Exception(f"STEP 3 FAILED: {e}")
 
-        print(f"\n[STEP 4] Grouping beats into Manim chunks...")
-        chunks = group_beats_into_manim_chunks(beats, target_chunk_seconds=4.5)
-        print(f"  ✅ {len(beats)} beats -> {len(chunks)} chunk(s)")
+        print(f"\n[STEP 4] Grouping beats into concepts + fallback chunks...")
+        if concept_segments:
+            chunks = group_beats_into_concept_chunks(beats, concept_segments)
+            print(f"  ✅ {len(beats)} beats -> {len(chunks)} concept chunk(s)")
+        else:
+            chunks = group_beats_into_manim_chunks(beats, target_chunk_seconds=4.5)
+            print(f"  ✅ {len(beats)} beats -> {len(chunks)} chunk(s) (fallback mode)")
 
         print(f"\n[STEP 5] GPT Call: Manim chunk code generation...")
         try:
@@ -3649,6 +3661,9 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'Arrow\s*\([^)]*\bleft\s*=',
     r'Arrow\s*\([^)]*\bright\s*=',
     r'GrowFromEdge\s*\([^)]*\bdirection\s*=',
+    r'camera\.frame',
+    r'\bLaggedStartMap\b',
+    r'include_tip.*axis_config|axis_config.*include_tip',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math", "random"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
@@ -4437,7 +4452,172 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
 GAP_CHUNK_MIN_SECONDS = 0.35
 
 
-def group_beats_into_manim_chunks(beats: list, target_chunk_seconds: float = 4.5) -> list:
+def segment_into_concepts(full_text: str, whisper_segments: list, total_duration: float) -> list:
+    """Calls GPT to find natural concept boundaries in the transcript.
+    Returns a list of dicts: [{title, start_time, end_time}, ...].
+    Each concept is a semantically coherent block of narration — not a
+    fixed-time slice. GPT reads the full transcript with Whisper
+    timestamps and identifies where one mathematical idea ends and the
+    next begins. Target 45-90 seconds per concept, never cutting
+    mid-sentence. Falls back gracefully: if segmentation fails or
+    returns nonsense boundaries, the caller uses the old chunked mode."""
+    if not OPENAI_API_KEY:
+        return []
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    seg_text = []
+    for seg in whisper_segments:
+        s = float(seg.get("start", 0.0))
+        e = float(seg.get("end", s))
+        t = seg.get("text", "").strip()
+        if t:
+            seg_text.append(f"[{s:.1f}s-{e:.1f}s] {t}")
+
+    transcript_block = "\n".join(seg_text)
+
+    system_prompt = """You are a math education video editor. You receive a timestamped transcript and identify natural concept boundaries — points where one mathematical idea ends and the next begins.
+
+Each concept should be 40-120 seconds long. Never cut mid-sentence. Prefer cutting at:
+- Long pauses (gaps between segments)
+- Transition phrases: "now let's", "so what this means", "here's the key", "consider this", "another way to think"
+- When a new example or new term is introduced
+- After a summary or conclusion of an idea
+
+Return ONLY valid JSON:
+{
+  "concepts": [
+    {"title": "Short concept name", "start_time": 0.0, "end_time": 52.3},
+    {"title": "Short concept name", "start_time": 52.3, "end_time": 118.7}
+  ]
+}
+
+Rules:
+- concepts must be contiguous and cover the full video (first start_time = 0.0, last end_time = total duration)
+- Each concept must be at least 30 seconds and at most 150 seconds
+- 6-14 concepts for a 9-10 minute video
+- title is 2-5 words describing the mathematical idea"""
+
+    user_prompt = f"Total duration: {total_duration:.1f}s\n\nTimestamped transcript:\n{transcript_block}"
+
+    try:
+        response = _call_with_retry(lambda: gpt4o_call(
+            client,
+            model="gpt-4.1",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            max_tokens=1500,
+            timeout=60,
+        ), label="concept segmentation")
+
+        result = json.loads(response.choices[0].message.content)
+        concepts = result.get("concepts", [])
+
+        cleaned = []
+        for c in concepts:
+            try:
+                s = max(0.0, float(c["start_time"]))
+                e = min(float(total_duration), float(c["end_time"]))
+                t = str(c.get("title", "Concept")).strip()
+                if e > s + 25.0 and t:
+                    cleaned.append({"title": t, "start_time": s, "end_time": e})
+            except (KeyError, ValueError, TypeError):
+                continue
+
+        cleaned.sort(key=lambda x: x["start_time"])
+        if len(cleaned) < 2:
+            return []
+
+        print(f"  🧩 Concept segments: {[c['title'] for c in cleaned]}")
+        return cleaned
+
+    except Exception as e:
+        print(f"  ⚠ Concept segmentation error: {e}")
+        return []
+
+
+def group_beats_into_concept_chunks(beats: list, concept_segments: list) -> list:
+    """Groups beats into concept-level chunks using the boundaries from
+    segment_into_concepts. Each concept becomes one chunk containing all
+    its beats. Gap chunks (silence) are inserted between concepts exactly
+    as group_beats_into_manim_chunks does between micro-chunks. If a
+    concept has no beats (e.g. pure silence), it becomes a gap chunk.
+    Concepts that are over 120 seconds are split into two sub-chunks to
+    avoid GPT context overflow and render timeouts."""
+    if not concept_segments or not beats:
+        return group_beats_into_manim_chunks(beats, target_chunk_seconds=4.5)
+
+    MAX_CONCEPT_SECONDS = 110.0
+
+    chunks = []
+    prev_end = 0.0
+
+    for concept in concept_segments:
+        c_start = concept["start_time"]
+        c_end   = concept["end_time"]
+        c_dur   = c_end - c_start
+
+        if prev_end is not None and c_start - prev_end >= GAP_CHUNK_MIN_SECONDS:
+            chunks.append({
+                "beats": [],
+                "start_time": prev_end,
+                "end_time": c_start,
+                "is_gap": True,
+            })
+
+        concept_beats = [
+            b for b in beats
+            if float(b.get("start_time", 0)) >= c_start - 0.1
+            and float(b.get("end_time", 0)) <= c_end + 0.1
+        ]
+
+        if not concept_beats:
+            chunks.append({
+                "beats": [],
+                "start_time": c_start,
+                "end_time": c_end,
+                "is_gap": True,
+                "concept_title": concept["title"],
+            })
+            prev_end = c_end
+            continue
+
+        if c_dur <= MAX_CONCEPT_SECONDS:
+            chunks.append({
+                "beats": concept_beats,
+                "start_time": c_start,
+                "end_time": c_end,
+                "is_concept": True,
+                "concept_title": concept["title"],
+            })
+        else:
+            mid_idx = len(concept_beats) // 2
+            mid_time = float(concept_beats[mid_idx].get("start_time", (c_start + c_end) / 2))
+            chunks.append({
+                "beats": concept_beats[:mid_idx],
+                "start_time": c_start,
+                "end_time": mid_time,
+                "is_concept": True,
+                "concept_title": concept["title"] + " (part 1)",
+            })
+            chunks.append({
+                "beats": concept_beats[mid_idx:],
+                "start_time": mid_time,
+                "end_time": c_end,
+                "is_concept": True,
+                "concept_title": concept["title"] + " (part 2)",
+            })
+
+        prev_end = c_end
+
+    return chunks
+
+
+
     """Groups consecutive beats into chunks of roughly target_chunk_seconds
     each, without splitting any single beat across two chunks -- a
     chunk boundary always falls between beats, never inside one, since
@@ -4552,7 +4732,7 @@ Default to a chart, plot, matrix, vector, distribution, number line, formula, or
 
 === AXES AND GEOMETRY ARE ALLOWED AND ENCOURAGED ===
 Unlike the previous pipeline, Axes, NumberLine, NumberPlane, and Rectangle ARE available and encouraged when the fm_* library does not cover the visual well. Use them correctly:
-- Axes: always pass x_length and y_length explicitly. Use axis_config with color=BRAND_GRAY, stroke_opacity=0.45, include_tip=False. Place axes with .move_to(ORIGIN) or .move_to(position). Use axes.c2p(x, y) to convert coordinates to screen points.
+- Axes: always pass x_length and y_length explicitly. Use axis_config with ONLY color, stroke_opacity, include_numbers keys. NEVER put include_tip inside axis_config -- it crashes. Correct: Axes(x_range=[0,10,1], y_range=[0,5,1], x_length=10, y_length=5, axis_config={"color": BRAND_GRAY, "stroke_opacity": 0.45, "include_numbers": False}). Place axes with .move_to(ORIGIN). Use axes.c2p(x, y) to convert coordinates to screen points.
 - NumberLine: NumberLine(x_range=[min, max, step], length=9.0). Use .n2p(value) to get a point.
 - Rectangle: Rectangle(width=w, height=h) is fine for bars, containers, grids. RoundedRectangle(corner_radius=0.1) preferred for cards and panels.
 - When hand-building a coordinate plot, always draw axes first, then content on top.
@@ -4614,6 +4794,11 @@ If your construct() has more than 2 Text() objects that are not numbers or 1-3 c
 - When iterating over a list of floats/numbers: for i, val in enumerate(my_list) -- NOT for i, (a, b) in enumerate(my_list) which assumes tuples.
 - NEVER reference a variable on the right side of its own assignment: bar = Rectangle(...).move_to([i, bar.height/2, 0]) is an UnboundLocalError because bar doesn't exist yet. Compute bar_h first, then set bar, then move it.
 - Arrow() uses start= and end= parameters, NOT left= or right=. Correct: Arrow(start=LEFT*0.5, end=RIGHT*0.5). Wrong: Arrow(left=LEFT*0.5, right=RIGHT*0.5). This will crash.
+- self.camera.frame does NOT exist on MathScene (which uses Cairo renderer). NEVER write self.camera.frame.animate.scale() or any camera.frame access. MathScene has no movable camera frame. To zoom in on something, use scene.add() and .scale() on the mobjects themselves.
+- LaggedStartMap is BANNED. It crashes when the animation class requires more than one argument (e.g. GrowFromEdge needs an edge, Write has arg limits). Always use LaggedStart with a list comprehension instead: LaggedStart(*[GrowFromEdge(b, DOWN) for b in bars], lag_ratio=0.2) or LaggedStart(*[Write(t) for t in texts], lag_ratio=0.3).
+- Axes axis_config dict must NOT contain include_tip. Pass include_tip separately or omit it entirely: Axes(x_range=[...], axis_config={"color": BRAND_GRAY, "stroke_opacity": 0.45, "include_numbers": False}). include_tip inside axis_config crashes in Manim Community v0.20.1.
+- NEVER pass None into VGroup() or fm_clamp_to_frame(). Both crash on None. fm_animate_bell_curve returns (curve, fill_region, label_mob) where label_mob can be None if label_text="". fm_animate_scatter returns (dots, reg_line) where reg_line is None if show_regression=False. Always filter: use only named variables you know are not None, or check before grouping.
+- fm_glow_around() returns a VGroup -- it is safe to FadeIn but must be stored in a variable first. NEVER pass it inline as part of a multi-arg FadeIn call alongside other mobs in the same self.play() if any of those other mobs might be None.
 - GrowFromEdge() takes edge as the SECOND POSITIONAL argument, not a keyword. Correct: GrowFromEdge(mob, DOWN). Wrong: GrowFromEdge(mob, direction=DOWN). This will crash.
 - fm_animate_number_line tick_labels must be a list of strings/numbers or None -- NEVER pass True or False.
 - fm_formula() lines must be PLAIN TEXT ONLY -- no backslashes, curly braces, \varepsilon, \frac, subscript notation like X_{obs}. Write it as plain readable text: "X_obs = X_process + epsilon". fm_formula renders with Text() not LaTeX.
@@ -4699,19 +4884,40 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
     def _build_user_prompt(batch_items):
         lines = []
         for global_idx, chunk in batch_items:
-            chunk_text = " ".join(b.get("text", "") for b in chunk["beats"])
             duration = round(chunk["end_time"] - chunk["start_time"], 2)
-            lines.append(
-                f'Chunk {global_idx}: duration={duration}s, class_name="Chunk{global_idx}", '
-                f'narration="{chunk_text}"'
-            )
+            is_concept = chunk.get("is_concept", False)
+
+            if is_concept and len(chunk["beats"]) > 2:
+                concept_title = chunk.get("concept_title", "")
+                concept_start = chunk["start_time"]
+                beat_lines = []
+                for b in chunk["beats"]:
+                    b_start = round(float(b.get("start_time", 0)) - concept_start, 2)
+                    b_end   = round(float(b.get("end_time", 0)) - concept_start, 2)
+                    b_text  = b.get("text", "").strip()
+                    beat_lines.append(f"  +{b_start:.2f}s-{b_end:.2f}s: {b_text}")
+                beats_block = "\n".join(beat_lines)
+                lines.append(
+                    f'Chunk {global_idx} [CONCEPT: "{concept_title}"]:\n'
+                    f'  total_duration={duration}s, class_name="Chunk{global_idx}"\n'
+                    f'  Beat timestamps (seconds from chunk start):\n{beats_block}\n'
+                    f'  IMPORTANT: Use self.wait() between animations to sync with these timestamps.\n'
+                    f'  Build geometry that PERSISTS and EVOLVES across the full {duration}s — do not reset to blank between beats.'
+                )
+            else:
+                chunk_text = " ".join(b.get("text", "") for b in chunk["beats"])
+                lines.append(
+                    f'Chunk {global_idx}: duration={duration}s, class_name="Chunk{global_idx}", '
+                    f'narration="{chunk_text}"'
+                )
         return f"Topic: {topic}\n\n" + "\n".join(lines)
 
-    def _gpt_call_for_prompt(user_prompt):
+    def _gpt_call_for_prompt(user_prompt, max_tokens=4000):
         def _do():
             return gpt4o_call(
                 client,
                 model="gpt-4.1",
+                max_tokens=max_tokens,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
@@ -4814,7 +5020,12 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
     if gap_indices:
         print(f"  ⏸  {len(gap_indices)} silence gap chunk(s) skip codegen entirely")
 
-    chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=4)
+    has_concepts = any(c.get("is_concept") for c in codegen_chunks)
+    if has_concepts:
+        chunk_batch_size = 1
+        print(f"  🧩 Concept mode: sending chunks individually for full-context generation")
+    else:
+        chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=4)
     n_batches = max(1, math.ceil(len(codegen_chunks) / chunk_batch_size)) if codegen_chunks else 0
     print(f"  🎬 Manim chunks: {n_batches} batch(es) of ~{chunk_batch_size} chunks each...")
 
@@ -4829,7 +5040,9 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
         print(f"  🎬 Manim chunk batch {batch_idx + 1}/{n_batches}: {len(batch)} chunks...")
 
         try:
-            response = _gpt_call_for_prompt(_build_user_prompt(list(zip(batch_global_indices, batch))))
+            is_concept_batch = any(batch[j].get("is_concept") for j in range(len(batch)))
+            tokens = 6000 if is_concept_batch else 4000
+            response = _gpt_call_for_prompt(_build_user_prompt(list(zip(batch_global_indices, batch))), max_tokens=tokens)
             returned = _parse_chunks_from_raw(response.choices[0].message.content)
             _slot_items(returned, batch_global_indices)
             missing = [idx for idx in batch_global_indices if idx not in all_results]
