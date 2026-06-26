@@ -216,7 +216,6 @@ def _detect_sfx_for_chunk(code: str) -> str:
     return None
 
 def _build_sfx_audio_inputs(clip_paths, chunk_code_list):
-    return []
     sfx_events = []
     t = 0.0
     MIN_GAP = 6.0
@@ -3650,6 +3649,8 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'\bEllipse\b',
     r'\bscipy\b',
     r'plot_line_graph',
+    r'set_stroke\s*\([^)]*dash_length',
+    r'get_graph\s*\([^)]*x_range',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
@@ -4562,6 +4563,8 @@ If your construct() has more than 2 Text() objects that are not numbers or 1-3 c
 - NEVER pass opacity= as a constructor kwarg to Dot, Circle, Line, Arrow or any geometry -- use .set_opacity() AFTER construction. Real failure: Dot([0,0,0], opacity=0.35) crashes. Correct: d = Dot([0,0,0]); d.set_opacity(0.35).
 - plot_line_graph IS BANNED -- it crashes with color kwarg conflicts. Use fm_animate_line_chart or fm_animate_line_chart_multi instead for any trend or curve. Never call axes.plot_line_graph() under any circumstance.
 - axes.get_graph() returns a ParametricFunction -- NEVER call .color= or pass color as a kwarg directly to get_graph(). Set color after: curve = axes.get_graph(func, x_range=[a,b]); curve.set_stroke(BRAND_GREEN, width=4).
+- axes.get_graph() does NOT accept x_range as a kwarg -- use axes.plot(func, x_range=[a,b]) instead. axes.get_graph(func) with no x_range is also valid.
+- set_stroke() does NOT accept dash_length or any dashing kwargs -- dashing is impossible via set_stroke(). Remove dash_length entirely.
 - axes.get_area() accepts x_range and bounded_graph but NOT dash_length or any stroke dash kwargs -- dashing is impossible on a filled region.
 - DashedLine, DashedVMobject, Ellipse, scipy are BANNED.
 - fm_animate_scatter returns (dots_group, regression_line) -- a plain tuple. NEVER access .axes on the return value. NEVER do scatter.axes.c2p(...). If you need coordinate mapping after calling fm_animate_scatter, build your own Axes separately first.
@@ -4897,6 +4900,12 @@ def render_intro_clip(w: int = 1920, h: int = 1080, fps: int = 30,
     import random as _random
     quote_text, quote_author = _random.choice(MATH_UNLOCKED_INTRO_QUOTES)
 
+    _t_draw  = 1.2
+    _t_glow  = 0.5
+    _t_quote = 0.8
+    _t_fade  = 0.5
+    _t_hold  = max(duration - _t_draw - _t_glow - _t_quote - _t_fade, 0.8)
+
     intro_code = f'''from manim import *
 import math
 
@@ -4946,11 +4955,11 @@ class MathUnlockedIntro(Scene):
         text_group = VGroup(quote_mob, author_mob).arrange(DOWN, buff=0.32)
         text_group.move_to(ORIGIN + DOWN * 2.2)
 
-        t_draw   = 1.2
-        t_glow   = 0.5
-        t_quote  = 0.8
-        t_hold   = max(duration - t_draw - t_glow - t_quote - 0.5, 0.8)
-        t_fade   = 0.5
+        t_draw   = {_t_draw}
+        t_glow   = {_t_glow}
+        t_quote  = {_t_quote}
+        t_hold   = {_t_hold}
+        t_fade   = {_t_fade}
 
         self.play(
             LaggedStart(
