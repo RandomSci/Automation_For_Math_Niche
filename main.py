@@ -3429,14 +3429,6 @@ class MathUnlockedGenerator:
             clip_paths = render_all_manim_chunks(chunks, chunk_code_list,
                                                   w=OUTPUT_WIDTH, h=OUTPUT_HEIGHT, fps=fps)
 
-            print(f"  🎬 Rendering Math Unlocked intro clip...")
-            intro_path = render_intro_clip(w=OUTPUT_WIDTH, h=OUTPUT_HEIGHT, fps=fps, duration=5.0)
-            if intro_path:
-                clip_paths = [intro_path] + clip_paths
-                print(f"  ✅ Intro prepended -> {intro_path}")
-            else:
-                print(f"  ⚠ Intro skipped, continuing without it")
-
             concat_manim_clips(clip_paths, concat_output)
             print(f"  ✅ {len(clip_paths)} chunks concatenated -> {concat_output}")
 
@@ -3841,7 +3833,9 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
             if fn_name in {"p2c", "point_to_coords", "point_to_number", "normalized"}:
                 return False, f"calls unsafe coordinate reverse-transform '{fn_name}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
 
-            
+            if isinstance(fn, ast.Attribute) and fn.attr.startswith("fm_"):
+                return False, f"called self.{fn.attr}() as a method -- fm_* functions are module-level, not Scene methods. Correct: {fn.attr}(self, ...). Wrong: self.{fn.attr}(...)"
+
             if fn_name == "Polygon" and len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
                 return False, "Polygon received one nested list of vertices; use Polygon(*points) or avoid Polygon and use fm_icon/fm_card/fm_* helpers"
 
@@ -3851,13 +3845,28 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
             ):
                 return False, "rotate() does not accept run_time kwarg -- pass run_time to self.play() instead: self.play(obj.animate.rotate(...), run_time=X)"
 
-            if fn_name in {"fm_animate_gauge", "fm_animate_donut", "fm_animate_counter",
-                           "fm_animate_line_chart", "fm_animate_line_chart_multi",
-                           "fm_animate_single_value", "fm_animate_glow_reveal",
-                           "fm_animate_icon_grid", "fm_animate_comparison_bars",
-                           "fm_animate_bar_chart", "fm_animate_waterfall",
-                           "fm_animate_stacked_cards", "fm_animate_bullet_chart",
-                           "fm_animate_timeline", "fm_animate_text_reveal"}:
+            _fm_animation_fns = {
+                "fm_animate_gauge", "fm_animate_donut", "fm_animate_counter",
+                "fm_animate_line_chart", "fm_animate_line_chart_multi",
+                "fm_animate_single_value", "fm_animate_glow_reveal",
+                "fm_animate_icon_grid", "fm_animate_comparison_bars",
+                "fm_animate_bar_chart", "fm_animate_waterfall",
+                "fm_animate_stacked_cards", "fm_animate_bullet_chart",
+                "fm_animate_timeline", "fm_animate_text_reveal",
+                "fm_animate_bell_curve", "fm_animate_vector", "fm_animate_matrix",
+                "fm_animate_scatter", "fm_animate_probability_bar",
+                "fm_animate_number_line",
+            }
+
+            if fn_name == "play":
+                for arg in node.args:
+                    if isinstance(arg, ast.Call):
+                        inner_fn = arg.func
+                        inner_name = inner_fn.id if isinstance(inner_fn, ast.Name) else (inner_fn.attr if isinstance(inner_fn, ast.Attribute) else "")
+                        if inner_name in _fm_animation_fns:
+                            return False, f"fm_animate_* functions handle their own self.play() internally -- do NOT wrap them in self.play(). Call {inner_name}(self, ...) directly."
+
+            if fn_name in _fm_animation_fns:
                 for child in ast.walk(node):
                     if isinstance(child, ast.Subscript) and child is not node:
                         pass
@@ -3874,7 +3883,10 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
                                 "fm_animate_icon_grid", "fm_animate_comparison_bars",
                                 "fm_animate_bar_chart", "fm_animate_waterfall",
                                 "fm_animate_stacked_cards", "fm_animate_bullet_chart",
-                                "fm_animate_timeline", "fm_animate_text_reveal"}:
+                                "fm_animate_timeline", "fm_animate_text_reveal",
+                                "fm_animate_bell_curve", "fm_animate_vector", "fm_animate_matrix",
+                                "fm_animate_scatter", "fm_animate_probability_bar",
+                                "fm_animate_number_line"}:
                     return False, f"indexing the return value of {fn_name2}() is unsafe -- these functions return None or a fixed-arity tuple; store the return in a named variable and index that, checking the documented arity first"
 
     class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
@@ -4559,7 +4571,8 @@ If your construct() has more than 2 Text() objects that are not numbers or 1-3 c
 - ONE full-screen animate primitive per chunk -- fm_animate_bell_curve, fm_animate_vector, fm_animate_matrix etc. fill the frame on their own. Never call two of them in the same construct().
 - rotate() does NOT accept run_time as a kwarg -- run_time belongs in self.play().
 - point_at_angle() does NOT exist on Arc -- use arc.point_from_proportion(t).
-- NEVER call fm_* functions as self.fm_* -- they are module-level functions, not Scene methods. Correct: fm_animate_number_line(self, ...). Wrong: self.fm_animate_number_line(...).
+- NEVER call fm_* functions as self.fm_* -- they are module-level functions, not Scene methods. Correct: fm_animate_number_line(self, ...). Wrong: self.fm_animate_number_line(...). This will be caught by the safety checker and rejected before rendering.
+- NEVER wrap fm_animate_* calls inside self.play() -- they handle their own animation internally. Correct: fm_animate_comparison_bars(self, ...). Wrong: self.play(fm_animate_comparison_bars(self, ...)).
 - NEVER pass opacity= as a constructor kwarg to Dot, Circle, Line, Arrow or any geometry -- use .set_opacity() AFTER construction. Real failure: Dot([0,0,0], opacity=0.35) crashes. Correct: d = Dot([0,0,0]); d.set_opacity(0.35).
 - plot_line_graph IS BANNED -- it crashes with color kwarg conflicts. Use fm_animate_line_chart or fm_animate_line_chart_multi instead for any trend or curve. Never call axes.plot_line_graph() under any circumstance.
 - axes.get_graph() returns a ParametricFunction -- NEVER call .color= or pass color as a kwarg directly to get_graph(). Set color after: curve = axes.get_graph(func, x_range=[a,b]); curve.set_stroke(BRAND_GREEN, width=4).
@@ -4568,8 +4581,18 @@ If your construct() has more than 2 Text() objects that are not numbers or 1-3 c
 - axes.get_area() accepts x_range and bounded_graph but NOT dash_length or any stroke dash kwargs -- dashing is impossible on a filled region.
 - DashedLine, DashedVMobject, Ellipse, scipy are BANNED.
 - fm_animate_scatter returns (dots_group, regression_line) -- a plain tuple. NEVER access .axes on the return value. NEVER do scatter.axes.c2p(...). If you need coordinate mapping after calling fm_animate_scatter, build your own Axes separately first.
+- fm_animate_bell_curve returns (curve, fill_region, label_mob) -- a plain tuple. NEVER call .get_center() or .move_to() on the return value. Do not chain methods on it.
+- fm_animate_timeline returns (dots, labels) -- a plain tuple. NEVER call .move_to() on the return value.
+- ALL fm_animate_* functions return tuples or None -- NEVER call .move_to(), .get_center(), .shift(), .next_to() or any Mobject method on their return values directly.
 - fm_animate_bell_curve mean_label and std_label must be strings or omitted -- NEVER pass None. If you want no label just omit the argument entirely.
 - fm_animate_number_line value must be a number -- NEVER pass None. If you want to show a range without a moving dot, use fm_animate_line_chart instead.
+- fm_animate_line_chart end_value_label can be None or a string -- both are safe.
+- fm_animate_icon_grid label_text can be "" for no label -- NEVER pass None.
+- fm_card_row() does NOT accept a buff= keyword argument. Its spacing is controlled by the spacing= parameter.
+- fm_animate_line_chart_multi series must be a list of dicts: [{"y_values": [...], "color": BRAND_GREEN, "label": "Series A"}, ...]. NOT a list of plain lists.
+- When iterating over a list of floats/numbers: for i, val in enumerate(my_list) -- NOT for i, (a, b) in enumerate(my_list) which assumes tuples.
+- NEVER reference a variable on the right side of its own assignment: bar = Rectangle(...).move_to([i, bar.height/2, 0]) is an UnboundLocalError because bar doesn't exist yet when .move_to() is evaluated. Compute bar_h first, then set bar, then move it.
+- 16:9 FRAME AWARENESS: The frame is 16 units wide × 9 units tall (frame_width=14.22, frame_height=8.0). Never position objects beyond x=±6.5 or y=±3.8. Use fm_clamp_to_frame() for complex layouts.
 - DURATION RULE: ONE self.play() call or ONE fm_animate_* call per chunk. If your chunk has more than one self.play() call AND one fm_animate_* call, you are over-filling the chunk duration and it WILL drift. Pick one visual action per chunk.
 
 === BRAND PALETTE ===
@@ -4603,13 +4626,17 @@ fm_animate_counter(scene, start_val, end_val, label_text, accent_color, prefix, 
 
 fm_animate_bar_chart(scene, values, names, colors, duration, title_text)
 fm_animate_line_chart(scene, y_values, end_value_label, accent_color, x_labels, duration, title_text)
+  end_value_label: string label shown at the end dot. Pass None or "" for no label.
 fm_animate_line_chart_multi(scene, series, duration, title_text)
+  series MUST be: [{"y_values": [1,2,3], "color": BRAND_GREEN, "label": "A"}, {"y_values": [2,3,4], "color": BRAND_GOLD, "label": "B"}]
+  NOT a list of plain lists. Each dict MUST have "y_values" key.
 fm_animate_gauge(scene, value, max_val, label_text, accent_color, duration, position, radius)
 fm_animate_donut(scene, percentage, label_text, accent_color, duration, position)
 fm_animate_comparison_bars(scene, items, duration, title_text, show_net)
 fm_animate_glow_reveal(scene, text_str, accent_color, duration, font_size, subtitle, subtitle_color)
 fm_animate_text_reveal(scene, lines, colors, duration, sizes)
 fm_animate_icon_grid(scene, total, filled, label_text, accent_color, duration, cols, position, icon_radius)
+  label_text: use "" for no label. NEVER pass None.
 fm_animate_timeline(scene, events, accent_color, duration, show_index)
 fm_animate_single_value(scene, value_str, label_text, accent_color, duration, value_size, label_size, sublabel, sublabel_color)
 fm_animate_waterfall(scene, steps, duration)
@@ -4617,12 +4644,16 @@ fm_animate_bullet_chart(scene, actual, target, range_low, range_high, label_text
 fm_animate_stacked_cards(scene, items, duration)
 fm_card(label_text, value_text, accent_color, panel_color, text_color, label_size, value_size, buff)
 fm_two_cards(left_label, left_val, left_color, right_label, right_val, right_color, ...)
-fm_card_row(items, ...) -- items=[(label, value, color), ...]
+fm_card_row(items, panel_color, text_color, label_size, value_size, spacing)
+  items=[(label, value, color), ...]. Uses spacing= NOT buff= to control card gaps.
 fm_stacked_cards(items, ...)
 fm_concept_pills(labels, colors, panel_color, text_color, font_size, direction, spacing)
 fm_glow_around(mobject, color, n_layers) -- returns VGroup(glow_layers, original)
 fm_clamp_to_frame(*mobjects, margin_x, margin_y) -- call LAST before self.play()
 fm_icon(name, size, color) -- names: sigma, integral, pi_sym, infinity, gradient, neuron, matrix_sym, derivative, dollar, coin, house, person, clock, arrow_up, arrow_down, warning, checkmark, fire
+
+=== VISUAL VARIETY — REQUIRED ===
+Every 4 consecutive chunks must use a DIFFERENT primary visual type. Bell curve → number line → scatter → bar chart is good. Bell curve → bell curve → bell curve → bell curve is unacceptable and WILL be flagged. Rotate through: Axes plots, fm_animate_vector, fm_animate_matrix, fm_animate_scatter, fm_animate_number_line, fm_animate_probability_bar, fm_animate_counter, fm_animate_comparison_bars, fm_animate_bar_chart, fm_animate_line_chart, fm_formula, fm_animate_glow_reveal. Bell curve should appear AT MOST once per 6 chunks.
 
 === QUALITY BAR ===
 - Use Create() for curves, lines, axes. Use FadeIn() for cards, text, dots. Use GrowFromEdge() for bars. Use GrowFromCenter() for dots/icons. Use Write() for end labels.

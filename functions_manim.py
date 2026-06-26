@@ -146,7 +146,7 @@ def fm_two_cards(left_label, left_val, left_color,
 
 
 def fm_card_row(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
-                 label_size=26, value_size=44, spacing=0.45):
+                 label_size=26, value_size=44, spacing=0.45, buff=None):
     cards = VGroup()
     for entry in items:
         if isinstance(entry, dict):
@@ -405,12 +405,14 @@ def fm_animate_donut(scene, percentage, label_text,
     return tracker, pct_lbl, cat_lbl
 
 
-def fm_animate_line_chart(scene, y_values, end_value_label,
+def fm_animate_line_chart(scene, y_values, end_value_label=None,
                            accent_color=BRAND_GREEN, x_labels=None,
                            duration=3.5, title_text=""):
     n = len(y_values)
     if n < 2:
         return None, None, None
+
+    end_value_label = end_value_label if end_value_label is not None else ""
 
     min_y   = min(y_values)
     max_y   = max(y_values)
@@ -435,18 +437,16 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
     )
     axes.move_to(ORIGIN + DOWN * 0.15)
 
-    pts        = [axes.c2p(i, y_values[i]) for i in range(n)]
-    line       = VMobject()
+    pts = [axes.c2p(i, y_values[i]) for i in range(n)]
+    line = VMobject()
     _fm_set_line_smooth(line, pts)
     line.set_stroke(color=accent_color, width=4.5, opacity=0.95)
 
-    baseline_y = y_lo
-    fill_pts   = pts + [axes.c2p(n - 1, baseline_y), axes.c2p(0, baseline_y)]
+    baseline_y  = y_lo
+    fill_pts    = pts + [axes.c2p(n - 1, baseline_y), axes.c2p(0, baseline_y)]
     fill_region = Polygon(*fill_pts, fill_opacity=0.20, stroke_width=0)
     fill_region.set_color_by_gradient(accent_color, BRAND_BG)
 
-    end_dot = Dot(pts[-1], color=accent_color, radius=0.13)
-    end_lbl = Text(end_value_label, font_size=38, color=accent_color, weight=BOLD)
     _dot_pt = axes.c2p(n - 1, y_values[-1])
     _dot_x  = _dot_pt[0]
     _dot_y  = _dot_pt[1]
@@ -469,14 +469,20 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
     label_t = 0.4
     hold_t  = max(duration - grow_t - label_t, 0.05)
     scene.play(Create(line), run_time=grow_t, rate_func=smooth)
-    curve_end = pts[-1]
-    end_dot.move_to(curve_end)
-    end_lbl.next_to(end_dot, _lbl_dir, buff=0.18)
-    if end_lbl.get_right()[0] > _frame_right_edge:
-        end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
-    if end_lbl.get_left()[0] < _frame_left_edge:
-        end_lbl.shift(RIGHT * (_frame_left_edge - end_lbl.get_left()[0]))
-    scene.play(FadeIn(end_dot), Write(end_lbl), run_time=label_t)
+
+    last_anchor = line.get_last_point()
+    end_dot = Dot(last_anchor, color=accent_color, radius=0.13)
+
+    if end_value_label:
+        end_lbl = Text(end_value_label, font_size=38, color=accent_color, weight=BOLD)
+        end_lbl.next_to(end_dot, _lbl_dir, buff=0.18)
+        if end_lbl.get_right()[0] > _frame_right_edge:
+            end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
+        if end_lbl.get_left()[0] < _frame_left_edge:
+            end_lbl.shift(RIGHT * (_frame_left_edge - end_lbl.get_left()[0]))
+        scene.play(FadeIn(end_dot), Write(end_lbl), run_time=label_t)
+    else:
+        scene.play(FadeIn(end_dot), run_time=label_t)
     scene.wait(hold_t)
     return axes, line, end_dot
 
@@ -484,6 +490,14 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
 def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
     if not series:
         return None, None
+
+    if series and not isinstance(series[0], dict):
+        colors_cycle = [BRAND_GREEN, BRAND_GOLD, BRAND_RED, BRAND_WHITE]
+        series = [
+            {"y_values": s, "color": colors_cycle[i % len(colors_cycle)], "label": f"Series {i+1}"}
+            for i, s in enumerate(series)
+        ]
+
     n = len(series[0]["y_values"])
     if n < 2:
         return None, None
@@ -556,7 +570,8 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
     _frame_right_edge = config.frame_width / 2 - 0.25
     _frame_left_edge2 = -config.frame_width / 2 + 0.25
     for i, (line_obj, end_dot, end_lbl, ldir) in enumerate(zip(lines, end_dots, end_lbls, _lbl_dirs)):
-        end_dot.move_to(_end_pts[i])
+        actual_end = line_obj.get_last_point()
+        end_dot.move_to(actual_end)
         end_lbl.next_to(end_dot, ldir, buff=0.12)
         if end_lbl.get_right()[0] > _frame_right_edge:
             end_lbl.shift(LEFT * (end_lbl.get_right()[0] - _frame_right_edge))
@@ -693,6 +708,8 @@ def fm_animate_icon_grid(scene, total, filled, label_text,
                           cols=10, position=None, icon_radius=0.18):
     if position is None:
         position = ORIGIN
+    if label_text is None:
+        label_text = ""
 
     filled   = max(0, min(filled, total))
     rows     = math.ceil(total / max(cols, 1))
