@@ -3637,6 +3637,8 @@ MANIM_FORBIDDEN_NAMES = {
     "MarkupText", "Integer", "Variable", "BulletedList", "Title", "Paragraph",
     "BarChart", "SVGMobject", "ComplexPlane", "PolarPlane",
     "MathTex", "Tex", "SingleStringMathTex",
+    "DashedLine", "DashedVMobject", "Ellipse",
+    "scipy",
 }
 MANIM_FORBIDDEN_PATTERNS = [
     r'\bDecimalNumber\b',
@@ -3646,6 +3648,8 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'\bMathTex\b', r'\bSingleStringMathTex\b', r'\bTex\b',
     r'\bDashedLine\b', r'\bDashedVMobject\b',
     r'\bEllipse\b',
+    r'\bscipy\b',
+    r'plot_line_graph',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
@@ -4554,6 +4558,16 @@ If your construct() has more than 2 Text() objects that are not numbers or 1-3 c
 - ONE full-screen animate primitive per chunk -- fm_animate_bell_curve, fm_animate_vector, fm_animate_matrix etc. fill the frame on their own. Never call two of them in the same construct().
 - rotate() does NOT accept run_time as a kwarg -- run_time belongs in self.play().
 - point_at_angle() does NOT exist on Arc -- use arc.point_from_proportion(t).
+- NEVER call fm_* functions as self.fm_* -- they are module-level functions, not Scene methods. Correct: fm_animate_number_line(self, ...). Wrong: self.fm_animate_number_line(...).
+- NEVER pass opacity= as a constructor kwarg to Dot, Circle, Line, Arrow or any geometry -- use .set_opacity() AFTER construction. Real failure: Dot([0,0,0], opacity=0.35) crashes. Correct: d = Dot([0,0,0]); d.set_opacity(0.35).
+- plot_line_graph IS BANNED -- it crashes with color kwarg conflicts. Use fm_animate_line_chart or fm_animate_line_chart_multi instead for any trend or curve. Never call axes.plot_line_graph() under any circumstance.
+- axes.get_graph() returns a ParametricFunction -- NEVER call .color= or pass color as a kwarg directly to get_graph(). Set color after: curve = axes.get_graph(func, x_range=[a,b]); curve.set_stroke(BRAND_GREEN, width=4).
+- axes.get_area() accepts x_range and bounded_graph but NOT dash_length or any stroke dash kwargs -- dashing is impossible on a filled region.
+- DashedLine, DashedVMobject, Ellipse, scipy are BANNED.
+- fm_animate_scatter returns (dots_group, regression_line) -- a plain tuple. NEVER access .axes on the return value. NEVER do scatter.axes.c2p(...). If you need coordinate mapping after calling fm_animate_scatter, build your own Axes separately first.
+- fm_animate_bell_curve mean_label and std_label must be strings or omitted -- NEVER pass None. If you want no label just omit the argument entirely.
+- fm_animate_number_line value must be a number -- NEVER pass None. If you want to show a range without a moving dot, use fm_animate_line_chart instead.
+- DURATION RULE: ONE self.play() call or ONE fm_animate_* call per chunk. If your chunk has more than one self.play() call AND one fm_animate_* call, you are over-filling the chunk duration and it WILL drift. Pick one visual action per chunk.
 
 === BRAND PALETTE ===
 White: "#F5F7FA". Green (positive/growth): "#38D996". Red (warning/error): "#FF4D4D". Gold (neutral highlight): "#FFD166". Gray (secondary/de-emphasized): "#8A94A6". Panel/card bg: "#0D1B2A". Background: "#060F1A".
@@ -4971,9 +4985,9 @@ class MathUnlockedIntro(Scene):
         f.write(intro_code)
 
     cmd = [
-        "manim", script_path, "MathUnlockedIntro",
+        "manim", "render", script_path, "MathUnlockedIntro",
         "--format=mp4",
-        f"--pixel_width={w}", f"--pixel_height={h}",
+        f"--resolution={w},{h}",
         f"--frame_rate={fps}",
         "--media_dir", MANIM_CHUNK_CACHE_DIR,
         "--output_file", "intro_clip",

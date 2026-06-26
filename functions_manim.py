@@ -1348,7 +1348,8 @@ def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
         [position[0], baseline_y + 0.1, 0],
     )
     mean_tick.set_stroke(BRAND_WHITE, width=2.5, opacity=0.7)
-    mean_lbl = Text(mean_label, font_size=28, color=BRAND_WHITE)
+    _mean_label_str = mean_label if isinstance(mean_label, str) and mean_label else "μ"
+    mean_lbl = Text(_mean_label_str, font_size=28, color=BRAND_WHITE)
     mean_lbl.next_to(mean_tick, DOWN, buff=0.18)
 
     sigma_x_pos = position[0] + curve_w / 2 / x_range
@@ -1357,7 +1358,8 @@ def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
         [sigma_x_pos, baseline_y + 0.1, 0],
     )
     std_tick.set_stroke(BRAND_GRAY, width=2.0, opacity=0.6)
-    std_lbl = Text(std_label, font_size=24, color=BRAND_GRAY)
+    _std_label_str = std_label if isinstance(std_label, str) and std_label else "σ"
+    std_lbl = Text(_std_label_str, font_size=24, color=BRAND_GRAY)
     std_lbl.next_to(std_tick, DOWN, buff=0.18)
 
     lbl_mob = None
@@ -1585,7 +1587,8 @@ def fm_animate_number_line(scene, value, min_val, max_val, label_text="",
         tl.next_to(tick, DOWN, buff=0.15)
         ticks_group.add(tl)
 
-    frac_val = max(0.0, min(1.0, (value - min_val) / span))
+    _value_safe = value if value is not None else (min_val + max_val) / 2
+    frac_val = max(0.0, min(1.0, (_value_safe - min_val) / span))
     target_x = position[0] - line_length / 2 + frac_val * line_length
 
     tracker = ValueTracker(position[0] - line_length / 2)
@@ -1599,7 +1602,7 @@ def fm_animate_number_line(scene, value, min_val, max_val, label_text="",
 
     dot = always_redraw(_dot)
 
-    val_str = f"{value:.2f}" if isinstance(value, float) else str(int(value))
+    val_str = f"{_value_safe:.2f}" if isinstance(_value_safe, float) else str(int(_value_safe))
     val_lbl = Text(val_str, font_size=44, color=accent_color, weight=BOLD)
     val_lbl.move_to([target_x, position[1] + 0.65, 0])
 
