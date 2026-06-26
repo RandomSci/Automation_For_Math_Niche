@@ -23,13 +23,17 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Finance Explainer v2")
+app = FastAPI(title="Math Unlocked")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 current_job = {"status": "idle", "progress": 0, "output": None, "error": None, "started_at": None}
 
 OUTPUT_WIDTH  = 1920
 OUTPUT_HEIGHT = 1080
+
+ENCODE_PRESET = os.environ.get("FINANCE_ENCODE_PRESET", "medium")
+ENCODE_CRF    = os.environ.get("FINANCE_ENCODE_CRF", "15")
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 
@@ -161,6 +165,86 @@ MUSIC_MAP = {
     "default":   "bg_musics/finance_ambient.mp3",
 }
 
+
+SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sfx")
+
+SFX_MAP = {
+    "graph_whoosh":    ("alexzavesa-swoosh-1-463607.mp3",          -6),
+    "card_pop":        ("universfield-new-notification-010-352755.mp3", -6),
+    "solution_chime":  ("universfield-new-notification-013-363676.mp3", -8),
+    "warning_ping":    ("universfield-new-notification-014-363678.mp3", -6),
+    "problem_hit":     ("freesound_community-punch-boxing-02wav-14897.mp3", -8),
+    "tiny_click":      ("dragon-studio-mouse-click-4-393911.mp3",   -8),
+}
+
+def _sfx_path(key):
+    entry = SFX_MAP.get(key)
+    if not entry:
+        return None
+    fname, _ = entry
+    p = os.path.join(SFX_DIR, fname)
+    return p if os.path.exists(p) else None
+
+def _detect_sfx_for_chunk(code: str) -> str:
+    if not code:
+        return None
+    c = code.lower()
+    if "fm_animate_line_chart" in c or "fm_animate_line_chart_multi" in c:
+        return "graph_whoosh"
+    if "fm_animate_waterfall" in c or "fm_animate_comparison_bars" in c:
+        if "brand_red" in c or "warning" in c or "danger" in c or "debt" in c:
+            return "problem_hit"
+        return "graph_whoosh"
+    if "fm_animate_gauge" in c or "fm_animate_donut" in c:
+        if "brand_red" in c or "warning" in c:
+            return "warning_ping"
+        return "solution_chime"
+    if "fm_animate_bar_chart" in c:
+        if "brand_red" in c:
+            return "warning_ping"
+        return "tiny_click"
+    if "fm_animate_counter" in c or "fm_animate_single_value" in c:
+        return "tiny_click"
+    if "fm_card" in c or "fm_two_cards" in c or "fm_stacked_cards" in c or "fm_card_row" in c:
+        if "brand_red" in c:
+            return "problem_hit"
+        return "card_pop"
+    if "fm_animate_glow_reveal" in c or "fm_animate_text_reveal" in c:
+        return "solution_chime"
+    if "fm_concept_pills" in c or "fm_animate_timeline" in c:
+        return "card_pop"
+    return None
+
+def _build_sfx_audio_inputs(clip_paths, chunk_code_list):
+    return []
+    sfx_events = []
+    t = 0.0
+    MIN_GAP = 6.0
+    last_sfx_t = -MIN_GAP
+    for i, clip in enumerate(clip_paths):
+        if not clip or not os.path.exists(clip):
+            t += 4.5
+            continue
+        try:
+            r = subprocess.run(
+                ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', clip],
+                capture_output=True, text=True
+            )
+            dur = float(r.stdout.strip())
+        except Exception:
+            dur = 4.5
+        item = chunk_code_list[i] if i < len(chunk_code_list) else None
+        code = item.get("code", "") if isinstance(item, dict) else (item or "")
+        sfx_key = _detect_sfx_for_chunk(code)
+        sfx_file = _sfx_path(sfx_key) if sfx_key else None
+        if sfx_file and (t - last_sfx_t) >= MIN_GAP:
+            _, vol_db = SFX_MAP[sfx_key]
+            sfx_events.append((t, sfx_file, vol_db))
+            last_sfx_t = t
+        t += dur
+    return sfx_events
+
 FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
 FONT_BLACK_CANDIDATES = [
@@ -238,7 +322,7 @@ def _probe_clip_health(filepath: str) -> tuple[bool, str]:
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Vaults of History v3 starting...")
+    print("🚀 Math Unlocked YouTube Content Generator Starting...")
     broll_dirs = ['space_vids','ancient_ruins_vids','cosmic_vids',
                   'dark_sky_vids','temple_vids']
     print("📁 Broll folder audit:")
@@ -781,8 +865,9 @@ def generate_procedural_background(beats: list, topic: str, total_duration: floa
 
     r = subprocess.run([
         'ffmpeg', '-y', '-i', raw_path,
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
-        '-pix_fmt', 'yuv420p', '-r', str(fps), '-an', output_path
+        '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+        '-tune', 'animation', '-pix_fmt', 'yuv420p',
+        '-r', str(fps), '-an', '-movflags', '+faststart', output_path
     ], capture_output=True)
     os.remove(raw_path)
     if r.returncode != 0:
@@ -823,6 +908,24 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
     UNBOUNDED search from the global pointer so one bad match can't strand
     every subsequent beat. If a beat truly can't be matched, estimate its
     timing sequentially rather than keeping GPT's possibly-wild guess.
+
+    The unbounded fallback search is a known hazard for short connector
+    words ("a", "to", "of", "is") -- a loose substring check matches those
+    against almost any nearby word, and an unbounded scan will happily grab
+    a spurious match hundreds of words away, corrupting that beat's
+    end_time by hundreds of seconds. Three guards against this: word
+    matching requires an exact match unless both words are long enough
+    (4+ chars) that a substring match is actually meaningful; a matched
+    span is discarded if it is wildly larger than the beat's word count
+    could plausibly justify; and a matched span is discarded if the last
+    matched word lands at an earlier word-list position than the first
+    matched word. That last case happens because the unbounded fallback
+    deliberately restarts its search from the global pointer (not the
+    beat-local pointer) to recover when an earlier word in the SAME beat
+    over-advanced -- which can make a later word in the beat match a word
+    that occurs earlier in the transcript than an already-matched word,
+    producing a negative time span. A magnitude check alone does not catch
+    this, since any negative number trivially satisfies span <= ceiling.
     """
     ptr = 0
     n = len(whisper_word_list)
@@ -830,6 +933,13 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
 
     def norm(w):
         return w.upper().strip('.,!?;:\'"()[]- ')
+
+    def matches(w, ww):
+        if ww == w:
+            return True
+        if len(w) < 4 or len(ww) < 4:
+            return False
+        return w in ww or ww in w
 
     for beat in beats:
         text = (beat.get("text") or "").strip()
@@ -845,14 +955,12 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
         for w in words:
             found = None
             for look in range(local_ptr, min(local_ptr + LOOKAHEAD, n)):
-                ww = whisper_word_list[look]['word']
-                if ww == w or w in ww or ww in w:
+                if matches(w, whisper_word_list[look]['word']):
                     found = look
                     break
             if found is None:
                 for look in range(ptr, n):
-                    ww = whisper_word_list[look]['word']
-                    if ww == w or w in ww or ww in w:
+                    if matches(w, whisper_word_list[look]['word']):
                         found = look
                         break
             if found is None:
@@ -862,11 +970,23 @@ def realign_beat_times(beats: list, whisper_word_list: list) -> list:
             end_idx = found
             local_ptr = found + 1
 
-        if start_idx is not None and end_idx is not None:
-            beat["start_time"] = whisper_word_list[start_idx]['start']
-            beat["end_time"]   = whisper_word_list[end_idx]['end']
-            ptr = end_idx + 1
-        else:
+        matched_ok = False
+        if start_idx is not None and end_idx is not None and end_idx >= start_idx:
+            span = whisper_word_list[end_idx]['end'] - whisper_word_list[start_idx]['start']
+            plausible_ceiling = max(8.0, 4.0 * max(0.3, 0.35 * len(words)))
+            if span <= plausible_ceiling:
+                beat["start_time"] = whisper_word_list[start_idx]['start']
+                beat["end_time"]   = whisper_word_list[end_idx]['end']
+                ptr = end_idx + 1
+                matched_ok = True
+            else:
+                print(f"    ⚠ Discarding implausible match for '{text[:40]}' "
+                      f"({span:.1f}s span for {len(words)} words) -- estimating instead")
+        elif start_idx is not None and end_idx is not None:
+            print(f"    ⚠ Discarding non-monotonic match for '{text[:40]}' "
+                  f"(later word matched an earlier position) -- estimating instead")
+
+        if not matched_ok:
             if ptr < n:
                 est_start = whisper_word_list[ptr]['start']
             elif n > 0:
@@ -1454,7 +1574,7 @@ def _static_safety_check(code: str) -> tuple[bool, str]:
 
 import hashlib
 
-_PRERENDER_CACHE_DIR = os.path.join(tempfile.gettempdir(), "finance_explainer_beat_cache")
+_PRERENDER_CACHE_DIR = os.path.join(tempfile.gettempdir(), "math_unlocked_beat_cache")
 INTERNAL_VISUAL_FPS = 15
 
 
@@ -2881,11 +3001,18 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     print(f"\n  ✓ Frames done")
 
     result = subprocess.run([
-        'ffmpeg', '-y', '-i', temp_video, '-i', video_path,
-        '-map', '0:v', '-map', '1:a',
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-        '-c:a', 'copy', output_path
-    ], capture_output=True)
+    'ffmpeg', '-y',
+    '-i', temp_video,
+    '-i', video_path,
+    '-map', '0:v',
+    '-map', '1:a',
+    '-c:v', 'copy',
+    '-c:a', 'aac',
+    '-b:a', '192k',
+    '-shortest',
+    '-movflags', '+faststart',
+    output_path
+], capture_output=True)
 
     if os.path.exists(temp_video): os.remove(temp_video)
     if result.returncode != 0:
@@ -2894,11 +3021,11 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     print(f"  ✅ Render complete: {output_path}")
 
 
-FINANCE_EXPLAINER_CTA_TEXT = "Subscribe for More"
+FINANCE_EXPLAINER_CTA_TEXT = "Subscribe to Math Unlocked"
 FINANCE_EXPLAINER_USE_BACKGROUND_MUSIC = False
 
 
-class FinanceGenerator:
+class MathUnlockedGenerator:
     def __init__(self, audio_path: str, output_path: str = "output.mp4", niche_config: dict = None):
         self.audio_path  = audio_path
         self.output_path = output_path
@@ -3066,18 +3193,16 @@ class FinanceGenerator:
         return segments
 
     def _make_black_filler(self, output_file: str, dur: float, fps: int = 30) -> str:
-        """Generate a black video segment of exact duration — used when broll clip fails."""
-        cmd = [
-            'ffmpeg', '-y',
-            '-f', 'lavfi', '-i', f'color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r={fps}:d={dur}',
-            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
-            '-pix_fmt', 'yuv420p', '-r', str(fps), '-an', '-t', str(dur),
-            output_file
-        ]
-        r = subprocess.run(cmd, capture_output=True)
-        if r.returncode != 0:
-            raise Exception(f"Black filler failed: {r.stderr.decode()[-200:]}")
-        return output_file
+        """Legacy b-roll fallback. Never output a pure black/void screen."""
+        return _make_safe_still_fallback(
+            output_file,
+            title="Visual Pause",
+            subtitle="The explanation continues",
+            duration=dur,
+            w=OUTPUT_WIDTH,
+            h=OUTPUT_HEIGHT,
+            fps=fps,
+        )
 
     def process_segment_to_file(self, segment: dict, output_file: str,
                                 fps: int = 30, progress_callback=None) -> str:
@@ -3101,8 +3226,9 @@ class FinanceGenerator:
 
         vf = [f"fps={fps}"] + vf
         vf += ["eq=brightness=0.02:contrast=1.05:saturation=1.1", "format=yuv420p"]
-        cmd += ['-vf', ','.join(vf), '-c:v', 'libx264', '-preset', 'ultrafast',
-                '-crf', '23', '-pix_fmt', 'yuv420p', '-r', str(fps), '-an', output_file]
+        cmd += ['-vf', ','.join(vf), '-c:v', 'libx264', '-preset', ENCODE_PRESET,
+                '-crf', ENCODE_CRF, '-tune', 'animation', '-pix_fmt', 'yuv420p',
+                '-r', str(fps), '-movflags', '+faststart', '-an', output_file]
 
         success  = False
         err_text = ""
@@ -3132,7 +3258,7 @@ class FinanceGenerator:
         if not success:
             err_line = err_text.strip().splitlines()[-1] if err_text.strip() else "unknown error"
             print(f"\n  ⚠ Clip failed ({os.path.basename(source_file)}): {err_line[:150]}")
-            print(f"  ⚠ Using black filler ({dur:.2f}s)")
+            print(f"  ⚠ Using branded fallback filler ({dur:.2f}s)")
             return self._make_black_filler(output_file, dur, fps)
 
         return output_file
@@ -3147,47 +3273,60 @@ class FinanceGenerator:
         print(f"  🗂  Burning in {len(sections)}-item navigation overlay...")
         total = len(sections)
         filters = []
+        tmp_dir = tempfile.mkdtemp(prefix="navtext_")
 
-        for i, sec in enumerate(sections):
-            num   = sec["number"]
-            title = _ffmpeg_escape_text(sec["title"])
-            start = max(min(sec["start_time"], duration - 0.1), 0.0)
-            end   = max(min(sec["end_time"], duration), start + 0.1)
-            card_end = min(start + 1.8, end)
-            label = f"{num}/{total}\\: {title}"
+        try:
+            for i, sec in enumerate(sections):
+                num   = sec["number"]
+                title = sec["title"]
+                start = max(min(sec["start_time"], duration - 0.1), 0.0)
+                end   = max(min(sec["end_time"], duration), start + 0.1)
+                card_end = min(start + 1.8, end)
+                label = f"{num}/{total}: {title}"
 
-            filters.append(
-                f"drawtext=text='{label}'"
-                f":fontcolor=white:fontsize=50:font=Arial"
-                f":box=1:boxcolor=black@0.6:boxborderw=18"
-                f":x=(w-text_w)/2:y=h*0.10"
-                f":enable='between(t\\,{start:.3f}\\,{card_end:.3f})'"
-            )
-            filters.append(
-                f"drawtext=text='{label}'"
-                f":fontcolor=white:fontsize=24:font=Arial"
-                f":box=1:boxcolor=black@0.45:boxborderw=10"
-                f":x=36:y=36"
-                f":enable='between(t\\,{start:.3f}\\,{end:.3f})'"
-            )
-            dots = ''.join('\u25CF' if j == i else '\u25CB' for j in range(total))
-            filters.append(
-                f"drawtext=text='{dots}'"
-                f":fontcolor=#FFD166:fontsize=30:font=Arial"
-                f":x=(w-text_w)/2:y=h*0.93"
-                f":enable='between(t\\,{start:.3f}\\,{end:.3f})'"
-            )
+                label_path = os.path.join(tmp_dir, f"label_{i}.txt")
+                with open(label_path, "w", encoding="utf-8") as f:
+                    f.write(label)
+                label_path_ff = label_path.replace("\\", "/").replace(":", "\\:")
 
-        vf = ','.join(filters)
-        result = subprocess.run(
-            ['ffmpeg', '-y', '-i', video_input, '-vf', vf, '-c:a', 'copy', output_path],
-            capture_output=True
-        )
-        if result.returncode != 0:
-            print(f"  ⚠ Section nav overlay failed, shipping without it: {result.stderr.decode(errors='replace')[-200:]}")
-            subprocess.run(['ffmpeg', '-y', '-i', video_input, '-c', 'copy', output_path], capture_output=True)
-        else:
-            print(f"  ✅ Navigation overlay added")
+                filters.append(
+                    f"drawtext=textfile='{label_path_ff}'"
+                    f":fontcolor=white:fontsize=50:font=Arial"
+                    f":box=1:boxcolor=black@0.6:boxborderw=18"
+                    f":x=(w-text_w)/2:y=h*0.10"
+                    f":enable='between(t\\,{start:.3f}\\,{card_end:.3f})'"
+                )
+                filters.append(
+                    f"drawtext=textfile='{label_path_ff}'"
+                    f":fontcolor=white:fontsize=24:font=Arial"
+                    f":box=1:boxcolor=black@0.45:boxborderw=10"
+                    f":x=36:y=36"
+                    f":enable='between(t\\,{start:.3f}\\,{end:.3f})'"
+                )
+                dots = ''.join('\u25CF' if j == i else '\u25CB' for j in range(total))
+                filters.append(
+                    f"drawtext=text='{dots}'"
+                    f":fontcolor=#FFD166:fontsize=30:font=Arial"
+                    f":x=(w-text_w)/2:y=h*0.93"
+                    f":enable='between(t\\,{start:.3f}\\,{end:.3f})'"
+                )
+
+            vf = ','.join(filters)
+            result = subprocess.run(
+                ['ffmpeg', '-y', '-i', video_input, '-vf', vf,
+                 '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+                 '-tune', 'animation', '-pix_fmt', 'yuv420p',
+                 '-c:a', 'copy', '-movflags', '+faststart', output_path],
+                capture_output=True
+            )
+            if result.returncode != 0:
+                print(f"  ⚠ Section nav overlay failed, shipping without it: {result.stderr.decode(errors='replace')[-200:]}")
+                subprocess.run(['ffmpeg', '-y', '-i', video_input, '-c', 'copy', output_path], capture_output=True)
+            else:
+                print(f"  ✅ Navigation overlay added")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
         return output_path
 
     def _add_cta_overlay(self, video_input: str, output_path: str, duration: float):
@@ -3199,7 +3338,10 @@ class FinanceGenerator:
             f":x=(w-text_w)/2:y=h*0.91:enable='gt(t\\,{end_time})'"
         )
         result = subprocess.run(
-            ['ffmpeg', '-y', '-i', video_input, '-vf', vf, '-c:a', 'copy', output_path],
+            ['ffmpeg', '-y', '-i', video_input, '-vf', vf,
+             '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+             '-tune', 'animation', '-pix_fmt', 'yuv420p',
+             '-c:a', 'copy', '-movflags', '+faststart', output_path],
             capture_output=True
         )
         if result.returncode != 0:
@@ -3208,12 +3350,12 @@ class FinanceGenerator:
         else:
             print(f"  ✨ CTA added")
 
-    def create_finance_video(self, bg_volume: float = 0.12, fps: int = 30) -> bool:
+    def create_math_video(self, bg_volume: float = 0.12, fps: int = 30) -> bool:
         import time
         t0 = time.time()
 
         print(f"\n{'='*70}")
-        print(f"📊  FINANCE EXPLAINER v2 -- full Manim renderer")
+        print(f"🧮  MATH UNLOCKED -- Manim renderer")
         print(f"{'='*70}")
 
         try:
@@ -3287,28 +3429,67 @@ class FinanceGenerator:
             print(f"\n[STEP 7] Rendering Manim chunks (parallel) + concatenating...")
             clip_paths = render_all_manim_chunks(chunks, chunk_code_list,
                                                   w=OUTPUT_WIDTH, h=OUTPUT_HEIGHT, fps=fps)
+
             concat_manim_clips(clip_paths, concat_output)
             print(f"  ✅ {len(clip_paths)} chunks concatenated -> {concat_output}")
 
             print(f"\n[STEP 8] Audio mix...")
+            sfx_events = _build_sfx_audio_inputs(clip_paths, chunk_code_list)
+            print(f"  🔊 SFX events: {len(sfx_events)}")
+
             cmd = ['ffmpeg', '-y', '-i', concat_output, '-i', self.audio_path]
+            n_inputs = 2
+
             if bg_music and os.path.exists(bg_music):
                 cmd += ['-i', bg_music]
-                fc = (
-                    f'[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=1.0[voice];'
-                    f'[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
-                    f'volume={bg_volume},aloop=loop=-1:size=2e+09[bg];'
-                    f'[voice][bg]amix=inputs=2:duration=first:dropout_transition=2,aresample=48000[aout]'
-                )
-                cmd += ['-filter_complex', fc, '-map', '0:v', '-map', '[aout]']
+                bg_idx = n_inputs
+                n_inputs += 1
             else:
-                cmd += ['-map', '0:v', '-map', '1:a']
+                bg_idx = None
+
+            sfx_indices = []
+            for (_t, sfx_file, _vol) in sfx_events:
+                cmd += ['-i', sfx_file]
+                sfx_indices.append(n_inputs)
+                n_inputs += 1
+
+            fc_parts = []
+            fc_parts.append(
+                f'[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=1.0[voice]'
+            )
+            mix_labels = ['[voice]']
+
+            if bg_idx is not None:
+                fc_parts.append(
+                    f'[{bg_idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                    f'volume={bg_volume},aloop=loop=-1:size=2e+09[bg]'
+                )
+                mix_labels.append('[bg]')
+
+            for k, (t_start, _sfx_file, vol_db) in enumerate(sfx_events):
+                idx = sfx_indices[k]
+                vol_linear = 10 ** (vol_db / 20.0)
+                label = f'[sfx{k}]'
+                fc_parts.append(
+                    f'[{idx}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
+                    f'volume={vol_linear:.4f},adelay={int(t_start*1000)}|{int(t_start*1000)},apad{label}'
+                )
+                mix_labels.append(label)
+
+            n_mix = len(mix_labels)
+            mix_in = ''.join(mix_labels)
+            fc_parts.append(
+                f'{mix_in}amix=inputs={n_mix}:duration=first:dropout_transition=2:normalize=0,aresample=48000[aout]'
+            )
+            fc = ';'.join(fc_parts)
+
+            cmd += ['-filter_complex', fc, '-map', '0:v', '-map', '[aout]']
             cmd += ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
                     '-ar', '48000', '-ac', '2', '-t', str(duration), audio_output]
             r = subprocess.run(cmd, capture_output=True)
             if r.returncode != 0:
-                raise Exception(f"Audio failed: {r.stderr.decode()[-200:]}")
-            print(f"  ✅ Mixed")
+                raise Exception(f"Audio failed: {r.stderr.decode()[-400:]}")
+            print(f"  ✅ Mixed ({n_mix} audio streams)")
 
             shutil.move(audio_output, self.output_path)
 
@@ -3366,7 +3547,7 @@ NICHE_TEMPLATES = {
 
 @app.get("/")
 def root():
-    return {"service": "Finance Explainer v1", "status": "running",
+    return {"service": "Math Unlocked", "status": "running",
             "openai_key": bool(OPENAI_API_KEY)}
 
 @app.post("/generate")
@@ -3383,7 +3564,7 @@ def process_video(niche: str = "finance"):
     global current_job
     try:
         current_job["progress"] = 5
-        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/vaults_narration.mp3"
+        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Math_Niche/main/Audio_Voice/vaults_narration.mp3"
         audio_file  = "Audio_Voice/vaults_narration.mp3"
         output_file = "vaults_output.mp4"
         trans_file  = f"{os.path.splitext(audio_file)[0]}_transcription.json"
@@ -3406,11 +3587,11 @@ def process_video(niche: str = "finance"):
 
         current_job["progress"] = 15
         niche_config = NICHE_TEMPLATES.get(niche, NICHE_TEMPLATES['finance'])
-        gen = FinanceGenerator(audio_path=audio_file, output_path=output_file,
+        gen = MathUnlockedGenerator(audio_path=audio_file, output_path=output_file,
                               niche_config=niche_config)
 
         current_job["progress"] = 20
-        success = gen.create_finance_video(bg_volume=0.12, fps=30)
+        success = gen.create_math_video(bg_volume=0.12, fps=30)
         current_job["progress"] = 95
 
         final = gen.output_path
@@ -3448,8 +3629,8 @@ MANIM_FORBIDDEN_NAMES = {
     "MarkupText", "Integer", "Variable", "BulletedList", "Title", "Paragraph",
     "BarChart", "SVGMobject", "ComplexPlane", "PolarPlane",
     "MathTex", "Tex", "SingleStringMathTex",
-    "Axes", "NumberLine", "NumberPlane",
-    "Rectangle",
+    "DashedLine", "DashedVMobject", "Ellipse",
+    "scipy",
 }
 MANIM_FORBIDDEN_PATTERNS = [
     r'\bDecimalNumber\b',
@@ -3457,15 +3638,20 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'\bTitle\b', r'\bParagraph\b', r'\bBarChart\b',
     r'\bSVGMobject\b', r'\bComplexPlane\b', r'\bPolarPlane\b',
     r'\bMathTex\b', r'\bSingleStringMathTex\b', r'\bTex\b',
-    r'\bAxes\b', r'\bNumberLine\b', r'\bNumberPlane\b',
-    r'\bRectangle\b',
+    r'\bDashedLine\b', r'\bDashedVMobject\b',
+    r'\bEllipse\b',
+    r'\bscipy\b',
+    r'plot_line_graph',
+    r'set_stroke\s*\([^)]*dash_length',
+    r'get_graph\s*\([^)]*x_range',
+    r'set_style\s*\([^)]*dash_length_ratio',
+    r'\binterpolate_color\b',
+    r'Arrow\s*\([^)]*\bleft\s*=',
+    r'Arrow\s*\([^)]*\bright\s*=',
+    r'GrowFromEdge\s*\([^)]*\bdirection\s*=',
 ]
-MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
+MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math", "random"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
-    "Rectangle": "fm_card / fm_two_cards / fm_stacked_cards (a labeled box) or fm_animate_bar_chart / fm_animate_comparison_bars / fm_animate_waterfall (a bar)",
-    "Axes": "fm_animate_line_chart",
-    "NumberLine": "fm_animate_line_chart, or drop the axis entirely and just show the data",
-    "NumberPlane": "fm_animate_line_chart, or drop the axis entirely and just show the data",
     "MathTex": "fm_formula",
     "Tex": "fm_formula",
     "SingleStringMathTex": "fm_formula",
@@ -3508,6 +3694,68 @@ def safety_correction_hint(reason: str) -> str:
     )
 
 
+_MANIM_AVAILABLE_NAMES = None
+
+
+def _get_chunk_available_names() -> set:
+    """Names a chunk can legitimately reference without defining them
+    itself: everything from manim, every fm_* library function and
+    BRAND_* constant, MathScene/MathScene3D, and Python
+    builtins. Computed once by actually executing the same boilerplate
+    every chunk gets prefixed with, so this can never drift out of
+    sync with what real chunk code actually has access to."""
+    global _MANIM_AVAILABLE_NAMES
+    if _MANIM_AVAILABLE_NAMES is None:
+        ns = {}
+        try:
+            exec(MATH_SCENE_MANIM_BOILERPLATE, ns)
+        except Exception:
+            pass
+        names = set(ns.keys())
+        names.discard("__builtins__")
+        import builtins as _builtins_mod
+        names |= set(dir(_builtins_mod))
+        _MANIM_AVAILABLE_NAMES = names
+    return _MANIM_AVAILABLE_NAMES
+
+
+def _collect_bound_names(tree) -> set:
+    """Every name a chunk's own code binds anywhere in it -- assignments,
+    for-loop/with/comprehension targets, function and class names,
+    function parameters, import aliases, except-as names, walrus
+    targets. Deliberately not scope-precise (a name bound inside a
+    nested function counts as bound everywhere): the goal is zero
+    false positives, never flagging legitimately-scoped code, even at
+    the cost of occasionally missing a real scope bug."""
+    bound = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                bound.add(node.name)
+            all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+            for arg in all_args:
+                bound.add(arg.arg)
+            if node.args.vararg:
+                bound.add(node.args.vararg.arg)
+            if node.args.kwarg:
+                bound.add(node.args.kwarg.arg)
+        elif isinstance(node, ast.ClassDef):
+            bound.add(node.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+    return bound
+
+
 def manim_static_safety_check(code: str) -> tuple[bool, str]:
     """Parse GPT-generated Manim chunk code and reject anything unsafe
     BEFORE it's ever written to disk and executed via the `manim` CLI
@@ -3541,7 +3789,20 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
     un-banning them in the next, which is now fixed by keeping them
     banned consistently here and in the prompt text.
     Rejecting the remaining names here is instant and free, instead of
-    paying for a manim subprocess spin-up just to watch it crash."""
+    paying for a manim subprocess spin-up just to watch it crash.
+
+    Also rejects any bare name the chunk references that isn't bound
+    anywhere in its own code and isn't available from manim, the fm_*
+    library, or BRAND_* constants. Two real production crashes prompted
+    this: GPT calling GrowFromBottom (which sounds plausible by analogy
+    with GrowFromCenter/GrowFromEdge but isn't a real Manim class) and a
+    plain variable-name typo (defining emerg_lbl, then referencing
+    emer_lbl in a VGroup() call a few lines later). Both are NameError
+    at runtime regardless of cause -- a hallucinated class and a typo
+    are indistinguishable to Python -- so both are caught the same way,
+    before the slow manim subprocess ever starts instead of after it
+    crashes partway through rendering.
+    """
     for pattern in MANIM_FORBIDDEN_PATTERNS:
         if re.search(pattern, code):
             bare = pattern.replace(r'\b', '')
@@ -3567,6 +3828,84 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             return False, f"references dunder attribute '{node.attr}'"
 
+        
+        if isinstance(node, ast.Attribute) and node.attr in {"p2c", "point_to_coords", "point_to_number", "normalized", "point_at_angle"}:
+            return False, f"references unsafe coordinate reverse-transform '{node.attr}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
+
+        if isinstance(node, ast.Call):
+            fn = node.func
+            fn_name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
+
+            if fn_name in {"p2c", "point_to_coords", "point_to_number", "normalized"}:
+                return False, f"calls unsafe coordinate reverse-transform '{fn_name}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
+
+            if isinstance(fn, ast.Attribute) and fn.attr.startswith("fm_"):
+                return False, f"called self.{fn.attr}() as a method -- fm_* functions are module-level, not Scene methods. Correct: {fn.attr}(self, ...). Wrong: self.{fn.attr}(...)"
+
+            if fn_name == "Polygon" and len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
+                return False, "Polygon received one nested list of vertices; use Polygon(*points) or avoid Polygon and use fm_icon/fm_card/fm_* helpers"
+
+            if fn_name == "rotate" and any(
+                (isinstance(kw.arg, str) and kw.arg == "run_time")
+                for kw in node.keywords
+            ):
+                return False, "rotate() does not accept run_time kwarg -- pass run_time to self.play() instead: self.play(obj.animate.rotate(...), run_time=X)"
+
+            _fm_animation_fns = {
+                "fm_animate_gauge", "fm_animate_donut", "fm_animate_counter",
+                "fm_animate_line_chart", "fm_animate_line_chart_multi",
+                "fm_animate_single_value", "fm_animate_glow_reveal",
+                "fm_animate_icon_grid", "fm_animate_comparison_bars",
+                "fm_animate_bar_chart", "fm_animate_waterfall",
+                "fm_animate_stacked_cards", "fm_animate_bullet_chart",
+                "fm_animate_timeline", "fm_animate_text_reveal",
+                "fm_animate_bell_curve", "fm_animate_vector", "fm_animate_matrix",
+                "fm_animate_scatter", "fm_animate_probability_bar",
+                "fm_animate_number_line",
+            }
+
+            if fn_name == "play":
+                for arg in node.args:
+                    if isinstance(arg, ast.Call):
+                        inner_fn = arg.func
+                        inner_name = inner_fn.id if isinstance(inner_fn, ast.Name) else (inner_fn.attr if isinstance(inner_fn, ast.Attribute) else "")
+                        if inner_name in _fm_animation_fns:
+                            return False, f"fm_animate_* functions handle their own self.play() internally -- do NOT wrap them in self.play(). Call {inner_name}(self, ...) directly."
+
+            if fn_name in _fm_animation_fns:
+                first_arg_is_self = (
+                    len(node.args) > 0
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id == "self"
+                )
+                first_kwarg_scene = any(
+                    isinstance(kw.arg, str) and kw.arg == "scene"
+                    for kw in node.keywords
+                )
+                if not first_arg_is_self and not first_kwarg_scene:
+                    return False, f"{fn_name}() is missing 'self' as its first argument -- correct: {fn_name}(self, ...). The 'scene' parameter must be passed as the first positional argument."
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Subscript) and child is not node:
+                        pass
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript):
+            val = node.value
+            if isinstance(val, ast.Call):
+                fn = val.func
+                fn_name2 = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
+                if fn_name2 in {"fm_animate_gauge", "fm_animate_donut", "fm_animate_counter",
+                                "fm_animate_line_chart", "fm_animate_line_chart_multi",
+                                "fm_animate_single_value", "fm_animate_glow_reveal",
+                                "fm_animate_icon_grid", "fm_animate_comparison_bars",
+                                "fm_animate_bar_chart", "fm_animate_waterfall",
+                                "fm_animate_stacked_cards", "fm_animate_bullet_chart",
+                                "fm_animate_timeline", "fm_animate_text_reveal",
+                                "fm_animate_bell_curve", "fm_animate_vector", "fm_animate_matrix",
+                                "fm_animate_scatter", "fm_animate_probability_bar",
+                                "fm_animate_number_line"}:
+                    return False, f"indexing the return value of {fn_name2}() is unsafe -- these functions return None or a fixed-arity tuple; store the return in a named variable and index that, checking the documented arity first"
+
     class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
     if len(class_defs) != 1:
         return False, f"expected exactly one top-level class definition, found {len(class_defs)}"
@@ -3586,15 +3925,28 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
         kinds = sorted({type(n).__name__ for n in non_class_non_import})
         return False, f"unexpected top-level statement(s) outside the class/imports: {kinds}"
 
+    bound_names = _collect_bound_names(tree)
+    available_names = _get_chunk_available_names()
+    loaded_names = {
+        node.id for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    undefined = sorted(
+        n for n in loaded_names
+        if n not in bound_names and n not in available_names
+    )
+    if undefined:
+        return False, f"references undefined name(s) not found anywhere in manim, the fm_* library, or this chunk's own code: {', '.join(undefined[:5])}"
+
     return True, ""
 
 
-MANIM_CHUNK_TIMEOUT_SECONDS = 75
-MANIM_CHUNK_CACHE_DIR = "/tmp/finance_explainer_manim_cache"
+MANIM_CHUNK_TIMEOUT_SECONDS = 180
+MANIM_CHUNK_CACHE_DIR = "/tmp/math_unlocked_manim_cache"
 MANIM_CHUNK_MAX_DRIFT_RATIO = 0.45
 
 
-FINANCE_DASHBOARD_MANIM_BOILERPLATE = '''
+MATH_SCENE_MANIM_BOILERPLATE = '''
 from manim import *
 import random as _fdb_random
 from manim.utils.rate_functions import (
@@ -3611,7 +3963,7 @@ config.frame_rate = 30
 config.frame_height = 8.0
 
 
-def _finance_dashboard_background_group():
+def _math_scene_background_group():
     fw = config.frame_width
     fh = config.frame_height
     grid = VGroup()
@@ -3624,51 +3976,73 @@ def _finance_dashboard_background_group():
     while y <= fh / 2 + 1e-6:
         grid.add(Line([-fw / 2, y, 0], [fw / 2, y, 0]))
         y += step
-    grid.set_stroke(color="#8A94A6", width=0.6, opacity=0.07)
+    grid.set_stroke(color="#8A94A6", width=0.6, opacity=0.06)
 
     axis = VGroup(
         Line([-fw * 0.46, -fh * 0.42, 0], [-fw * 0.46, fh * 0.42, 0]),
         Line([-fw * 0.46, -fh * 0.42, 0], [fw * 0.46, -fh * 0.42, 0]),
     )
-    axis.set_stroke(color="#8A94A6", width=1.2, opacity=0.14)
+    axis.set_stroke(color="#8A94A6", width=1.2, opacity=0.12)
 
-    ticker = VGroup()
-    rng = _fdb_random.Random(7)
-    samples = ["+0.4%", "-0.2%", "1.07x", "+1.1%", "-0.6%", "0.98x", "+2.3%", "-1.4%"]
+    symbols = VGroup()
+    rng = _fdb_random.Random(42)
+    math_samples = ["∇", "∑", "∫", "π", "σ", "μ", "λ", "∞", "∂", "∈", "⊗", "≈", "Δ", "θ"]
     for i in range(14):
-        val = rng.choice(samples)
-        label = Text(val, font_size=14, color="#8A94A6")
-        label.set_opacity(0.10)
+        val = rng.choice(math_samples)
+        label = Text(val, font_size=16, color="#8A94A6")
+        label.set_opacity(0.09)
         label.move_to([-fw / 2 + (i + 0.5) * (fw / 14), fh / 2 - 0.34, 0])
-        ticker.add(label)
+        symbols.add(label)
 
-    return VGroup(grid, axis, ticker)
+    return VGroup(grid, axis, symbols)
 
 
 _FDB_MIN_WAIT = 0.04
 
 
-class FinanceDashboardScene(Scene):
+class MathScene(Scene):
     def setup(self):
-        self.camera.background_color = "#0B111A"
-        self.add(_finance_dashboard_background_group())
+        self.camera.background_color = "#060F1A"
+        self.add(_math_scene_background_group())
 
     def wait(self, duration=1.0, stop_condition=None, frozen_frame=None):
         if duration < _FDB_MIN_WAIT:
             duration = _FDB_MIN_WAIT
         return super().wait(duration, stop_condition=stop_condition, frozen_frame=frozen_frame)
 
+    def play(self, *args, **kwargs):
+        try:
+            targets = []
+            for arg in args:
+                _fm_collect_play_targets(arg, targets)
+            if targets:
+                fm_clamp_to_frame(*targets)
+        except Exception:
+            pass
+        return super().play(*args, **kwargs)
 
-class FinanceDashboard3DScene(ThreeDScene):
+
+class MathScene3D(ThreeDScene):
     def setup(self):
-        self.camera.background_color = "#0B111A"
+        self.camera.background_color = "#060F1A"
         self.set_camera_orientation(phi=0 * DEGREES, theta=-90 * DEGREES)
-        self.add_fixed_in_frame_mobjects(_finance_dashboard_background_group())
+        self.add_fixed_in_frame_mobjects(_math_scene_background_group())
 
     def wait(self, duration=1.0, stop_condition=None, frozen_frame=None):
         if duration < _FDB_MIN_WAIT:
             duration = _FDB_MIN_WAIT
         return super().wait(duration, stop_condition=stop_condition, frozen_frame=frozen_frame)
+
+    def play(self, *args, **kwargs):
+        try:
+            targets = []
+            for arg in args:
+                _fm_collect_play_targets(arg, targets)
+            if targets:
+                fm_clamp_to_frame(*targets)
+        except Exception:
+            pass
+        return super().play(*args, **kwargs)
 
 
 ''' + _FUNCTIONS_MANIM_CODE + '\n\n'
@@ -3716,8 +4090,9 @@ def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
     cmd = [
         'ffmpeg', '-y', '-i', raw_path,
         '-vf', vf, '-r', str(fps),
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
-        '-pix_fmt', 'yuv420p', '-an', '-t', str(target_duration),
+        '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+        '-tune', 'animation', '-pix_fmt', 'yuv420p',
+        '-an', '-t', str(target_duration), '-movflags', '+faststart',
         out_path,
     ]
     result = subprocess.run(cmd, capture_output=True)
@@ -3728,27 +4103,154 @@ def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
     return out_path, ""
 
 
-def _make_dashboard_filler(out_path: str, duration: float, w: int = 1920,
-                            h: int = 1080, fps: int = 30) -> str:
-    """Exact-duration filler clip for any chunk that fails safety check,
-    crashes, times out, or drifts past MANIM_CHUNK_MAX_DRIFT_RATIO --
-    uses the bare dashboard background color rather than black, since
-    the whole video already sits on this color and a navy frame reads
-    as a quiet beat rather than a visible error flash. This is the
-    last-resort fallback only -- see _make_held_frame_filler for the
-    preferred fallback used for short silence gaps, which holds the
-    previous chunk's actual final frame instead of cutting to blank."""
+def _pil_font(size: int, bold: bool = True):
+    """Best-effort font loader for fallback cards."""
+    try:
+        from PIL import ImageFont
+        path = get_primary_font_path(bold=bold)
+        if path:
+            return ImageFont.truetype(path, size=size)
+    except Exception:
+        pass
+    from PIL import ImageFont
+    return ImageFont.load_default()
+
+
+def _wrap_text_for_width(draw, text: str, font, max_width: int, max_lines: int = 3) -> list:
+    words = re.sub(r'\s+', ' ', (text or '').strip()).split()
+    if not words:
+        return []
+    lines, cur = [], ''
+    for word in words:
+        trial = (cur + ' ' + word).strip()
+        try:
+            bbox = draw.textbbox((0, 0), trial, font=font)
+            tw = bbox[2] - bbox[0]
+        except Exception:
+            tw = len(trial) * 18
+        if tw <= max_width or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = word
+            if len(lines) >= max_lines:
+                break
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    if len(lines) == max_lines and len(' '.join(words)) > len(' '.join(lines)):
+        lines[-1] = lines[-1].rstrip('.,;:') + '...'
+    return lines
+
+
+def _chunk_fallback_subtitle(chunk: dict) -> str:
+    beats = chunk.get('beats') or []
+    text = ' '.join((b.get('text') or '').strip() for b in beats if isinstance(b, dict)).strip()
+    text = re.sub(r'\s+', ' ', text)
+    if not text:
+        return 'The explanation continues'
+    return text[:210].rstrip()
+
+
+def _make_safe_still_fallback(out_path: str, title: str, subtitle: str, duration: float,
+                              w: int = 1920, h: int = 1080, fps: int = 30) -> str:
+    """Creates a non-blank exact-duration fallback video.
+
+    This is the anti-void safety net. When a GPT-authored Manim chunk crashes,
+    the viewer still sees a branded finance card with the current idea instead
+    of an empty navy/black screen. It intentionally does NOT mention the error.
+    """
+    from PIL import Image, ImageDraw
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    frame_path = os.path.join(os.path.dirname(out_path) or '.', f"_fallback_{os.path.basename(out_path)}.png")
+
+    img = Image.new('RGB', (int(w), int(h)), '#0B111A')
+    draw = ImageDraw.Draw(img)
+
+    grid_color = (32, 43, 56)
+    step = max(80, int(min(w, h) * 0.075))
+    for x in range(0, int(w), step):
+        draw.line([(x, 0), (x, h)], fill=grid_color, width=max(1, w // 1800))
+    for y in range(0, int(h), step):
+        draw.line([(0, y), (w, y)], fill=grid_color, width=max(1, h // 1000))
+
+    card_w = int(w * 0.70)
+    card_h = int(h * 0.38)
+    x0 = (w - card_w) // 2
+    y0 = (h - card_h) // 2
+    x1 = x0 + card_w
+    y1 = y0 + card_h
+    radius = int(min(w, h) * 0.035)
+    draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, fill='#111A24', outline='#38D996', width=max(4, w // 420))
+
+    title_font = _pil_font(max(54, int(h * 0.055)), bold=True)
+    body_font = _pil_font(max(38, int(h * 0.038)), bold=True)
+    tag_font = _pil_font(max(26, int(h * 0.026)), bold=True)
+
+    title = title or 'Key Idea'
+    subtitle = subtitle or 'The explanation continues'
+
+    tb = draw.textbbox((0, 0), title, font=title_font)
+    tx = (w - (tb[2] - tb[0])) // 2
+    ty = y0 + int(card_h * 0.16)
+    draw.text((tx, ty), title, fill='#FFD166', font=title_font)
+
+    lines = _wrap_text_for_width(draw, subtitle, body_font, int(card_w * 0.82), max_lines=3)
+    line_h = int(h * 0.055)
+    start_y = y0 + int(card_h * 0.40)
+    for j, line in enumerate(lines):
+        bb = draw.textbbox((0, 0), line, font=body_font)
+        lx = (w - (bb[2] - bb[0])) // 2
+        draw.text((lx, start_y + j * line_h), line, fill='#F5F7FA', font=body_font)
+
+    tag = 'continuing'
+    bb = draw.textbbox((0, 0), tag, font=tag_font)
+    pad_x = int(w * 0.018)
+    pad_y = int(h * 0.010)
+    pill = [x1 - (bb[2]-bb[0]) - pad_x*3, y1 - int(h*0.070), x1 - pad_x, y1 - int(h*0.020)]
+    draw.rounded_rectangle(pill, radius=int(h*0.018), fill='#0B111A', outline='#8A94A6', width=max(2, w//900))
+    draw.text((pill[0] + pad_x, pill[1] + pad_y), tag, fill='#8A94A6', font=tag_font)
+
+    img.save(frame_path, quality=95)
+
     cmd = [
-        'ffmpeg', '-y',
-        '-f', 'lavfi', '-i', f'color=c=0x0B111A:s={w}x{h}:r={fps}:d={duration}',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
-        '-pix_fmt', 'yuv420p', '-r', str(fps), '-an', '-t', str(duration),
-        out_path,
+        'ffmpeg', '-y', '-loop', '1', '-i', frame_path,
+        '-t', str(max(float(duration), 0.05)),
+        '-vf', f'scale={int(w)}:{int(h)},fps={int(fps)},format=yuv420p',
+        '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+        '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
+        '-an', '-movflags', '+faststart', out_path,
     ]
     result = subprocess.run(cmd, capture_output=True)
+    try:
+        os.remove(frame_path)
+    except Exception:
+        pass
     if result.returncode != 0:
-        raise Exception(f"dashboard filler failed: {result.stderr.decode(errors='replace')[-200:]}")
+        raise Exception(f"safe fallback failed: {result.stderr.decode(errors='replace')[-300:]}")
     return out_path
+
+
+def _make_chunk_fallback(out_path: str, chunk: dict, duration: float, w: int = 1920,
+                         h: int = 1080, fps: int = 30, reason: str = "") -> str:
+    return _make_safe_still_fallback(
+        out_path,
+        title="Key Idea",
+        subtitle=_chunk_fallback_subtitle(chunk or {}),
+        duration=duration,
+        w=w, h=h, fps=fps,
+    )
+
+
+def _make_dashboard_filler(out_path: str, duration: float, w: int = 1920,
+                            h: int = 1080, fps: int = 30) -> str:
+    return _make_safe_still_fallback(
+        out_path,
+        title="Next Idea",
+        subtitle="The explanation continues",
+        duration=duration,
+        w=w, h=h, fps=fps,
+    )
 
 
 def _make_held_frame_filler(prev_clip_path: str, out_path: str, duration: float,
@@ -3766,9 +4268,10 @@ def _make_held_frame_filler(prev_clip_path: str, out_path: str, duration: float,
         return None
     cmd_loop = [
         'ffmpeg', '-y', '-loop', '1', '-i', frame_path, '-t', str(duration),
-        '-vf', f'scale={w}:{h}', '-r', str(fps),
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
-        '-pix_fmt', 'yuv420p', '-an', out_path,
+        '-vf', f'scale={w}:{h},fps={fps},format=yuv420p',
+        '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+        '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
+        '-an', '-movflags', '+faststart', out_path,
     ]
     result2 = subprocess.run(cmd_loop, capture_output=True)
     try:
@@ -3780,7 +4283,7 @@ def _make_held_frame_filler(prev_clip_path: str, out_path: str, duration: float,
     return out_path
 
 
-MANIM_CHUNK_DEBUG_LOG_DIR = "/tmp/finance_explainer_manim_logs"
+MANIM_CHUNK_DEBUG_LOG_DIR = "/tmp/math_unlocked_manim_logs"
 
 
 def _extract_manim_error_summary(stderr_text: str, stdout_text: str, max_chars: int = 2500) -> str:
@@ -3823,13 +4326,16 @@ def _save_manim_failure_log(class_name: str, stderr_text: str, stdout_text: str)
     return log_path
 
 
+MANIM_CHUNK_SOURCE_DEBUG_DIR = "/tmp/math_unlocked_manim_sources"
+
+
 def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 1920,
                         h: int = 1080, fps: int = 30) -> tuple:
     """Renders ONE Manim chunk to its own exact-duration MP4 clip via the
     real `manim` CLI as a subprocess (not an in-process exec, since
     Manim's render pipeline isn't a simple function call -- it writes
     its own output file via ffmpeg internally). The GPT-authored code
-    is safety-checked on its own BEFORE FINANCE_DASHBOARD_MANIM_BOILERPLATE
+    is safety-checked on its own BEFORE MATH_SCENE_MANIM_BOILERPLATE
     is prepended, so the structural check still only ever has to trust
     the boilerplate this file controls, not anything GPT wrote. Returns
     (clip_path_or_None, error_str). On any failure (safety rejection,
@@ -3843,12 +4349,31 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
     the wall-clock cost of every chunk that already rendered fine.
 
     Resolution and frame rate are NOT passed as `manim` CLI flags --
-    FINANCE_DASHBOARD_MANIM_BOILERPLATE sets config.pixel_width,
+    MATH_SCENE_MANIM_BOILERPLATE sets config.pixel_width,
     config.pixel_height, and config.frame_rate directly at module
     level instead, since that is a stable Manim Community mechanism
     across versions, whereas CLI flag names/spellings can drift and an
-    unrecognized flag would fail every single chunk at once."""
+    unrecognized flag would fail every single chunk at once.
+
+    The chunk's own GPT-generated code (not the boilerplate) is always
+    written to MANIM_CHUNK_SOURCE_DEBUG_DIR/{class_name}.py before
+    rendering, success or failure -- a real failure had a chunk render
+    cleanly (no crash, no safety rejection, no duration drift) but
+    still produce a visually broken result (overlapping title and
+    content), and since work_dir is always deleted in the finally
+    block below, there was no way to ever see what code actually
+    produced it. Crash logs only exist for crashes; this exists for
+    every chunk, so a visually-bad-but-technically-successful render
+    is always diagnosable after the fact, not just a hard failure."""
     ok, reason = manim_static_safety_check(code)
+
+    try:
+        os.makedirs(MANIM_CHUNK_SOURCE_DEBUG_DIR, exist_ok=True)
+        with open(os.path.join(MANIM_CHUNK_SOURCE_DEBUG_DIR, f"{class_name}.py"), "w") as f:
+            f.write(code)
+    except Exception:
+        pass
+
     if not ok:
         return None, f"safety check rejected: {reason}"
 
@@ -3861,12 +4386,20 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
     work_dir = tempfile.mkdtemp(prefix="manim_chunk_")
     script_path = os.path.join(work_dir, "chunk_scene.py")
     try:
+        boilerplate = (
+            MATH_SCENE_MANIM_BOILERPLATE
+            .replace("config.pixel_width = 1920", f"config.pixel_width = {int(w)}")
+            .replace("config.pixel_height = 1080", f"config.pixel_height = {int(h)}")
+            .replace("config.frame_rate = 30", f"config.frame_rate = {int(fps)}")
+        )
         with open(script_path, "w") as f:
-            f.write(FINANCE_DASHBOARD_MANIM_BOILERPLATE)
+            f.write(boilerplate)
             f.write(code)
 
+        
+        quality_flag = "-qk" if int(w) >= 3840 and int(h) >= 2160 else "-qh"
         cmd = [
-            "manim", "-qh", "--disable_caching",
+            "manim", quality_flag, "--disable_caching",
             "--media_dir", work_dir,
             script_path, class_name,
         ]
@@ -3990,284 +4523,178 @@ def generate_manim_chunk_code(chunks: list, topic: str) -> list:
     print(f"  🎬 Manim Call: chunk code generation for {len(chunks)} chunks...")
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    system_prompt = """You are a generative motion graphics engineer using Manim (Manim Community edition) for a premium long-form finance explainer channel. For each chunk of narration (a few seconds, sometimes one beat, sometimes several consecutive beats grouped together) you write ONE complete Manim Scene class that animates that chunk's visual. This is a documentary-grade finance/data show, not an AI caption video -- the visual itself should carry the idea, not a wall of words.
+    system_prompt = """You are a generative motion graphics engineer using Manim (Manim Community edition) for a premium long-form math and machine learning education channel called Math Unlocked. For each chunk of narration (a few seconds, sometimes one beat, sometimes several consecutive beats grouped together) you write ONE complete Manim Scene class that animates that chunk's visual. This is a 3Blue1Brown-standard math explainer — the visual itself carries the idea, not a wall of words.
 
-=== THINK IN VISUAL METAPHORS — NOT TEXT LABELS ===
-Every financial concept has a physical visual that IS the concept. Your job is to find that visual and animate it. The audio already says the words. You show the REALITY.
+=== THINK IN MATHEMATICAL STRUCTURES — NOT TEXT LABELS ===
+Every mathematical concept has a geometric or structural visual that IS the concept. Your job is to find that visual and animate it. The audio already says the words. You show the REALITY of the mathematics.
 
-The pattern: audio names the concept → you animate the physical thing that concept represents → viewer understands without reading a single word.
+The pattern: audio names the concept → you animate the mathematical structure that concept represents → viewer understands without reading a single word.
 
-=== THE 3BLUE1BROWN STANDARD — CHARTS, DIAGRAMS, AND REAL MATH ARE THE DEFAULT, NOT ICONS AND NOT SENTENCES ===
-The visual language of this channel is the visual language of 3blue1brown: axes, plotted lines, bars, arcs, donuts, waterfalls, growing numbers, geometric proof-style diagrams, and actual mathematical notation. Almost nothing in a 3blue1brown video is a literal pictogram of an object, and almost nothing is a sentence of prose text either -- it is the STRUCTURE of the idea made visible (a curve bending, a bar growing, a region filling, a value ticking up, an equation transforming). That is the standard here. Default to a chart, graph, gauge, donut, waterfall, bar comparison, counter, or an actual formula for every beat that has a number, a trend, a proportion, a comparison, or a calculation -- which is the vast majority of beats on this channel.
+=== THE 3BLUE1BROWN STANDARD ===
+The visual language of this channel is axes, plotted curves, animated vectors, growing bars, transforming matrices, probability distributions, scatter plots, number lines, geometric diagrams, and actual mathematical structure made visible. Almost nothing in a 3blue1brown video is a literal pictogram — it is the STRUCTURE of the idea made visible: a curve bending, a bar growing, a vector rotating, a distribution spreading, a matrix transforming space. That is the standard here.
 
-SHOW THE CALCULATION, NOT JUST THE RESULT, WHEN A BEAT IS ABOUT A CALCULATION: MathTex and Tex are BANNED on this channel -- they route through a LaTeX subprocess that crashes constantly on GPT-generated raw-string formulas (double-escaped backslashes, stray literal "$" signs) and every crash silently becomes a blank filler clip. When narration describes how a number is calculated (compound interest, a percentage of a percentage, tax taken off a total, an hourly rate times hours), do not just show the final number -- show the FORMULA, the same way 3blue1brown shows the equation before showing what it evaluates to, but build it with fm_formula(scene, "A = P x (1 + r)^n", duration=D) -- use "x" for multiplication and write exponents inline as "^n" rather than true superscripts. ALWAYS call fm_formula for this, NEVER type a raw `Text("...")` formula yourself: a hand-picked font_size on a formula string of unknown final length is exactly how text runs off the edges of the 16:9 frame (this has happened -- a two-line calculation overflowed past the right edge because nothing was scaling it to fit). fm_formula auto-shrinks to always fit inside the frame regardless of string length, so you never have to estimate whether your formula is "too long" -- it cannot overflow. For a calculation that simplifies to a result (e.g. "$250 x 12 x 5 = $15,000" then "-$5,000 = $10,000"), pass a LIST of strings -- `fm_formula(scene, ["$250 x 12 x 5 = $15,000", "-$5,000 = $10,000"], duration=D)` -- each becomes its own row, auto-scaled together as one group. Reach for this whenever a beat's content is fundamentally "X calculated from Y" rather than just "here is X."
+Default to a chart, plot, matrix, vector, distribution, number line, formula, or geometric construction for every beat that has a mathematical concept, a number, a trend, a transformation, or a comparison.
 
-fm_icon (a literal pictogram: a house, a coin, a clock, a person) is a SMALL ACCENT, not a primary visual. Reach for it only to label or anchor a chart that's already doing the real work (a tiny house icon next to a "Rent" axis label), or for the rare beat that is genuinely about a single concrete object with no number or trend attached at all. If you notice you are about to make an icon the LARGEST or ONLY element in a chunk, stop -- ask whether this beat actually has a number, a comparison, a trend, a proportion, or a calculation hiding in it that a chart or formula would show instead. Nearly every finance beat does.
-When in doubt between an icon-based visual and a chart/formula-based visual for the same beat, choose the chart or formula.
+=== VISUAL METAPHOR MAPPING ===
+- Probability / frequency / proportion → fm_animate_probability_bar, fm_animate_donut, fm_animate_icon_grid
+- Distribution / bell curve / normal → fm_animate_bell_curve
+- Trend / growth / sequence → fm_animate_line_chart, fm_animate_line_chart_multi
+- Vector / direction / linear combination → fm_animate_vector
+- Matrix / transformation / system → fm_animate_matrix
+- Single statistic / key number → fm_animate_counter, fm_animate_single_value
+- Comparison between values → fm_animate_comparison_bars, fm_two_cards
+- Formula / equation / calculation → fm_formula
+- Scatter data / correlation → fm_animate_scatter
+- Number line / range / interval → fm_animate_number_line
+- Concept names / taxonomy → fm_concept_pills
+- Chapter / hook / major reveal → fm_animate_glow_reveal
+- Step-by-step process → fm_animate_timeline
 
-=== VARIETY IS A HARD REQUIREMENT, NOT A NICE-TO-HAVE ===
-You are one of several parallel calls generating chunks for the SAME video. If every chunk about money reaches for the same coin-stack or dollar-icon-and-arrow visual, the finished video repeats one image dozens of times and looks broken even though each individual chunk technically passed every rule. Coins are ONE option among many for "income" or "money flowing" beats — not the default. Before settling on a coin visual, actively consider whether the beat is better served by: a bar chart, a counter ticking up, a comparison, a card, a gauge, a donut, a waterfall, a timeline, an icon grid, or a line chart. Treat coin-stacking as a visual you reach for occasionally, never as the safe default for "money" in general.
+=== AXES AND GEOMETRY ARE ALLOWED AND ENCOURAGED ===
+Unlike the previous pipeline, Axes, NumberLine, NumberPlane, and Rectangle ARE available and encouraged when the fm_* library does not cover the visual well. Use them correctly:
+- Axes: always pass x_length and y_length explicitly. Use axis_config with color=BRAND_GRAY, stroke_opacity=0.45, include_tip=False. Place axes with .move_to(ORIGIN) or .move_to(position). Use axes.c2p(x, y) to convert coordinates to screen points.
+- NumberLine: NumberLine(x_range=[min, max, step], length=9.0). Use .n2p(value) to get a point.
+- Rectangle: Rectangle(width=w, height=h) is fine for bars, containers, grids. RoundedRectangle(corner_radius=0.1) preferred for cards and panels.
+- When hand-building a coordinate plot, always draw axes first, then content on top.
 
-NEVER USE A GENERIC COIN/DOLLAR ICON TO REPRESENT A SPECIFIC NAMED ITEM OR CATEGORY: a real, confirmed failure used fm_icon("coin") stacked inside a card labeled "Lattes" -- coins do not mean coffee, and decorating a specific spending category (lattes, rent, a subscription, a specific purchase) with a generic dollar-coin icon is a content mismatch that reads as nonsensical, not illustrative. fm_icon only has a fixed, limited set of shapes (dollar, coin, house, person, clock, arrow_up, arrow_down, warning, checkmark, fire) -- if a beat names something specific that has no matching icon (lattes, groceries, a gym membership, streaming subscriptions), do NOT force the closest-sounding money icon onto it. Either use the category name as a plain 1-2 word label (cat_lbl already exists for this on charts/cards) with no icon at all, or represent the category through its dollar VALUE in a chart/comparison rather than through an icon. A card or bar with just a label and a number is always safer and more honest than an icon that does not actually depict the thing being discussed.
-NEVER LAYER A DECORATIVE ICON DIRECTLY ON TOP OF OR BEHIND A CARD/PRIMITIVE'S OWN TEXT: a real, confirmed failure placed stacked fm_icon("coin") shapes inside an fm_two_cards card, directly overlapping that card's own label text ("Side Gigs" became unreadable with circles cutting through every letter). fm_card and fm_two_cards already lay out their own label and value text with correct spacing -- adding extra icons inside or behind that same space, without first checking they land in genuinely empty space, is a near-guaranteed collision. If you want an icon alongside a card, place it OUTSIDE the card's bounding box entirely (e.g. .next_to(card, UP, buff=0.3)), never centered inside or behind the card's own content area.
-
-THIS APPLIES TO REPEATED VALUES, NOT JUST REPEATED ICONS: if the narration mentions the same dollar figure more than once across nearby beats (a recurring number like a side-hustle income figure or a monthly bill that the script returns to), do NOT render it the same way every time it appears -- a bare hero number via fm_animate_single_value or fm_animate_glow_reveal, shown identically three or four times across a video, is just as repetitive and just as broken-looking as the same coin icon repeated. The first time a value appears, a clean hero-number treatment is appropriate. If that exact same value recurs later in the script, treat it as a cue to show it doing something structurally different this time -- as one side of a comparison bar against another value, as a component inside a calculation (a plain-Text() formula it feeds into, never MathTex), as a bar in a chart alongside related figures, or as part of a waterfall step -- rather than reaching for the same standalone hero-number layout again. Each chunk is generated independently and cannot see what other chunks chose, so you cannot know for certain a value has been shown before -- but if a value is clearly central to the script's recurring argument (the kind of number a narrator would say two or three times), default to a chart/comparison/formula treatment for it rather than a standalone hero number, since hero-number treatment is the layout most likely to look identical on repeat.
-
-=== MATCH THE PRIMITIVE TO WHAT KIND OF NUMBER THE BEAT ACTUALLY HAS ===
-Before picking a primitive, identify what kind of value this beat is about, then use this table — do not pattern-match on keywords alone (e.g. the word "runway" does not automatically mean gauge):
-- A PROPORTION or PERCENTAGE of a whole (0-100%, "half your paycheck," "67% of workers") -> fm_animate_donut or fm_animate_gauge. These primitives exist to show fullness/completeness, never a raw count.
-- A SMALL RAW COUNT (a count of months, items, or units, e.g. "1 month of runway," "3 missed payments") -> fm_animate_single_value or fm_animate_counter, with a 1-2 word label under it. NEVER use a gauge for a raw count -- a gauge with "1" inside it communicates nothing because there is no visible sense of how full or empty that "1" is relative to anything.
-- A DOLLAR AMOUNT on its own -> fm_animate_single_value or fm_animate_counter, huge font_size (130+).
-- TWO OR MORE COMPARABLE AMOUNTS (income vs rent, side hustle vs job) -> fm_animate_comparison_bars or fm_animate_bullet_chart, never two separate disconnected visuals -- they must share one baseline so the eye can compare heights directly.
-- A SEQUENCE OF DEDUCTIONS from a starting amount down to a net (gross pay minus rent minus bills equals net) -> fm_animate_waterfall, one continuous chart, never separate unconnected bars for each line item.
-- A VALUE CHANGING OVER TIME (growth, decline, trend) -> fm_animate_line_chart for one series, fm_animate_line_chart_multi for two or more series being compared on the same chart.
-- A CONCEPT NAMED BEFORE ANY NUMBER EXISTS YET ("side hustle," "emergency fund" as an idea, not yet a value) -> fm_animate_glow_reveal or fm_animate_single_value with "?" -- see CONCEPT BEAT RULE below.
-- THREE OR MORE RELATED CONCEPT NAMES shown together as a set or sequence, no values attached (e.g. "Savings, Investing, Debt, Fun" as four categories, or "Track, Calculate, Improve" as steps) -> fm_concept_pills ONLY. NEVER hand-build a row or stack of labels with individual RoundedRectangle/Text mobjects positioned via move_to or manual coordinates -- that is exactly how labels end up drawn on top of each other. fm_concept_pills is the only primitive that guarantees non-overlapping spacing for this pattern.
-
-=== COLOR IS NOT OPTIONAL — HARD RULE ===
-NEVER use BRAND_GRAY (#8A94A6) as the fill color for bars, gauges, or any hero visual element. Gray communicates nothing emotionally and is invisible against the dark background.
-
-EVERY bar, gauge fill, donut arc, and counter MUST use one of:
-- BRAND_RED (#FF4D4D): loss, danger, debt, expenses, warning, anything negative or alarming
-- BRAND_GREEN (#38D996): income, gain, growth, savings building, anything positive
-- BRAND_GOLD (#FFD166): neutral highlight, key numbers, caution
-
-If bars are gray in your output, you have failed the emotional impact requirement. Recolor them.
-
-=== FULL OPACITY FOR CORE CONTENT — HARD RULE ===
-The actual readable content of a beat -- its main text, its card's fill, its box's stroke -- must ALWAYS render at full or near-full opacity (fill_opacity 1.0, stroke_opacity 1.0, panel fill_opacity 0.85-1.0) in its settled hold state. A real, observed failure: beats came out as a hollow, washed-out haze instead of crisp readable content -- this happens when low-opacity values meant for a glow/depth ACCENT get applied to the core content itself instead of to separate extra copies layered behind it. Glow rings (fm_animate_glow_reveal), depth layers (fm_glow_around), and any "duplicate the shape at decreasing alpha" technique are ADDITIONAL elements that sit behind or around an already fully-opaque core -- never a substitute for one, never applied to the core's own fill/stroke. If you are tempted to lower a Text() or card's own opacity for a "softer" look, do not -- add a separate glow/ring layer behind it instead and leave the primary content itself at full opacity.
-
-=== NEAR-ZERO TEXT RULE — THE MOST IMPORTANT INSTRUCTION ===
-The audio narration speaks ALL the words. Your visual's ONLY job is to show what those words MEAN — never to repeat them.
-
-Think of how 3blue1brown explains neural networks: nodes light up, edges pulse, matrices transform, activations flow — no captions, no sentences, just pure visual storytelling. That is exactly the standard here.
-
-NEVER put on screen:
-- Sentences, phrases, or words from the narration
-- Explanatory labels longer than 2-3 words
-- Any Text() that a viewer could hear in the audio instead
-
-THE ONLY TEXT ALLOWED:
-- Actual data values: $4,200 | 67% | $1,800/mo | 1 month
-- Ultra-short chart axis labels: "Rent" | "Income" | "Net" (1-2 words)
+=== WHAT TEXT IS ALLOWED ===
+- Actual mathematical values: 0.68 | 95% | n=30 | p < 0.05
+- Ultra-short axis labels: "x" | "f(x)" | "n" | "P(x)" (1-3 chars)
 - Chapter title cards via fm_animate_glow_reveal ONLY (hook/concept beats)
+- Formula lines via fm_formula (never raw Text for formulas)
 
-WRONG: Text("Most people have less than one month of savings")
-RIGHT: fm_animate_gauge(self, 0.8, 6, "Months of Runway", BRAND_RED, duration=D)
+WRONG: Text("Most people misunderstand variance because they confuse it with standard deviation")
+RIGHT: fm_animate_bell_curve(self, label_text="Variance = spread", accent_color=BRAND_GOLD, duration=D)
 
-WRONG: Text("Your side hustle income is not enough to replace your job")
-RIGHT: fm_animate_comparison_bars(self, [("Side Hustle", 500, BRAND_GREEN), ("Job Income", 4200, BRAND_GOLD)], duration=D)
+WRONG: Text("The gradient points in the direction of steepest ascent")
+RIGHT: fm_animate_vector(self, [0.6, 0.8], "gradient", accent_color=BRAND_GREEN, duration=D)
 
-If your construct() has more than 2 Text() objects that are not numbers or 1-2 word labels, you are writing captions. STOP. Replace them with a chart, gauge, counter, or comparison visual. The audio already says the words — your job is to make the viewer SEE the reality behind those words.
+If your construct() has more than 2 Text() objects that are not numbers or 1-3 character labels, you are writing captions. STOP. Replace them with a chart, distribution, vector, matrix, or formula visual.
 
-THIS RULE APPLIES TO title_text TOO, NOT JUST RAW Text() CALLS: passing a full sentence into title_text="Emergency Wipes Out A Month of Effort" is the exact same captioning violation as a raw Text() sentence -- it just hides inside a library function's parameter instead of your own code, which does not make it acceptable. title_text is for a SHORT chart label (2-4 words: "Monthly Cashflow", "Income vs Bills"), never a narrated sentence, a complete clause, or anything paraphrasing what the narration already says. If you find yourself writing a title_text that reads like a sentence with a subject and a verb, delete it -- either drop title_text entirely (most charts do not need one, the data values and category labels already say enough) or cut it down to a 2-4 word label.
-
-NEVER LEAVE AN ICON OR SHAPE ON SCREEN WITHOUT A LABEL OR VALUE NEXT TO IT: a real failure rendered a warning-triangle icon sitting above an empty rounded box with no text inside it at all -- the chunk crashed or stalled partway through, but the partial scene that had already been added (icon + empty box, no label ever added) became the visible frame for several seconds. An icon by itself, or an icon plus an empty container shape, is never a complete visual idea -- every fm_icon() call must be paired with an actual label or value Text() placed clearly next to it in the SAME chunk, added in the same group/animation so they always appear together or not at all. If you are building a box/card to hold a label, add the label text to that box in the same breath you create the box -- never create an empty container and add its contents in a later, separable step.
-NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called fm_two_cards("Side Hustle", "?", BRAND_GREEN, "Passive Income", "?", BRAND_GOLD) -- a card showing nothing but a giant question mark where a number should be reads as a broken or unfinished render to a viewer, never as intentional suspense, even if that was the intent. Every value field passed into fm_card, fm_two_cards, fm_stacked_cards, fm_animate_single_value, fm_animate_comparison_bars, or any other primitive's value/amount parameter must be an ACTUAL number or dollar amount drawn from the script's content -- never "?", "???", "N/A", "TBD", or any other placeholder standing in for a number you have not decided on. If a beat is genuinely about an unknown or a question being posed (e.g. "how much would you guess?"), convey that through narration-matched motion (a card fading in empty, then the real number animating in afterward in a LATER chunk once revealed) rather than rendering a literal question mark as the value itself.
-
-=== HARD STRUCTURAL RULES (checked mechanically, violating these wastes the whole chunk) ===
-- Your response for EACH chunk must be exactly: `from manim import *` on its own line, then exactly ONE class definition subclassing either FinanceDashboardScene (the normal case) or FinanceDashboard3DScene (only for a deliberate 3D establishing-shot tilt, see below), with a `construct(self)` method, and nothing else at the top level -- no print statements, no code outside the class, no second class.
-- FinanceDashboardScene and FinanceDashboard3DScene are already defined for you before your code runs. Do not redefine them, do not set self.camera.background_color yourself, do not draw your own grid or background -- setup() on both base classes already paints the dark navy dashboard background, grid, and ticker texture. Your construct() goes straight to the chunk's actual content.
+=== HARD STRUCTURAL RULES ===
+- Your response for EACH chunk must be exactly: `from manim import *` on its own line, then exactly ONE class definition subclassing either MathScene (the normal case) or MathScene3D (only for a deliberate 3D establishing-shot tilt), with a `construct(self)` method, and nothing else at the top level.
+- MathScene and MathScene3D are already defined for you before your code runs. Do not redefine them, do not set self.camera.background_color yourself, do not draw your own grid or background.
 - The ONLY imports allowed in your own code are `manim`, `numpy`, `math` -- nothing else, ever.
-- Never reference: open, exec, eval, compile, __import__, os, sys, subprocess, socket, requests, shutil, globals, locals, vars, input, breakpoint, exit, quit, or any dunder attribute.
-- Triangle() takes NO vertex arguments -- it is a fixed equilateral shape, only accepts styling kwargs (color, fill_color, fill_opacity) plus standard Mobject methods like .scale()/.rotate()/.move_to(). A real failure: `Triangle([-0.18,1.5,0],[0.18,1.5,0],[0,1.9,0], color=BRAND_RED)` crashed with "takes 1 positional argument but 4 were given". For a custom 3-point shape with specific vertices, use `Polygon(p1, p2, p3, color=..., fill_color=..., fill_opacity=...)` instead, or build a plain Triangle then `.scale()`/`.stretch()`/`.rotate()` it into the shape you need.
-- DO NOT INVENT KWARG OR FUNCTION NAMES THAT SOUND PLAUSIBLE -- this is a real, repeated crash source. Several real failures came from names that sound exactly like they should exist but do not in this Manim version:
-  - `RoundedRectangle(width=..., height=..., radius=...)` crashed with "unexpected keyword argument 'radius'" -- the correct kwarg is `corner_radius`, not `radius`. Always use `RoundedRectangle(width=..., height=..., corner_radius=..., color=..., fill_color=..., fill_opacity=...)`.
-  - `axes.plot_line_graph(..., add_anchor_points=...)` crashed with "unexpected keyword argument 'add_anchor_points'" -- this kwarg does not exist on plot_line_graph in this version. Only pass `x_values`, `y_values`, `line_color`, `add_vertex_dots` (if needed) -- nothing else.
-  - `Axes(..., axis_config={..., "number_font_size": ...})` crashed -- `number_font_size` is not a valid axis_config key. For number/tick label sizing on Axes, use the `decimal_number_config` parameter instead, or skip built-in number labels entirely and place your own Text labels manually, which is more reliable.
-  - `rate_func=bounce_out` crashed with "name 'bounce_out' is not defined" -- this name does not exist in Manim's namespace at all. The real, confirmed-to-exist rate functions are: `smooth`, `linear`, `there_and_back`, `there_and_back_with_pause`, `rush_into`, `rush_from`, `slow_into`, `double_smooth`, `ease_in_sine`, `ease_out_sine`, `ease_in_out_sine`, `ease_in_quad`, `ease_out_quad`, `ease_in_out_quad`, `ease_in_cubic`, `ease_out_cubic`, `ease_in_out_cubic`, `ease_in_bounce`, `ease_out_bounce`, `ease_in_out_bounce`, `ease_in_elastic`, `ease_out_elastic`, `ease_in_out_elastic`. For a "settle into place with a little bounce" feel, use `rate_func=ease_out_bounce`, never `bounce_out`.
-  - `BRAND_BLUE` crashed with "name \'BRAND_BLUE\' is not defined" -- this color constant was never defined and does not exist. The COMPLETE list of brand color constants in scope is exactly six: BRAND_WHITE, BRAND_GREEN, BRAND_RED, BRAND_GOLD, BRAND_GRAY, BRAND_PANEL. There is no BRAND_BLUE, BRAND_ORANGE, BRAND_PURPLE, or any other brand color -- if a beat seems to call for a color outside this set, pick the closest match from the six that actually exist (BRAND_GOLD for a neutral/highlight color, BRAND_GRAY for a muted/secondary color) rather than inventing a new constant name.
-  The general rule: if you are not certain a kwarg, function name, or constant is real (not just "sounds like it should be"), prefer the simplest, most basic version of the call (fewer kwargs, plain Text instead of a fancy config option, one of the six confirmed brand colors instead of a guessed one) over guessing a more specific-sounding name that might not exist. A simpler call that works beats a fancier call that crashes the whole chunk.
-- AVOID CubicBezier FOR SIMPLE JUMP/ARC MOTION -- a real failure: `CubicBezier(*curve_jump)` crashed with "missing 1 required positional argument: \'end_anchor\'" because the unpacked list only had 3 points instead of the 4 CubicBezier always requires (start_anchor, start_handle, end_handle, end_anchor -- exactly four, never fewer). CubicBezier is easy to get wrong under time pressure. For a simple "object hops/arcs from point A to point B" motion, use `MoveAlongPath(obj, ArcBetweenPoints(point_a, point_b, angle=PI/3))` instead -- ArcBetweenPoints only needs the two endpoints and an angle, it is far less error-prone, and it produces the same kind of arcing jump motion. Reach for raw CubicBezier only if you are constructing all 4 points explicitly and have visually verified the count yourself.
-- NEVER PATCH AN ARGUMENT-COUNT OR ARGUMENT-MISMATCH ERROR WITH AN UNPACKING TRICK -- a real failure: `Arc(start_angle=PI, angle=PI, radius=0.58, stroke_width=8, *[[] for _ in range(1)])` crashed with "Arc.__init__() got multiple values for argument 'radius'" because the trailing `*[[] for _ in range(1)]` unpacks an extra empty positional argument that collides with `radius` (Arc's first positional parameter), passing it twice. This pattern -- adding a throwaway `*[...]` unpack as a "fix" for a call that seems to want more or fewer arguments -- never actually fixes anything and always crashes the chunk. If a call signature seems wrong, simplify it instead: pass every argument as an explicit keyword (`Arc(radius=0.58, start_angle=PI, angle=PI, stroke_width=8)`) and drop any unpacking entirely. Never pass the same parameter both positionally and by keyword.
-- Star's FIRST positional argument is `n` (the number of points), NOT a center point -- a real failure: `Star(ORIGIN + UR * 1, n=5, color=BRAND_GOLD, ...)` crashed with "Star.__init__() got multiple values for argument 'n'" because the coordinate was passed positionally into the `n` slot while `n=5` was ALSO passed as a keyword, the same positional/keyword collision as the Arc case above. Star's real signature is `Star(n=5, *, outer_radius=1, inner_radius=None, start_angle=..., **kwargs)` -- every parameter after `n` is keyword-only. NEVER pass a coordinate as Star's first positional argument. Build it with keywords only -- `star = Star(n=5, outer_radius=0.5, color=BRAND_GOLD, fill_color=BRAND_GOLD, fill_opacity=1.0)` -- then position it afterward with `.move_to(point)`, the same pattern used for every other shape in this codebase.
-- NEVER WRITE A BARE `_` EXPECTING IT TO MEAN "THE PREVIOUS LINE'S RESULT" -- a real failure: a multi-line `fm_card(...)` call's result was never assigned to a variable, then the very next line wrote `self.play(FadeIn(_), run_time=0.8)` and crashed with "NameError: name '_' is not defined". This is Python interactive-shell behavior (`_` holds the last evaluated expression at a REPL prompt) and does NOT apply inside a script or a method body -- `_` is just an undefined name here unless you explicitly write `_ = something`. EVERY mobject you build and intend to animate must be assigned to an explicitly named variable on the same statement that creates it (e.g. `card = fm_card(...)`), never left as a bare unassigned expression you then reference by `_` on a later line.
-- TO MAKE ANYTHING DASHED, WRAP IT IN DashedVMobject -- NEVER INVENT KWARGS ON .set_style() -- a real failure: `dashed_rect.set_style(dash_length=0.30, dash_offset=0.18, draw_border_dash_array=...)` crashed with "VMobject.set_style() got an unexpected keyword argument 'dash_length'" -- `set_style()` has no dash-related parameters at all; dashing is not a style you set on an existing mobject, it is a SEPARATE wrapper mobject. The correct pattern: build the solid shape first (`rect = Rectangle(width=2, height=1)`), then wrap it -- `dashed_rect = DashedVMobject(rect, num_dashes=20, dashed_ratio=0.5)` -- and add/animate `dashed_rect`, not the original `rect`. `DashedVMobject`'s real keyword arguments are `num_dashes`, `dashed_ratio`, `dash_offset`, and `color` -- never `dash_length` on a generic VMobject.
-- Polygon TAKES EACH VERTEX AS ITS OWN SEPARATE POSITIONAL ARGUMENT, NEVER ONE LIST -- a real failure: `Polygon([[0,1.2,0], [1,0.2,0], [0.6,-1.1,0], ...], color=BRAND_GOLD, ...)` crashed with "ValueError: setting an array element with a sequence... exceed the maximum number of dimension of 2" because passing a single list containing all the points makes Polygon treat that ENTIRE list as if it were one vertex, not six. Polygon's real signature is `Polygon(*vertices, **kwargs)` -- it needs the points unpacked. Either star-unpack a list you already built -- `Polygon(*[[0,1.2,0], [1,0.2,0], [0.6,-1.1,0]], color=BRAND_GOLD)` -- or pass each point as its own argument -- `Polygon([0,1.2,0], [1,0.2,0], [0.6,-1.1,0], color=BRAND_GOLD)`. Never pass a bare list of points as Polygon's only positional argument.
-- BRAND_* CONSTANTS ARE PLAIN HEX STRINGS, NOT ManimColor OBJECTS -- THIS IS FINE FOR color=/fill_color= KWARGS BUT NOT FOR interpolate_color() -- a real failure: `interpolate_color(BRAND_GREEN, BRAND_RED, alpha)` crashed with "AttributeError: 'str' object has no attribute 'interpolate'". Almost every Mobject color parameter (color=, fill_color=, stroke_color=) auto-converts a hex string for you, which is why BRAND_GREEN works everywhere else without issue -- but the standalone `interpolate_color()` function does NOT do that conversion, it calls `.interpolate()` directly on whatever you pass it, so a raw string crashes immediately. If a beat needs a color that shifts between two brand colors as a value changes (a progress bar shifting from green to red, a gauge fill that warns as it fills), wrap both colors first: `interpolate_color(ManimColor(BRAND_GREEN), ManimColor(BRAND_RED), alpha)`. `ManimColor` is already in scope from `from manim import *` -- no extra import needed.
-- always_redraw LAMBDAS REFERENCING A TRACKER DEFINED LATER OR IN A LOOP CRASH WITH A SCOPE ERROR: a real failure used `always_redraw(lambda: Dot(axes.c2p(t_tracker.get_value(), ...)))` and crashed with a "cannot access free variable" scope error on the tracker name. This happens when the ValueTracker the lambda refers to is created inside a loop, inside a conditional branch, or anywhere Python cannot guarantee it already has a value by the time the lambda is defined and called. The reliable pattern: create EVERY ValueTracker as a plain top-level statement directly in construct(), by itself, before any always_redraw or lambda that references it -- e.g. `t_tracker = ValueTracker(0)` on its own line, immediately followed by the always_redraw call that uses it. Never define a tracker inside a for-loop body, an if-branch, or any nested function if an always_redraw elsewhere needs to see it.
-- Line, Arc, and other VMobject-family shapes do NOT accept a generic `opacity=` kwarg in their constructor -- a real failure: `Line(p1, p2, color=BRAND_GRAY, stroke_width=2, opacity=0.35)` crashed with "Mobject.__init__() got an unexpected keyword argument 'opacity'". Set opacity via `.set_stroke(color=..., width=..., opacity=...)` or `.set_fill(color=..., opacity=...)` AFTER construction, never as a constructor kwarg: `ln = Line(p1, p2); ln.set_stroke(color=BRAND_GRAY, width=2, opacity=0.35)`.
-- MathTex, Tex, AND SingleStringMathTex ARE BANNED. Texlive itself compiles fine, but GPT-generated raw-string LaTeX reliably contains escaping bugs (writing r"\\text{...}" with a doubled backslash instead of the correct r"\text{...}", or dropping a literal "$" inside the tex string) that crash the manim subprocess outright -- a crashed chunk silently becomes a blank filler clip, which is why entire stretches of finished video have gone blank. For any formula or equation, call fm_formula -- see the "SHOW THE CALCULATION" rule above for the exact pattern. There is no safe way to use MathTex/Tex from generated code in this pipeline; do not reach for them under any circumstance.
-- Still avoid DecimalNumber specifically (it has its own unrelated update-cycle quirks in this codebase) -- for a number that needs to animate (counting up/down, or tracking a ValueTracker), use `always_redraw` with plain `Text()` instead: `counter = always_redraw(lambda: Text(f"${tracker.get_value():,.0f}", font_size=120, color="#F5F7FA"))`, `self.add(counter)`, then `self.play(tracker.animate.set_value(34000), run_time=2)`. This gives the same live-updating effect with zero DecimalNumber dependency. If you need a live-updating value INSIDE a formula, rebuild the whole Text() string each frame via the same always_redraw pattern -- never MathTex.
-- Also banned (all route through LaTeX/SVG internals and crash): MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, Axes, NumberLine, NumberPlane, SVGMobject, ComplexPlane, PolarPlane, Rectangle. Use Text() and the fm_* library instead. For line charts prefer fm_animate_line_chart (consistent styling), for bar charts use fm_animate_bar_chart. Axes, NumberLine, and NumberPlane stay banned -- do not use them even though the toolchain technically supports them, for the same GPT-reliability reasons as MathTex above. For ANY icon or symbol (house, person, clock, dollar sign, warning triangle, checkmark) use fm_icon(name, size, color) — never SVGMobject, never ImageMobject, never any class that loads external files.
-  QUICK SUBSTITUTION TABLE -- every one of these banned names is REJECTED by an automated safety check before rendering even starts (the chunk becomes a blank filler clip, not a crash, but still blank), so if you catch yourself about to type any of these, stop and use the replacement instead. There is no case where the banned name is the only option:
-    Rectangle(...)        -> fm_card / fm_two_cards / fm_stacked_cards (a labeled box) or fm_animate_bar_chart / fm_animate_comparison_bars / fm_animate_waterfall (a bar)
-    Axes(...)              -> fm_animate_line_chart (trend/growth curve)
-    MathTex(...) / Tex(...) -> fm_formula (any formula or calculation)
-    NumberLine(...) / NumberPlane(...) -> fm_animate_line_chart, or drop the axis and just show the data
-    SVGMobject(...)        -> fm_icon(name, size, color)
-    BarChart(...)          -> fm_animate_bar_chart
-  RoundedRectangle and SurroundingRectangle are NOT banned and are the correct choice for cards/pills/meters -- only the bare Rectangle() class is forbidden.
-- RESTRUCTURE_MOBJECTS WARNING: never call self.add() on a fm_* result AND ALSO animate its submobjects separately. The returned VGroup must be treated as an atomic unit. Wrong: `card = fm_card(...); self.add(card); self.play(FadeIn(card[0]))`. Correct: `card = fm_card(...); self.play(FadeIn(card))`. Accessing submobjects of fm_* returns (card[0], cards[1], etc.) and adding them separately to the scene causes Manim's restructure_mobjects crash.
-- NO GUESSING SUBMOBJECT INDICES: never index into a VGroup (card[1], card_show[2], etc.) unless you personally built that exact group in this same construct() and know precisely how many Mobjects you added to it, in what order. A real failure: indexing card_show[1] and card_show[2] on a group that only had 1 submobject, which crashes with IndexError: list index out of range. fm_* library functions do not document or guarantee submobject count/order as part of their contract -- never index into an fm_* return value's internals. If you need to reference a specific piece of something later (a label, an icon, a bar), keep it as its own separate named variable when you build it (e.g. `icon = fm_icon(...); label = Text(...); group = VGroup(icon, label)`), then refer to that original variable directly instead of re-deriving it by indexing the group afterward.
-- NO SELF-CONTAINING GROUPS: never add a VGroup (or a card/group built from one) into itself, into a copy of itself, or into another group that already (directly or through a shared variable) contains it. A real failure: building `card_real` and `card_show` from overlapping pieces, then calling FadeOut/animate on one while it still shares submobjects with the other -- when Manim's set_z_index walks the submobject family on a group with a circular reference, it recurses forever and crashes with RecursionError: maximum recursion depth exceeded. If two named groups in your construct() are meant to be visually related (e.g. one fading while the other glows), build each from its OWN independent VGroup() with its OWN Mobjects -- never have one variable's group literally contain the other variable's group, and never call VGroup(*existing_group) to wrap something that is already itself a VGroup.
-- NEVER BUILD A CUSTOM always_redraw GAUGE: a real failure built its own live-updating gauge with `gauge = always_redraw(lambda: make_gauge()[0])` then crashed trying to VGroup() a ValueTracker that got mixed in -- this happened because fm_animate_gauge already handles its OWN internal ValueTracker, its OWN animation, and already calls scene.add() on everything itself before it returns. It does not return a drawable visual to wrap in your own always_redraw -- it returns (tracker, val_lbl, cat_lbl) for reference only, after the gauge is already on screen and already animated. If a beat needs a gauge, call fm_animate_gauge once with the final target value and let it run -- never build your own ValueTracker/always_redraw scaffolding around it or any other fm_animate_* function, they are not building blocks to wrap, they are the complete animation.
-- GAUGE RULE: gauges are for PROPORTIONS only (a value that is meaningfully full/empty against a max, e.g. "half your emergency fund," "67% of capacity"). A small raw count like "1 month of runway" is NOT a proportion and must NOT become a gauge -- see the primitive-selection table above, use fm_animate_single_value instead. Once you have genuinely decided a beat is a proportion-of-a-whole and a gauge is the right call, you MUST use fm_animate_gauge to build it rather than a custom Line needle or Arrow pointer that rotates from center — these always overlap the value text and look broken. fm_animate_gauge handles the arc fill, the value text position, and the label correctly.
-- CONCEPT BEAT RULE: when a beat names a concept but has no data yet (e.g. "Passive Income", "Side Hustle", "Emergency Fund"), use fm_animate_glow_reveal or fm_animate_single_value with a "?" as the value string. Never draw arbitrary decorative shapes (waves, spirals, random arcs) — they communicate nothing. If a genuinely matching icon exists in fm_icon's fixed set (dollar, coin, house, person, clock, arrow_up, arrow_down, warning, checkmark, fire), add it as a small accent positioned OUTSIDE the text/card's own bounding box (e.g. .next_to(text, UP, buff=0.3)) so a bare concept phrase is not the only thing on screen -- this still follows the icon-misuse rules above (no icon when nothing in the fixed set genuinely fits, never overlapping the text it sits next to). When TWO concepts are introduced side by side (e.g. "Side Hustle" vs "Passive Income"), build them as two solid fm_card-style boxes (full opacity fill per the FULL OPACITY rule above, never a hollow/glow-only treatment), each optionally paired with its own outside-the-box icon accent, never as low-opacity hazy text floating with no solid container. When THREE OR MORE concept names are introduced together as a set (e.g. "Savings", "Investing", "Debt", "Fun" as four sibling categories, or "Track", "Calculate", "Improve", "Foundation" as a sequence) -- this is ALWAYS fm_concept_pills(labels), never hand-built. Do not write your own RoundedRectangle + Text loop with manually chosen positions for this pattern; fm_concept_pills already handles spacing, scaling, and color cycling safely.
-- HARD TIMING RULE: the sum of ALL self.play(run_time=X) + self.wait(X) values in your construct() must equal the chunk's given duration. Chunks that render more than 45% longer than target are rejected and replaced with a blank filler. The most common cause of rejection is calling an fm_animate_* function (which already consumes the full duration internally) AND THEN also adding self.wait() or another self.play() on top -- this doubles the length and guarantees rejection. One fm_animate_* call = the entire construct(). If you use raw Manim instead, your play/wait budget is the chunk duration, spend it all, do not go over.
-- NEVER WRITE INLINE SUBTRACTION INSIDE wait(): a real failure was `self.wait(4.5-0.5-1.0-2.2-0.8)`, which looks like it sums to exactly 0 but float rounding actually lands it at a hair below zero, and Manim raises ValueError for any non-positive wait duration. Compute your full time budget as named variables FIRST (e.g. `t_intro = 0.5`, `t_build = 1.0`, `t_hold = 2.2`, `t_fade = 0.8`), confirm the remainder makes sense, and pass the final remaining wait as a plain literal number you've already calculated, never as a live subtraction expression inside the wait() call itself.
+- Never reference: open, exec, eval, compile, __import__, os, sys, subprocess, socket, requests, shutil, globals, locals, vars, input, breakpoint, exit, quit.
+- MathTex, Tex, and SingleStringMathTex are BANNED -- they crash on GPT-generated LaTeX strings. Use fm_formula() for any formula or equation.
+- DecimalNumber is BANNED -- use always_redraw with plain Text() instead.
+- SVGMobject is BANNED -- use fm_icon() for icons.
+- MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, ComplexPlane, PolarPlane are BANNED.
+- Triangle() takes NO vertex arguments -- use Polygon(p1, p2, p3) for custom triangles.
+- RoundedRectangle uses corner_radius, NOT radius.
+- Star's first positional argument is n (number of points), not a center point.
+- NEVER write inline subtraction inside wait(): compute your timing as named variables first.
+- NEVER use a bare _ to reference the previous line's result -- assign every mobject to a named variable.
+- ONE full-screen animate primitive per chunk -- fm_animate_bell_curve, fm_animate_vector, fm_animate_matrix etc. fill the frame on their own. Never call two of them in the same construct().
+- rotate() does NOT accept run_time as a kwarg -- run_time belongs in self.play().
+- point_at_angle() does NOT exist on Arc -- use arc.point_from_proportion(t).
+- NEVER call fm_* functions as self.fm_* -- they are module-level functions, not Scene methods. Correct: fm_animate_number_line(self, ...). Wrong: self.fm_animate_number_line(...). This will be caught by the safety checker and rejected before rendering.
+- NEVER call fm_animate_* without passing self as the FIRST positional argument. Correct: fm_animate_bar_chart(self, values, names, colors, duration). Wrong: fm_animate_bar_chart(values=values, names=names, colors=colors). The scene parameter is required and must be self.
+- NEVER wrap fm_animate_* calls inside self.play() -- they handle their own animation internally. Correct: fm_animate_comparison_bars(self, ...). Wrong: self.play(fm_animate_comparison_bars(self, ...)).
+- NEVER pass opacity= as a constructor kwarg to Dot, Circle, Line, Arrow or any geometry -- use .set_opacity() AFTER construction. Real failure: Dot([0,0,0], opacity=0.35) crashes. Correct: d = Dot([0,0,0]); d.set_opacity(0.35).
+- plot_line_graph IS BANNED -- it crashes with color kwarg conflicts. Use fm_animate_line_chart or fm_animate_line_chart_multi instead for any trend or curve. Never call axes.plot_line_graph() under any circumstance.
+- axes.get_graph() returns a ParametricFunction -- NEVER call .color= or pass color as a kwarg directly to get_graph(). Set color after: curve = axes.get_graph(func, x_range=[a,b]); curve.set_stroke(BRAND_GREEN, width=4).
+- axes.get_graph() does NOT accept x_range as a kwarg -- use axes.plot(func, x_range=[a,b]) instead. axes.get_graph(func) with no x_range is also valid.
+- set_stroke() does NOT accept dash_length or any dashing kwargs -- dashing is impossible via set_stroke(). Remove dash_length entirely.
+- set_style() does NOT accept dash_length_ratio or dash_offset -- these kwargs do not exist on VMobject in Manim Community v0.20.1. Remove them entirely.
+- interpolate_color() is BANNED -- it crashes when passed hex strings. Use ManimColor directly or pick a fixed color constant instead.
+- axes.get_area() accepts x_range and bounded_graph but NOT dash_length or any stroke dash kwargs -- dashing is impossible on a filled region.
+- DashedLine, DashedVMobject, Ellipse, scipy are BANNED.
+- fm_animate_scatter returns (dots_group, regression_line) -- a plain tuple. NEVER access .axes on the return value. NEVER do scatter.axes.c2p(...). If you need coordinate mapping after calling fm_animate_scatter, build your own Axes separately first.
+- fm_animate_bell_curve returns (curve, fill_region, label_mob) -- a plain tuple. NEVER call .get_center() or .move_to() on the return value. Do not chain methods on it.
+- fm_animate_timeline returns (dots, labels) -- a plain tuple. NEVER call .move_to() on the return value.
+- ALL fm_animate_* functions return tuples or None -- NEVER call .move_to(), .get_center(), .shift(), .next_to() or any Mobject method on their return values directly.
+- fm_animate_bell_curve mean_label and std_label must be strings or omitted -- NEVER pass None. If you want no label just omit the argument entirely.
+- fm_animate_number_line value must be a number -- NEVER pass None. If you want to show a range without a moving dot, use fm_animate_line_chart instead.
+- fm_animate_line_chart end_value_label can be None or a string -- both are safe.
+- fm_animate_icon_grid label_text can be "" for no label -- NEVER pass None.
+- fm_card_row() does NOT accept a buff= keyword argument. Its spacing is controlled by the spacing= parameter.
+- fm_two_cards() accepts an optional buff= kwarg that is silently ignored. Use spacing= to control card gap.
+- fm_animate_line_chart_multi series must be a list of dicts: [{"y_values": [...], "color": BRAND_GREEN, "label": "Series A"}, ...]. NOT a list of plain lists.
+- When iterating over a list of floats/numbers: for i, val in enumerate(my_list) -- NOT for i, (a, b) in enumerate(my_list) which assumes tuples.
+- NEVER reference a variable on the right side of its own assignment: bar = Rectangle(...).move_to([i, bar.height/2, 0]) is an UnboundLocalError because bar doesn't exist yet. Compute bar_h first, then set bar, then move it.
+- Arrow() uses start= and end= parameters, NOT left= or right=. Correct: Arrow(start=LEFT*0.5, end=RIGHT*0.5). Wrong: Arrow(left=LEFT*0.5, right=RIGHT*0.5). This will crash.
+- GrowFromEdge() takes edge as the SECOND POSITIONAL argument, not a keyword. Correct: GrowFromEdge(mob, DOWN). Wrong: GrowFromEdge(mob, direction=DOWN). This will crash.
+- fm_animate_number_line tick_labels must be a list of strings/numbers or None -- NEVER pass True or False.
+- fm_formula() lines must be PLAIN TEXT ONLY -- no backslashes, curly braces, \varepsilon, \frac, subscript notation like X_{obs}. Write it as plain readable text: "X_obs = X_process + epsilon". fm_formula renders with Text() not LaTeX.
+- VGroup() only accepts VMobject instances -- NEVER pass a plain Python list or tuple. If fm_animate_line_chart returns (axes, line, dot), unpack it: axes, line, dot = fm_animate_line_chart(self, ...).
+- import random is ALLOWED in chunk code. Use it freely.
+- 16:9 FRAME AWARENESS: The frame is 16 units wide × 9 units tall (frame_width=14.22, frame_height=8.0). Never position objects beyond x=±6.5 or y=±3.8. Use fm_clamp_to_frame() for complex layouts.
+- DURATION RULE: ONE self.play() call or ONE fm_animate_* call per chunk. If your chunk has more than one self.play() call AND one fm_animate_* call, you are over-filling the chunk duration and it WILL drift. Pick one visual action per chunk.
 
-=== FRAME, ASPECT RATIO, SAFE MARGINS ===
-Output is 16:9, 1920x1080, 30fps. Always read `config.frame_width` and `config.frame_height` at runtime instead of hardcoding numbers -- they are already configured correctly for this aspect ratio. Keep every object's resting position within roughly `config.frame_width * 0.42` of horizontal center and `config.frame_height * 0.42` of vertical center; anything closer to the true edge risks clipping on some players/crops. ORIGIN is frame center.
+=== BRAND PALETTE ===
+White: "#F5F7FA". Green (positive/growth): "#38D996". Red (warning/error): "#FF4D4D". Gold (neutral highlight): "#FFD166". Gray (secondary/de-emphasized): "#8A94A6". Panel/card bg: "#0D1B2A". Background: "#060F1A".
+Brand constants in scope: BRAND_WHITE, BRAND_GREEN, BRAND_RED, BRAND_GOLD, BRAND_GRAY, BRAND_PANEL, BRAND_BG, BRAND_NAVY. No others exist.
 
-=== BUILT-IN LIBRARY FUNCTIONS (always in scope, crash-proof, prefer these first) ===
-These fm_* functions are already defined before your chunk runs -- do NOT import or redefine them. Call them directly inside construct(). They handle all self.play()/self.wait() timing internally using their duration parameter, so calling one of these is all you need for that visual type -- do not add extra self.wait() after them. Brand constants also in scope: BRAND_WHITE="#F5F7FA", BRAND_GREEN="#38D996", BRAND_RED="#FF4D4D", BRAND_GOLD="#FFD166", BRAND_GRAY="#8A94A6", BRAND_PANEL="#111A24".
+=== LIBRARY REFERENCE ===
+fm_animate_vector(scene, direction, label_text, accent_color, duration, origin, scale, show_components)
+  direction=[dx,dy]. Draws an Arrow from origin in that direction, labeled. show_components draws dashed x/y lines.
 
-FACTORY functions (return a VGroup, you add/animate it yourself):
-  fm_card(label_text, value_text, accent_color=BRAND_GOLD, panel_color=BRAND_PANEL, text_color=BRAND_WHITE, label_size=36, value_size=90, buff=0.45)
-    Auto-sized SurroundingRectangle card. Always fits text correctly. Use: c = fm_card("Salary", "$4,200", BRAND_GREEN); self.play(FadeIn(c))
-  fm_two_cards(left_label, left_val, left_color, right_label, right_val, right_color, label_size=34, value_size=80, spacing=1.1)
-    Two side-by-side cards centered at ORIGIN. Use: cards = fm_two_cards(...); self.play(FadeIn(cards))
-  fm_stacked_cards(items, label_size=30, value_size=68, spacing=0.24)
-    items = [(label, value_str, color), ...]. Vertical stack. Use: stack = fm_stacked_cards([("Rent","$1,400",BRAND_RED), ...]); self.play(FadeIn(stack))
-  fm_concept_pills(labels, colors=None, font_size=44, direction=None, spacing=0.4)
-    For a GROUP of related concept names shown together with NO values attached -- e.g. ["Savings","Investing","Debt","Fun"] or sequential steps like ["Track","Calculate","Improve"]. Auto-arranges with guaranteed non-overlapping spacing (horizontal row if <=3 labels, vertical stack if >3) and auto-scales to fit the frame. Use: pills = fm_concept_pills(["Savings","Investing","Debt","Fun"]); self.play(LaggedStart(*[FadeIn(p) for p in pills], lag_ratio=0.15))
-  fm_glow_around(mobject, color=BRAND_GOLD, n_layers=3)
-    Wrap any mobject in glow. Use: self.add(fm_glow_around(my_text, BRAND_GREEN))
+fm_animate_matrix(scene, rows_data, label_text, accent_color, duration, position, cell_size, font_size)
+  rows_data=list of lists of strings/numbers. Draws bracket notation with cells fading in row by row.
 
-ANIMATION functions (handle ALL self.play/self.wait for their duration, call once with full chunk duration):
-  fm_animate_counter(scene, start_val, end_val, label_text, accent_color=BRAND_GOLD, prefix="$", suffix="", duration=3.0, position=None, value_size=130, label_size=38)
-    Counting number via ValueTracker+always_redraw. Zero LaTeX. Returns (tracker, counter_mob, label_mob).
-    Example: fm_animate_counter(self, 0, 34000, "Emergency Fund", BRAND_GREEN, prefix="$", duration=4.2)
-  fm_animate_bar_chart(scene, values, names, colors=None, duration=3.5, title_text="")
-    Hand-built bar chart (Rectangle + Text, zero BarChart dependency) with value labels above each bar and a real baseline + y-axis. colors defaults to [GREEN,GOLD,RED,WHITE].
-    Example: fm_animate_bar_chart(self, [4200, 1800, 600], ["Salary","Side Hustle","Passive"], [BRAND_GREEN,BRAND_GOLD,BRAND_RED], duration=3.8)
-  fm_animate_gauge(scene, value, max_val, label_text, accent_color=BRAND_GREEN, duration=3.0, position=None, radius=2.0)
-    Arc gauge (gray track + colored fill). Returns (tracker, val_lbl, cat_lbl).
-    Example: fm_animate_gauge(self, 1, 6, "Months Runway", BRAND_RED, duration=3.5)
-  fm_animate_donut(scene, percentage, label_text, accent_color=BRAND_GREEN, duration=3.0, position=None)
-    Donut ring with pct text inside. Returns (tracker, pct_lbl, cat_lbl).
-    Example: fm_animate_donut(self, 67, "Living Paycheck to Paycheck", BRAND_RED, duration=3.2)
-  fm_animate_line_chart(scene, y_values, end_value_label, accent_color=BRAND_GREEN, x_labels=None, duration=3.5, title_text="")
-    Axes-based trend line + gradient fill under curve. Returns (axes, line, end_dot).
-    Example: fm_animate_line_chart(self, [200,350,600,900,1400,2100], "$2,100/mo", BRAND_GREEN, duration=4.0)
-  fm_animate_waterfall(scene, steps, duration=4.5)
-    steps = [{"label": str, "value": float, "color": hex_optional}, ...]. Last step = net total. Returns (bars, labels).
-    Example: fm_animate_waterfall(self, [{"label":"Income","value":4200},{"label":"Rent","value":-1400,"color":BRAND_RED},{"label":"Net","value":2800}], duration=4.5)
-  fm_animate_text_reveal(scene, lines, colors=None, duration=3.0, sizes=None)
-    Sequential fade-in for hook/chapter moments ONLY (not narration captions). colors defaults to [GOLD,WHITE,...].
-    Example: fm_animate_text_reveal(self, ["A Question...", "that might sting"], duration=2.8)
-  fm_animate_icon_grid(scene, total, filled, label_text, accent_color=BRAND_GREEN, duration=3.0, cols=10, position=None)
-    Crowd grid for population stats. Shows pct hero text beside grid. Returns (icons, pct_lbl).
-    Example: fm_animate_icon_grid(self, 100, 67, "Living Paycheck to Paycheck", BRAND_RED, duration=3.5)
-  fm_animate_stacked_cards(scene, items, duration=4.0, spacing=0.26)
-    items = [(label, value_str, color), ...]. Cards slide in from right sequentially. Returns stacked VGroup.
-    Example: fm_animate_stacked_cards(self, [("Rent","$1,400",BRAND_RED),("Car","$480",BRAND_RED),("Food","$320",BRAND_GOLD)], duration=3.8)
-  fm_animate_comparison_bars(scene, items, duration=4.0, title_text="", show_net=True)
-    Clean income-vs-expense bars: positive values go UP, negative go DOWN from a zero baseline. Auto-appends a net bar. No axis-line-through-bars problem. items = [(label, value_float, color), ...]. Pass RAW signed values (not abs).
-    Example: fm_animate_comparison_bars(self, [("Passive Income", 600, BRAND_GREEN), ("Rent + Bills", -1800, BRAND_RED)], duration=3.8, title_text="Monthly Cashflow")
-    Use this INSTEAD of fm_animate_bar_chart whenever comparing income vs expenses, gains vs losses, or any mix of positive and negative values.
-  fm_animate_bullet_chart(scene, actual, target, range_low, range_high, label_text, accent_color=BRAND_GREEN, duration=3.0, position=None, bar_length=8.0)
-    Gray range band + target tick + growing actual bar. For "hitting the target?" beats. Returns (tracker, bar, actual_lbl).
-    Example: fm_animate_bullet_chart(self, 500, 1000, 0, 1500, "Monthly Side Income vs Target", BRAND_GOLD, duration=3.5)
-  fm_icon(name, size=1.0, color=BRAND_GOLD)
-    Pure geometry finance icon — NO SVGMobject. Returns a VGroup. Position with .move_to() then self.play(FadeIn(icon)).
-    name options: 'dollar', 'coin', 'house', 'person', 'clock', 'arrow_up', 'arrow_down', 'warning', 'checkmark', 'fire'.
-    Example: icon = fm_icon("warning", size=1.2, color=BRAND_RED); icon.move_to(ORIGIN + LEFT * 3); self.play(FadeIn(icon))
-  fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE, duration=3.0, font_size=88, subtitle=None, subtitle_color=None)
-    Dramatic text with expanding glow rings — chapter titles, major reveals, hook moments. Returns (text_mob, rings).
-    Example: fm_animate_glow_reveal(self, "Corporate Paycheck", BRAND_RED, duration=3.0, subtitle="The Only Source")
-  fm_animate_timeline(scene, events, accent_color=BRAND_GOLD, duration=4.0, show_index=False)
-    Horizontal timeline: dots on a line, labels alternating above/below (no overlapping text). events = list of str. Returns (dots, labels).
-    Example: fm_animate_timeline(self, ["Start", "Checkpoint", "Breakdown", "Warning Sign"], BRAND_GOLD, duration=4.0)
-  fm_animate_single_value(scene, value_str, label_text, accent_color=BRAND_GOLD, duration=3.0, value_size=140, label_size=38, sublabel=None)
-    Single hero number with label — for beats with one key figure and no comparison needed. Returns (value_mob, label_mob).
-    Example: fm_animate_single_value(self, "$500/mo", "Monthly Side Income", BRAND_GREEN, duration=3.2)
-  fm_formula(scene, lines, font_size=60, color=BRAND_WHITE, duration=3.0)
-    Plain-Text() formula/calculation display, auto-scaled to ALWAYS fit inside the 16:9 frame regardless of string length — the ONLY way to show a formula, never a raw Text() call. lines is a string or a list of strings (one row each). Returns the formula group.
-    Example: fm_formula(self, ["$250 x 12 x 5 = $15,000", "-$5,000 = $10,000"], duration=3.5)
-  fm_animate_line_chart_multi(scene, series, duration=4.0, title_text="")
-    Two or more trend lines sharing ONE Axes for direct comparison — the ONLY safe way to compare trends, never two separate fm_animate_line_chart calls or a raw Axes. series is a list of {"y_values": [...], "label": str, "color": hex} dicts. Returns (axes, lines).
-    Example: fm_animate_line_chart_multi(self, [{"y_values": [800,820,840,860], "label": "Rent", "color": BRAND_RED}, {"y_values": [3000,3060,3120,3180], "label": "Income", "color": BRAND_GREEN}], duration=4.0)
+fm_animate_bell_curve(scene, label_text, accent_color, duration, position, show_std_regions, mean_label, std_label)
+  Draws a normal distribution curve with shaded 1-sigma region. show_std_regions=True by default.
 
-When a library function exists for what the beat needs, use it -- it is crash-proof and professionally tuned. For beats the library doesn't cover well, use raw Manim primitives as before. The library is a starting point and covers the most common beat types; it is not a cage.
+fm_animate_scatter(scene, points, label_text, accent_color, duration, position, show_regression, x_label, y_label)
+  points=list of (x,y) tuples. show_regression=True draws best-fit line in BRAND_RED.
 
-ONE FULL-SCREEN ANIMATE PRIMITIVE PER CHUNK, NEVER TWO STACKED TOGETHER: fm_animate_gauge, fm_animate_donut, fm_animate_single_value, fm_animate_glow_reveal, fm_animate_icon_grid, fm_animate_comparison_bars, fm_animate_bar_chart, fm_animate_line_chart, and fm_animate_waterfall are each already a COMPLETE, self-contained visual that defaults to centering itself at ORIGIN. A real, confirmed failure: a single chunk called fm_animate_icon_grid(...) AND fm_animate_single_value(...) (or fm_animate_glow_reveal with a subtitle) back to back -- both defaulted to the same central position, and the result was three separate text blocks and a full icon grid all stacked directly on top of each other, completely unreadable. These functions were not designed to be layered -- each one already fills the available frame space on its own. Pick exactly ONE of these per chunk that best matches what the beat needs. If you genuinely believe two numbers need to appear in the same chunk (e.g. two values being compared), that is almost always a sign you should be calling fm_animate_comparison_bars or fm_two_cards with BOTH values passed in as part of ONE call -- not two separate primitive calls placed in the same construct(). Likewise, never call fm_animate_gauge or fm_animate_donut twice in the same chunk to show two side-by-side proportions -- if you have two values to compare against each other (not each against its own separate max), that is a comparison, not two proportions, and fm_animate_comparison_bars is correct, not two gauges.
+fm_animate_probability_bar(scene, outcomes, label_text, accent_color, duration, position)
+  outcomes=list of (label_str, probability_float). Bar heights = probability values 0-1.
 
-RETURN-VALUE UNPACKING IS A REAL, RECURRING CRASH SOURCE: every ANIMATION function above states its exact return tuple in its description (e.g. "Returns (tracker, pct_lbl, cat_lbl)"). A confirmed real failure: calling `(tracker, pct_lbl) = fm_animate_donut(...)` against a function documented as returning THREE values, not two -- `ValueError: too many values to unpack`. Before writing any line that unpacks an fm_animate_* call into named variables, re-read that exact function's "Returns (...)" text above and count the names in your unpacking statement against the count in that line. If you do not need the returned values at all (most calls), do not unpack them -- just call the function as a bare statement: `fm_animate_donut(self, 67, "Label", BRAND_RED, duration=3.2)` with no assignment, which is always safe regardless of arity.
+fm_animate_number_line(scene, value, min_val, max_val, label_text, accent_color, duration, position, line_length, tick_labels)
+  Animated dot moving to target value on a number line. tick_labels must be a list or None -- never True/False.
 
-=== NUMBERS ARE REQUIRED DATA, NOT BANNED "TEXT" ===
-Be precise about what "near-zero text" actually means, because getting this wrong produces charts with nothing on them. BANNED: restating the narration's sentence as a caption, or a label that just repeats what the visual already shows. REQUIRED, ALWAYS: the actual value on every data-bearing visual -- a bar with no number next to it, a gauge with no value near the needle, a card with no dollar amount, a comparison with no figures on either side, is a decoration, not a chart, and is a failure regardless of how nicely it animates. If a visual represents a quantity, that quantity must appear on screen as a Text or short Text -- this is data, never optional, never something "near-zero text" excuses you from. A 1-2 word category tag (e.g. "Inflation", "Earnings", "Rent") under a value is also required whenever you're comparing two or more things, since two unlabeled shapes side by side communicate nothing.
+fm_formula(scene, lines, font_size, color, duration, position)
+  lines: single string or list of strings. PLAIN TEXT ONLY -- no backslashes, no curly braces, no LaTeX syntax.
+  Write readable text: "x^2 + y^2 = r^2" or "P(A|B) = P(B|A) x P(A) / P(B)".
+  NEVER write LaTeX like "\varepsilon_{noise}" -- those render as literal characters.
 
-=== BANNED PATTERNS (these were real failures in actual output, do not repeat them) ===
-- A grid or lattice of overlapping circles/shapes used as generic decoration or texture (e.g. a "flower of life" pattern). If you cannot attach a specific labeled number or count to a shape, do not draw it -- "portfolio stack" means a small countable pile of 3-6 solid coin/bar shapes with a total dollar value next to it, never a large decorative grid.
-- Two or more bare outline shapes (circles, rectangles) placed on screen with no value, no label, and no axis -- this reads as nothing. Every comparison needs numbers attached to what it's comparing.
-- A single bare outline shape (no fill, no number, no context) as the entire visual for a chunk -- outlines alone do not read as data.
-- A muted gray element as the main/hero focus of a visual. Gray (#8A94A6) is for de-emphasized secondary structure only (an unfilled track behind a gauge needle, a faint grid line) -- the actual data (the bar, the filled gauge arc, the needle, the growing number) must be a vivid brand color, not gray, or it disappears against the dark background.
+fm_animate_counter(scene, start_val, end_val, label_text, accent_color, prefix, suffix, duration, position, value_size, label_size)
+  prefix and suffix default to empty string (not "$"). Pass prefix="$" only if showing currency.
 
-=== VISUAL VOCABULARY -- A TOOLKIT TO COMBINE AND INVENT FROM, NOT A CHECKLIST TO MATCH AGAINST ===
-This is a documentary finance dashboard. The items below are examples of the technique level we're working at -- anchor to a baseline, fill instead of outline, attach a real number, track a moving point -- not an exhaustive menu where your job is to find the closest-matching name and copy its construction. Use a named one outright when it's genuinely the best fit. Combine two of them when a beat calls for it (a card that also has a small bullet-style range bar inside it; a waterfall step that fades with a gradient fill). And when a beat doesn't match any of these well, invent a new composition using the same underlying techniques (real axis or baseline, solid fill, attached number, sized-to-content box, one accent color) rather than forcing it into the nearest named shape. The fixed, non-negotiable part is never the specific shape -- it's that whatever you build has a number where a number belongs, fill instead of bare outline, and no floating shape with no axis and no value:
-- Bar comparison, ANY number of categories: ALWAYS call fm_animate_bar_chart(scene, values, names, colors, duration, title_text) -- it has no limit on category count and already handles baseline alignment, bar spacing, and label sizing correctly for 2, 3, 4, or more bars. For an income-vs-expenses-with-a-net-total breakdown specifically, use fm_animate_comparison_bars instead (it supports positive AND negative values and auto-computes the net bar). NEVER hand-build a bar chart with raw Rectangle()/Line() calls -- `Rectangle` is BANNED and will be rejected by the safety check. Hand-built bar charts are exactly what produced floating bars disconnected from the baseline, axis lines towering over the bars, and category labels overlapping value labels in past renders -- the library functions exist specifically because reinventing this by hand, per chunk, with no shared logic, reliably breaks in one of those ways. If a chunk needs short category labels to avoid crowding (4+ bars), pass short names into fm_animate_bar_chart's `names` list (e.g. "$0-250" not "$0-$250 per month") -- the function already sizes and spaces them correctly, you do not need to hand-tune font sizes or spacing yourself.
-- Trend / line chart, ONE series: ALWAYS call fm_animate_line_chart(scene, y_values, end_value_label, accent_color, duration, title_text) -- it already builds the Axes internally, plots the line, fills the area under it, and places the ending value as a hero label at the line's endpoint.
-- Trend / line chart, TWO OR MORE series being compared on the SAME chart (e.g. rent growth vs income growth, two income paths over time): ALWAYS call fm_animate_line_chart_multi(scene, series, duration, title_text) where series is a list of {"y_values": [...], "label": str, "color": hex} dicts -- it shares one Axes across every line and keeps the endpoint labels from colliding even when the lines end at similar values. Do NOT call fm_animate_line_chart twice and overlay the results yourself -- that builds two separate Axes that won't align.
-NEVER write `Axes(...)` directly in your own construct() for ANY trend/line-chart need, single series or multiple -- `Axes` is BANNED and will be rejected by the safety check; only the pre-built fm_* functions are allowed to use it internally. If neither fm_animate_line_chart nor fm_animate_line_chart_multi covers what the beat needs, pick a different chart type entirely (bar comparison, waterfall) rather than reaching for raw Axes.
-- Compound growth curve: same fm_animate_line_chart call as the trend chart, but compute `y_values` yourself as a Python list with deliberately accelerating values (an exponential-feeling progression, not a straight line) before passing it in -- the curvature comes from the data you hand it, not from special-casing the function call.
-- Progress / runway meter: a RoundedRectangle or Arc filling toward a target with a clearly brighter fill color than its empty track, paired with a ValueTracker-driven Text showing the current value, not just a bar with no number.
-- Gauge / security meter: an Arc track in muted gray (the unfilled dial), a SEPARATE filled Arc or Line needle in a vivid brand color showing the actual value, and the numeric value itself in Text/Text near the needle or below the gauge -- never just a bare gray arc with a colored needle and nothing else.
-- Donut / percentage: Annulus or Arc animated on its angle, filled in a vivid brand color against a muted gray full-circle track, with the percentage as a Text centered inside the ring -- the percentage number is mandatory, it is the entire point of a donut.
-- Cashflow waterfall: a starting bar at the top (gross income, labeled with its number), then smaller bars stepping down (each one labeled with what it subtracts and its amount), ending in a highlighted final net bar with its number. Reach for this one often -- it is one of the most useful primitives on this channel, and every step needs its number.
-- Funnel: a sequence of trapezoids or progressively narrower bars top to bottom, each stage labeled with its count or percentage -- never an unlabeled funnel shape.
-- Bill / paycheck / rent invoice / utility bill / emergency expense / bank balance card: a RoundedRectangle styled like a card (a colored top strip, a 1-3 word label, and the dollar amount as Text -- the amount is mandatory, a card with no number on it is just a rounded rectangle), built as one VGroup so it can slide in, stack, or get crossed out as a unit. Stack 2-4 of these vertically for "bills add up" beats, each with its own visible amount. To size any card or pill correctly around its own text instead of guessing a fixed box size that might not fit (text overflowing the edges, or a box that ends up empty because nothing was sized to match it), build the Text first, then wrap it with `SurroundingRectangle(text_mobject, buff=0.4, color=..., fill_color=..., fill_opacity=1)` so the box is always exactly the right size for what's inside it.
-- Concept-introduction beat with no number yet (e.g. naming two things being set up for later comparison, before any data has been given): do not leave the card empty just because there is no value to show yet. Fill the card body with a solid or semi-solid brand color (not a bare white outline) and give each side its own distinct color identity so the two sides read as visually distinct concepts, not two identical empty templates. Prefer a distinct SHAPE or chart-style treatment per side (a small bar stub, a partial arc, a different geometric silhouette) over an icon -- icons should be the exception here, not the default. A number becomes mandatory the moment the narration actually gives one for that thing.
-- Icon-grid / crowd grid / necessity heatmap: a grid of small Circle or Square mobjects, a portion recolored in a vivid brand color to represent a percentage of people, with that percentage shown as a Text beside the grid -- the right tool for population statistics, not a donut.
-- Calendar / timeline: a horizontal Line with tick marks for time units, a marker or flag at a specific point labeled with what it marks (e.g. "Month 18"), a shaded region before/after that point.
-- Treadmill / moving-backward metaphor: a flat or rising baseline Line with a value label, a second element animated moving backward or failing to keep pace -- communicates "running in place" without needing a human figure.
-- Leaky bucket / faucet: a container shape with a fill level and its current amount labeled, small Dot "drips" leaving through a gap faster than the fill rises.
-- Portfolio stack: a small countable pile of 3-6 solid-filled coin or bar shapes stacked vertically or diagonally (like a neat pile of chips, not a grid), the TOTAL dollar value as a hero Text beside or below it, a yield percentage as a smaller number if relevant.
-- Inflation vs earnings: built on a real `Axes` object, two lines plotted on shared axes (one flat, one rising), each line ending in its own labeled value, the gap between them visibly widening over the animation.
-- Replaceability / runway gauge: an Arc gauge from 0 to 6+ months (gray track, colored filled progress), needle landing on the actual computed runway value, that value shown as a number near the needle.
-- Bullet chart: a compact single horizontal bar that packs three things at once -- a muted gray background band showing the acceptable/target range, a thin tick mark showing the specific target value, and a solid brand-color bar drawn on top showing the actual value reaching toward or past that tick. Excellent for "are you hitting the target or not" beats (e.g. side income vs. the 6-month runway target, actual cash flow vs. break-even) since it shows actual, target, and the gap in one compact object instead of three separate ones.
-- Gradient fill under a curve: for compound growth, inflation gap, or any "area under the line" beat, build the filled region as a Polygon following the curve's points down to the baseline, then call `region.set_color_by_gradient(ACCENT_COLOR, "#111A24")` so it reads as a glowing accent at the curve and fades toward the dark panel color at the baseline, rather than a flat single-color fill.
-- Anchored moving labels: when a value label belongs to a point that's animating (the end of a growing line, the top of a rising bar), don't place a separate static Text and hope it stays aligned -- build it with `always_redraw(lambda: Text(...).next_to(moving_point, UP))` so the label physically tracks the point every frame, the same way a real financial chart's price tag follows the line.
-This list is a sample of the technique level, not the ceiling -- if you can see a better, more specific way to visualize a particular beat using these same underlying techniques, build that instead of forcing the beat into the nearest named item.
+fm_animate_bar_chart(scene, values, names, colors, duration, title_text)
+fm_animate_line_chart(scene, y_values, end_value_label, accent_color, x_labels, duration, title_text)
+  end_value_label: string label shown at the end dot. Pass None or "" for no label.
+fm_animate_line_chart_multi(scene, series, duration, title_text)
+  series MUST be: [{"y_values": [1,2,3], "color": BRAND_GREEN, "label": "A"}, {"y_values": [2,3,4], "color": BRAND_GOLD, "label": "B"}]
+  NOT a list of plain lists. Each dict MUST have "y_values" key.
+fm_animate_gauge(scene, value, max_val, label_text, accent_color, duration, position, radius)
+fm_animate_donut(scene, percentage, label_text, accent_color, duration, position)
+fm_animate_comparison_bars(scene, items, duration, title_text, show_net)
+fm_animate_glow_reveal(scene, text_str, accent_color, duration, font_size, subtitle, subtitle_color)
+fm_animate_text_reveal(scene, lines, colors, duration, sizes)
+fm_animate_icon_grid(scene, total, filled, label_text, accent_color, duration, cols, position, icon_radius)
+  label_text: use "" for no label. NEVER pass None.
+fm_animate_timeline(scene, events, accent_color, duration, show_index)
+fm_animate_single_value(scene, value_str, label_text, accent_color, duration, value_size, label_size, sublabel, sublabel_color)
+fm_animate_waterfall(scene, steps, duration)
+fm_animate_bullet_chart(scene, actual, target, range_low, range_high, label_text, accent_color, duration, position, bar_length)
+fm_animate_stacked_cards(scene, items, duration)
+fm_card(label_text, value_text, accent_color, panel_color, text_color, label_size, value_size, buff)
+fm_two_cards(left_label, left_val, left_color, right_label, right_val, right_color, ...)
+fm_card_row(items, panel_color, text_color, label_size, value_size, spacing)
+  items=[(label, value, color), ...]. Uses spacing= NOT buff= to control card gaps.
+fm_stacked_cards(items, ...)
+fm_concept_pills(labels, colors, panel_color, text_color, font_size, direction, spacing)
+fm_glow_around(mobject, color, n_layers) -- returns VGroup(glow_layers, original)
+fm_clamp_to_frame(*mobjects, margin_x, margin_y) -- call LAST before self.play()
+fm_icon(name, size, color) -- names: sigma, integral, pi_sym, infinity, gradient, neuron, matrix_sym, derivative, dollar, coin, house, person, clock, arrow_up, arrow_down, warning, checkmark, fire
 
-=== WHEN A BEAT NEEDS MULTIPLE ELEMENTS, COMPOSE THEM AS ONE LAYOUT, NOT SEPARATE OBJECTS DROPPED AT ORIGIN ===
-A beat that has more than one visual element (an icon plus a number plus a bar, or several bars in one comparison) needs an explicit layout decision before you write any positioning code. Never call several fm_* or icon/text builders and leave each at its default position, since they will all land stacked on top of each other at ORIGIN -- this produces unreadable visual noise, not a composition. Pick ONE of these layouts and position every element relative to it:
-- Horizontal row: elements placed left-to-right with consistent spacing, using .next_to(previous_element, RIGHT, buff=...) chained from one anchor element, never each one independently .move_to()'d to a guessed coordinate.
-- Vertical stack: elements placed top-to-bottom with .next_to(previous_element, DOWN, buff=...), same chaining principle.
-- Icon-plus-value pairing: the icon and its number are ONE small group (build them as a VGroup together, icon then value below or beside it via .next_to()), not two independent objects each separately centered on screen.
-- Shared-baseline comparison: when a beat compares two or more amounts (rent vs income, multiple cost categories), every bar's bottom edge sits on the SAME Line, and every bar's height is scaled relative to the SAME value-to-height ratio so a $2,100 bar and a $20 bar are visibly, proportionally different heights -- never bars that are each sized independently and happen to end up looking similar regardless of their actual values.
-A chunk with two or more elements simply centered at the same point, or several bars with no shared axis so their relative sizes don't reflect their actual values, fails this rule even if each individual element looks fine in isolation.
-
-=== EMOTIONAL IMPACT — REQUIRED ON EVERY CHUNK ===
-Before choosing a visual, answer: what emotion does this beat create? Then build toward that emotion. Finance visuals only work if the viewer FEELS the number, not just reads it.
-
-DANGER / WARNING (debt, empty runway, missed payments): BRAND_RED hero. Bars oppressively tall. Gauges nearly empty. Numbers at font_size 130+. The visual should feel alarming.
-
-LOSS / EXPENSE (rent due, emergency cost, negative net): Show the expense as visually massive next to a tiny income. fm_animate_comparison_bars — a small green stub vs a towering red column — tells the whole story.
-
-POSITIVE / GROWTH (passive income building, savings growing): BRAND_GREEN, upward motion, counter counting UP toward a goal. Rising line chart with gradient fill under it.
-
-HOOK / CONCEPT (introducing an idea): Documentary chapter-card energy. fm_animate_glow_reveal at font_size 120+, glow rings expanding, one bold color accent. Fill the entire frame.
-
-SCALE IS EMOTIONAL: hero numbers font_size 100-150 always. A $200 passive income bar should look pathetically small next to the $1,800 rent bar. Make the math visible and visceral.
-
-=== CUSTOM GEOMETRY MUST LOOK PREMIUM, NOT LIKE A PLACEHOLDER ===
-When a beat needs custom geometry the fm_* library doesn't cover, the bar is professional documentary motion graphics, not a programmer's quick sketch. A flat single-color circle, pill, or blob with no other treatment reads as a cheap placeholder, not a finished visual, regardless of what it's supposed to represent. Every custom shape needs at least one of these treatments to earn its place on screen:
-- A glow or depth cue: wrap it with fm_glow_around, or layer 2-3 concentric copies of the same shape at decreasing opacity to fake soft depth, rather than one flat fill.
-- A gradient instead of a flat fill: `.set_color_by_gradient(color1, color2)` reads as premium where a single flat hue reads as a placeholder icon.
-- Real proportionality to data: if the shape is meant to represent a quantity (size, fullness, count), its dimensions must actually scale with that quantity -- a shape that's just "a circle" with no size logic behind it is decoration, not data visualization, even if it's pretty.
-- Motion that reveals structure: build the shape via Create/DrawBorderThenFill rather than a single FadeIn, so the viewer watches it form rather than just appear.
-A simple checkmark in a flat-colored circle, or any single uniform-color silhouette standing alone with nothing else going on, fails this bar -- it looks like a placeholder app icon, not a finished frame of a finance documentary. If you cannot make a custom shape look premium with the time/duration available, fall back to a chart-based primitive instead (a counter, a small bar, a donut) -- a well-executed simple chart always beats a flat custom shape that looks unfinished.
-
-=== ESTABLISHING SHOTS: WHEN AND HOW TO USE THE 3D BASE CLASS ===
-Most chunks should use FinanceDashboardScene (flat 2D) -- it is not heavier and is the right default. Occasionally, for a chunk introducing a new hero card or chart for the first time, or a chapter-opening beat, subclass FinanceDashboard3DScene instead so that one hero object tilts in from an angle and settles flat, like a dashboard panel rotating into view. Build the hero object as a single VGroup, give it a starting rotation before your first self.play (e.g. `hero.rotate(60 * DEGREES, axis=UP)`), then settle it with `self.play(Rotate(hero, angle=-60 * DEGREES, axis=UP, run_time=...))`. Rotate the object itself, not the camera, unless you specifically intend a slow establishing pan. Use this sparingly -- an occasional establishing beat, not a constant gimmick. The background is already locked flat for you via add_fixed_in_frame_mobjects, so it will not rotate even while your hero object does.
-
-=== BRAND PALETTE -- USE THESE EXACT HEX VALUES, NEVER INVENT OTHERS ===
-White, primary numbers/text: "#F5F7FA". Market green, growth/gains/positive: "#38D996". Warning red, risk/loss/danger: "#FF4D4D". Gold, highlights/key numbers: "#FFD166". Muted gray, secondary/de-emphasized structure ONLY (never the main hero element): "#8A94A6". Dark panel, card backgrounds: "#111A24". The hero of every visual -- the bar, the filled gauge arc, the growing number, the card's amount -- should be white, green, red, or gold, with enough fill/stroke weight to read clearly against the dark navy background; reserve gray strictly for tracks, grid lines, and de-emphasized context. Pick ONE accent color as the actual data color for a given chunk (green for a gain, red for a risk/warning, gold for a neutral highlight) and let everything else in that chunk stay white or gray -- several brand colors all competing for attention in the same chunk reads as busy, not premium.
+=== VISUAL VARIETY — REQUIRED ===
+Every 4 consecutive chunks must use a DIFFERENT primary visual type. Bell curve → number line → scatter → bar chart is good. Bell curve → bell curve → bell curve → bell curve is unacceptable and WILL be flagged. Rotate through: Axes plots, fm_animate_vector, fm_animate_matrix, fm_animate_scatter, fm_animate_number_line, fm_animate_probability_bar, fm_animate_counter, fm_animate_comparison_bars, fm_animate_bar_chart, fm_animate_line_chart, fm_formula, fm_animate_glow_reveal. Bell curve should appear AT MOST once per 6 chunks.
 
 === QUALITY BAR ===
-- Real Manim primitives, not approximations: Transform(a, b) for one shape/number becoming another, ValueTracker + Text for any number counting up or down, Create()/Write()/FadeIn()/FadeOut() with real run_time and rate_func easing (smooth, there_and_back, rush_into) -- never an instant snap unless a deliberate "shock cut" is specifically right for a warning beat.
-- For bar charts and multi-category comparisons, use fm_animate_bar_chart or fm_animate_comparison_bars -- they already build real tick marks/baseline/axis lines by hand with zero BarChart dependency (BarChart itself is banned and will be rejected). For trend lines, prefer fm_animate_line_chart, or Manim's built-in Axes directly (Axes is allowed, only BarChart is banned) when you need a chart shape the library doesn't cover.
-- Fill, don't just outline: bars, gauge progress arcs, donut segments, and card bodies should be solid or semi-solid fills in brand colors, not bare strokes -- a thin outline alone reads as faint and unfinished against the dark background.
-- Glow/emphasis: layer 2-3 duplicate copies of a shape at increasing scale and decreasing opacity behind the main shape, rather than leaving it flat.
-- Legible at video scale: hero numbers around font_size 90-140, supporting labels 28-40.
-- Correct across the chunk's full duration including its very start and end -- no division by zero, no index errors, no negative radii on a shrinking shape.
+- Use Create() for curves, lines, axes. Use FadeIn() for cards, text, dots. Use GrowFromEdge() for bars. Use GrowFromCenter() for dots/icons. Use Write() for end labels.
+- Fill not just outline: bars, arcs, cards must be solid fills in brand colors.
+- Glow/emphasis: use fm_glow_around() or layer 2-3 concentric copies at decreasing opacity.
+- Real proportionality: if a shape represents a quantity, its size must scale with that quantity.
+- Vary the visual type across chunks -- if three consecutive chunks all use the same primitive, pick a different one.
 
-=== CONSISTENT LAYOUT LANGUAGE ACROSS CHUNKS ===
-Each chunk renders as an independent clip with no memory of the chunk before or after it, so do not assume any specific "previous chunk" content. Instead keep a consistent layout language so the cuts still feel like one continuous show: hero objects centered around ORIGIN, a label (if any) sitting just below its number, a small source/footnote tag (if any) always in a lower corner at low opacity.
+=== ESTABLISHING SHOTS ===
+Occasionally for a chapter-opening beat subclass MathScene3D so a hero object tilts in from an angle and settles flat. Build the hero as a single VGroup, give it a starting rotation (hero.rotate(60 * DEGREES, axis=UP)), then settle it with self.play(Rotate(hero, angle=-60 * DEGREES, axis=UP, run_time=...)). Use sparingly.
 
-Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_name": "Chunk0", "code": "from manim import *\\n\\nclass Chunk0(FinanceDashboardScene):\\n    def construct(self):\\n        ..."}, ...]}. The "code" field must be the complete, final Python source for that chunk as a single string with real newlines escaped as \\n."""
+Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_name": "Chunk0", "code": "from manim import *\\n\\nclass Chunk0(MathScene):\\n    def construct(self):\\n        ..."}, ...]}. The "code" field must be the complete, final Python source for that chunk as a single string with real newlines escaped as \\n."""
 
     def _build_user_prompt(batch_items):
         lines = []
@@ -4474,6 +4901,186 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
     return ordered
 
 
+MATH_UNLOCKED_INTRO_QUOTES = [
+    ("All models are wrong, but some are useful.", "George Box"),
+    ("Statistics is the grammar of science.", "Karl Pearson"),
+    ("It is easy to lie with statistics, but easier to lie without them.", "Frederick Mosteller"),
+    ("Probability is the most important concept in modern science.", "Bertrand Russell"),
+    ("The introduction of numbers as coordinates is an act of violence.", "Hermann Weyl"),
+    ("Mathematics is the art of giving the same name to different things.", "Henri Poincare"),
+    ("Pure mathematics is, in its way, the poetry of logical ideas.", "Albert Einstein"),
+    ("Algebra is the offer made by the devil to the mathematician.", "Michael Atiyah"),
+    ("A year spent in artificial intelligence is enough to make one believe in God.", "Alan Perlis"),
+    ("The question of whether a computer can think is no more interesting than whether a submarine can swim.", "Edsger Dijkstra"),
+    ("The purpose of computing is insight, not numbers.", "Richard Hamming"),
+    ("An algorithm must be seen to be believed.", "Donald Knuth"),
+    ("The calculus is the greatest aid we have to the appreciation of physical truth.", "W.B. Smith"),
+    ("Geometry is knowledge of the eternally existent.", "Pythagoras"),
+    ("Geometry is the archetype of the beauty of the world.", "Johannes Kepler"),
+    ("The shortest path between two truths in the real domain passes through the complex domain.", "Jacques Hadamard"),
+    ("Probability is common sense reduced to calculation.", "Pierre-Simon Laplace"),
+    ("Statistical thinking will one day be as necessary for efficient citizenship as the ability to read and write.", "H.G. Wells"),
+    ("The goal of statistics is to gain understanding from data.", "David Freedman"),
+    ("Any sufficiently advanced technology is indistinguishable from magic.", "Arthur C. Clarke"),
+    ("Intelligence is the ability to adapt to change.", "Stephen Hawking"),
+    ("The measure of intelligence is the ability to change.", "Albert Einstein"),
+    ("Beware of bugs in the above code; I have only proved it correct, not tried it.", "Donald Knuth"),
+    ("Simplicity is the ultimate sophistication.", "Leonardo da Vinci"),
+    ("First, solve the problem. Then, write the code.", "John Johnson"),
+    ("We can only see a short distance ahead, but we can see plenty there that needs to be done.", "Alan Turing"),
+    ("A computer would deserve to be called intelligent if it could deceive a human into believing it was human.", "Alan Turing"),
+    ("Mathematics is not about numbers, equations, or algorithms. It is about understanding.", "William Paul Thurston"),
+    ("The essence of mathematics lies in its freedom.", "Georg Cantor"),
+    ("The only way to learn mathematics is to do mathematics.", "Paul Halmos"),
+    ("A mathematician is a device for turning coffee into theorems.", "Paul Erdos"),
+    ("The moving power of mathematical invention is not reasoning but imagination.", "Augustus De Morgan"),
+    ("Small differences in initial conditions produce very great ones in the final phenomena.", "Henri Poincare"),
+    ("Space is not simply the background to events, it is a physical entity.", "Roger Penrose"),
+    ("If your experiment needs statistics, you ought to have done a better experiment.", "Ernest Rutherford"),
+    ("Do not worry about your difficulties in mathematics. I can assure you mine are still greater.", "Albert Einstein"),
+    ("Mathematics reveals its secrets only to those who approach it with pure love.", "Archimedes"),
+    ("In mathematics the art of asking questions is more valuable than solving problems.", "Georg Cantor"),
+    ("The brain is wider than the sky.", "Emily Dickinson"),
+    ("It has become appallingly obvious that our technology has exceeded our humanity.", "Albert Einstein"),
+    ("The question is not whether machines can think, but whether men do.", "B.F. Skinner"),
+    ("Learning is not attained by chance. It must be sought for with ardor and attended to with diligence.", "Abigail Adams"),
+    ("Mathematics is the language in which God has written the universe.", "Galileo Galilei"),
+    ("To ask the right question is harder than to answer it.", "Georg Cantor"),
+    ("Nature does not hurry, yet everything is accomplished.", "Lao Tzu"),
+    ("The theory of probabilities is at bottom nothing but common sense reduced to calculus.", "Pierre-Simon Laplace"),
+    ("What we cannot compute, we cannot understand.", "Richard Hamming"),
+    ("The computer was born to solve problems that did not exist before.", "Bill Gates"),
+    ("Imagination is more important than knowledge.", "Albert Einstein"),
+    ("If people do not believe that mathematics is simple, it is only because they do not realize how complicated life is.", "John von Neumann"),
+]
+
+
+def render_intro_clip(w: int = 1920, h: int = 1080, fps: int = 30,
+                      duration: float = 5.0) -> str:
+    import random as _random
+    quote_text, quote_author = _random.choice(MATH_UNLOCKED_INTRO_QUOTES)
+
+    _t_draw  = 1.2
+    _t_glow  = 0.5
+    _t_quote = 0.8
+    _t_fade  = 0.5
+    _t_hold  = max(duration - _t_draw - _t_glow - _t_quote - _t_fade, 0.8)
+
+    intro_code = f'''from manim import *
+import math
+
+BRAND_WHITE = "#F5F7FA"
+BRAND_GOLD  = "#FFD166"
+BRAND_PANEL = "#111A24"
+BRAND_BG    = "#0B1628"
+
+class MathUnlockedIntro(Scene):
+    def construct(self):
+        self.camera.background_color = BRAND_BG
+
+        p1 = [-1.4, 1.4, 0]
+        p2 = [1.4, 1.4, 0]
+        p3 = [0.0, -1.4, 0]
+        left_line  = Line(p1, p3, stroke_width=9).set_stroke(color=BRAND_GOLD, opacity=1.0)
+        right_line = Line(p2, p3, stroke_width=9).set_stroke(color=BRAND_GOLD, opacity=1.0)
+        top_line   = Line(p1, p2, stroke_width=9).set_stroke(color=BRAND_GOLD, opacity=1.0)
+        logo = VGroup(top_line, left_line, right_line)
+
+        glow_layers = VGroup()
+        for i in range(4, 0, -1):
+            gl = logo.copy()
+            gl.set_stroke(color=BRAND_GOLD, width=9 + i * 6,
+                          opacity=max(0.06 - i * 0.012, 0.01))
+            glow_layers.add(gl)
+        logo_group = VGroup(glow_layers, logo)
+        logo_group.move_to(ORIGIN + UP * 0.6)
+
+        raw_quote = {repr(quote_text)}
+        raw_author = {repr(quote_author)}
+        max_w = config.frame_width * 0.78
+
+        quote_mob = Text(
+            raw_quote, font_size=36, color=BRAND_WHITE,
+            weight=NORMAL, line_spacing=1.4,
+        )
+        if quote_mob.width > max_w:
+            quote_mob.scale_to_fit_width(max_w)
+
+        author_mob = Text(
+            "— " + raw_author, font_size=30, color=BRAND_GOLD,
+        )
+        if author_mob.width > max_w:
+            author_mob.scale_to_fit_width(max_w)
+
+        text_group = VGroup(quote_mob, author_mob).arrange(DOWN, buff=0.32)
+        text_group.move_to(ORIGIN + DOWN * 2.2)
+
+        t_draw   = {_t_draw}
+        t_glow   = {_t_glow}
+        t_quote  = {_t_quote}
+        t_hold   = {_t_hold}
+        t_fade   = {_t_fade}
+
+        self.play(
+            LaggedStart(
+                Create(top_line),
+                Create(left_line),
+                Create(right_line),
+                lag_ratio=0.25,
+            ),
+            run_time=t_draw, rate_func=smooth,
+        )
+        self.play(FadeIn(glow_layers), run_time=t_glow, rate_func=smooth)
+        self.play(
+            LaggedStart(
+                FadeIn(quote_mob, shift=UP * 0.18),
+                FadeIn(author_mob, shift=UP * 0.12),
+                lag_ratio=0.35,
+            ),
+            run_time=t_quote, rate_func=smooth,
+        )
+        self.wait(t_hold)
+        self.play(
+            FadeOut(VGroup(logo_group, text_group)),
+            run_time=t_fade, rate_func=smooth,
+        )
+'''
+
+    os.makedirs(MANIM_CHUNK_CACHE_DIR, exist_ok=True)
+    intro_path = os.path.join(MANIM_CHUNK_CACHE_DIR, "intro_clip.mp4")
+    script_path = os.path.join(MANIM_CHUNK_CACHE_DIR, "intro_scene.py")
+
+    with open(script_path, "w") as f:
+        f.write(intro_code)
+
+    cmd = [
+        "manim", "render", script_path, "MathUnlockedIntro",
+        "--format=mp4",
+        f"--resolution={w},{h}",
+        f"--frame_rate={fps}",
+        "--media_dir", MANIM_CHUNK_CACHE_DIR,
+        "--output_file", "intro_clip",
+        "-q", "h",
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=120)
+    if result.returncode != 0:
+        print(f"  ⚠ Intro clip render failed: {result.stderr.decode(errors='replace')[-300:]}")
+        return None
+
+    for root, dirs, files in os.walk(MANIM_CHUNK_CACHE_DIR):
+        for fname in files:
+            if fname == "intro_clip.mp4" and root != MANIM_CHUNK_CACHE_DIR:
+                found = os.path.join(root, fname)
+                shutil.copy(found, intro_path)
+                return intro_path
+
+    if os.path.exists(intro_path):
+        return intro_path
+
+    print("  ⚠ Intro clip file not found after render")
+    return None
+
+
 def concat_manim_clips(clip_paths: list, output_path: str) -> str:
     """Concatenates every rendered (or filler) chunk clip into one
     continuous silent video via ffmpeg concat. Every clip going into
@@ -4492,8 +5099,9 @@ def concat_manim_clips(clip_paths: list, output_path: str) -> str:
     if result.returncode != 0:
         cmd_reencode = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
                          '-i', concat_list_path,
-                         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
-                         '-pix_fmt', 'yuv420p', output_path]
+                         '-c:v', 'libx264', '-preset', ENCODE_PRESET, '-crf', ENCODE_CRF,
+                         '-tune', 'animation', '-pix_fmt', 'yuv420p',
+                         '-movflags', '+faststart', output_path]
         result2 = subprocess.run(cmd_reencode, capture_output=True)
         if result2.returncode != 0:
             raise Exception(f"chunk concat failed: {result2.stderr.decode(errors='replace')[-300:]}")
@@ -4510,13 +5118,13 @@ def _render_or_fill_one_chunk(chunk_index: int, chunk: dict, item, w: int, h: in
     fallback_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"filler_{chunk_index:04d}_{target_duration:.3f}.mp4")
 
     if not item or not item.get("code") or not item.get("class_name"):
-        _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+        _make_chunk_fallback(fallback_path, chunk, target_duration, w, h, fps, "no chunk code generated")
         return chunk_index, fallback_path, "no chunk code generated"
 
     clip_path, err = render_manim_chunk(item["code"], item["class_name"],
                                          target_duration, w, h, fps)
     if not clip_path:
-        _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+        _make_chunk_fallback(fallback_path, chunk, target_duration, w, h, fps, err)
         return chunk_index, fallback_path, err
     return chunk_index, clip_path, ""
 
@@ -4553,6 +5161,20 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
     gap_indices = [i for i in range(n) if chunks[i].get("is_gap")]
     print(f"  🎬 Rendering {len(content_indices)} content chunk(s) across up to {max_workers} parallel workers...")
 
+    import time as _render_time
+    _render_start = _render_time.time()
+
+    def _fmt_ts(seconds):
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m{s:02d}s"
+
+    def _chunk_video_ts(chunk_idx):
+        try:
+            t = float(chunks[chunk_idx].get("start_time", 0.0))
+            return f"~{_fmt_ts(t)} in video"
+        except Exception:
+            return ""
+
     done = 0
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         futures = {
@@ -4567,15 +5189,17 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
             except Exception as e:
                 target_duration = round(max(chunks[i]["end_time"] - chunks[i]["start_time"], 0.05), 3)
                 fallback_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"filler_{i:04d}_{target_duration:.3f}.mp4")
-                _make_dashboard_filler(fallback_path, target_duration, w, h, fps)
+                _make_chunk_fallback(fallback_path, chunks[i], target_duration, w, h, fps, f"worker exception: {e}")
                 idx, path, err = i, fallback_path, f"worker exception: {e}"
 
             clip_paths[idx] = path
             done += 1
+            elapsed = _render_time.time() - _render_start
             if err:
-                print(f"  ⚠ Chunk {idx}: {err[:160]} -- filled with dashboard background [{done}/{len(content_indices)}]")
+                vts = _chunk_video_ts(idx)
+                print(f"  ⚠ Chunk {idx} ({vts}): {err[:160]} -- filler [{done}/{len(content_indices)}] | elapsed {_fmt_ts(elapsed)}")
             if done % 10 == 0 or done == len(content_indices):
-                print(f"  ⚙️  Manim chunk progress: {done}/{len(content_indices)}")
+                print(f"  ⚙️  Manim chunk progress: {done}/{len(content_indices)} | elapsed {_fmt_ts(elapsed)}")
 
     if gap_indices:
         print(f"  ⏸  Filling {len(gap_indices)} silence gap(s) by holding the previous frame...")
@@ -4603,5 +5227,5 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Finance Explainer v2 (Manim renderer) on :{port} | Key: {'set' if OPENAI_API_KEY else 'MISSING'}")
+    print(f"🚀 Math Unlocked (Manim renderer) on :{port} | Key: {'set' if OPENAI_API_KEY else 'MISSING'}")
     uvicorn.run(app, host="0.0.0.0", port=port)
