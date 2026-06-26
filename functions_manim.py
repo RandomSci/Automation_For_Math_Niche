@@ -4,14 +4,6 @@ import numpy as _fmnp
 
 
 def _fm_smooth_tangents(points):
-    """Clamped Catmull-Rom tangents: interior points use the centered
-    difference, endpoints use a one-sided difference so the curve never
-    extrapolates past points[0] or points[-1]. Each tangent's x-component
-    is additionally clamped so a handle never reaches backward past the
-    neighbouring anchor in x -- without this, a sharp peak/valley makes the
-    smoothed stroke briefly loop backward in x, which reads as a broken
-    chart. For a left-to-right trend line x is monotonic, so this clamp is
-    safe and only ever shortens an over-long handle."""
     pts = [_fmnp.array(p, dtype=float) for p in points]
     n = len(pts)
     tangents = []
@@ -42,15 +34,6 @@ def _fm_smooth_tangents(points):
 
 
 def _fm_set_line_smooth(vmobject, points):
-    """Set a VMobject's path to a smooth curve through `points` that does
-    NOT overshoot its endpoints, using Manim's documented cubic-bezier
-    builder (start_new_path + add_cubic_bezier_curve_to). Manim's built-in
-    set_points_smoothly() fits C2 handles that bulge the stroke PAST the
-    final anchor -- that overshoot is exactly why the end-of-line dot
-    looked like it stopped short of the curve tip. With clamped tangents
-    the rendered stroke ends exactly on points[-1], so a dot placed at
-    points[-1] sits precisely on the visible end of the line.
-    Use this for any trend line that carries an end-dot marker."""
     pts, tangents = _fm_smooth_tangents(points)
     n = len(pts)
     if n < 2:
@@ -70,13 +53,12 @@ BRAND_GREEN = "#38D996"
 BRAND_RED   = "#FF4D4D"
 BRAND_GOLD  = "#FFD166"
 BRAND_GRAY  = "#8A94A6"
-BRAND_PANEL = "#111A24"
-BRAND_BG    = "#0B111A"
+BRAND_PANEL = "#0D1B2A"
+BRAND_BG    = "#060F1A"
+BRAND_NAVY  = "#0B1628"
 
 
 def fm_glow_around(mobject, color=None, n_layers=3):
-    """Wraps a mobject in semi-transparent glow layers.
-    Returns a VGroup(glow_layers, original). Add the returned group to the scene."""
     if color is None:
         color = BRAND_GOLD
     layers = VGroup()
@@ -94,15 +76,6 @@ def fm_glow_around(mobject, color=None, n_layers=3):
 
 def fm_concept_pills(labels, colors=None, panel_color=BRAND_PANEL, text_color=None,
                       font_size=44, direction=None, spacing=0.4):
-    """Row or stack of short label-only pills (no values) for a set of related
-    concepts shown together -- e.g. ["Savings", "Investing", "Debt", "Fun"] or
-    sequential steps like ["Track", "Calculate", "Improve"]. Each label gets
-    its own outlined pill auto-sized to its text, then the whole set is
-    arranged with guaranteed non-overlapping spacing and auto-scaled to fit
-    the frame -- never hand-position these with move_to, this is the only
-    safe way to lay out multiple concept-only labels together.
-    direction: RIGHT for a horizontal row (default if <=3 labels),
-    DOWN for a vertical stack (default if >3 labels). Returns a VGroup."""
     if colors is None:
         colors = [BRAND_GOLD, BRAND_GREEN, BRAND_RED, BRAND_WHITE]
     if text_color is None:
@@ -147,9 +120,6 @@ def fm_concept_pills(labels, colors=None, panel_color=BRAND_PANEL, text_color=No
 def fm_card(label_text, value_text, accent_color=BRAND_GOLD,
              panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
              label_size=32, value_size=68, buff=0.38):
-    """Auto-sized card: SurroundingRectangle wraps content so the box always
-    fits exactly — no text overflow, no empty oversized box.
-    Returns a VGroup. Position with .move_to() then FadeIn yourself."""
     val = Text(value_text, font_size=value_size, color=text_color, weight=BOLD)
     lbl = Text(label_text, font_size=label_size, color=accent_color)
     content = VGroup(lbl, val).arrange(DOWN, buff=0.18)
@@ -166,9 +136,6 @@ def fm_two_cards(left_label, left_val, left_color,
                   right_label, right_val, right_color,
                   panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
                   label_size=30, value_size=68, spacing=0.7):
-    """Two side-by-side cards with distinct accent colors, centered at ORIGIN.
-    Auto-scales down if combined width would overflow the safe frame boundary.
-    Returns a VGroup. FadeIn yourself."""
     left  = fm_card(left_label,  left_val,  left_color,  panel_color, text_color, label_size, value_size)
     right = fm_card(right_label, right_val, right_color, panel_color, text_color, label_size, value_size)
     group = VGroup(left, right).arrange(RIGHT, buff=spacing)
@@ -180,20 +147,6 @@ def fm_two_cards(left_label, left_val, left_color,
 
 def fm_card_row(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
                  label_size=26, value_size=44, spacing=0.45):
-    """Row of THREE OR MORE small label+value cards side by side -- e.g. a
-    cost timeline: [("Leak","$400",BRAND_RED), ("Water Damage","$1,500",BRAND_GOLD),
-    ("Mold","$4,800",BRAND_RED), ...]. This is the horizontal generalization
-    of fm_two_cards -- guaranteed non-overlapping spacing via arrange(), then
-    auto-scaled to fit the frame width. NEVER hand-build a row of 3+ cards
-    with individual SurroundingRectangle/Text positioned via move_to or
-    manual x-coordinates -- that is exactly how adjacent cards end up
-    overlapping each other, the same failure class fm_concept_pills exists
-    to prevent for label-only pills. This is that same guarantee, but for
-    cards that pair a label WITH a value. For exactly 2 cards, prefer
-    fm_two_cards instead (larger default text). For 3+ labels with NO
-    values attached, use fm_concept_pills instead, not this.
-    items = [(label_str, value_str, accent_color_hex), ...]. Returns a
-    VGroup. FadeIn yourself, or LaggedStart per-card like fm_concept_pills."""
     cards = VGroup()
     for entry in items:
         if isinstance(entry, dict):
@@ -215,9 +168,6 @@ def fm_card_row(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
 
 def fm_stacked_cards(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
                       label_size=30, value_size=68, spacing=0.24):
-    """Vertical stack of bill/expense cards.
-    items = list of (label_str, value_str, accent_color_hex).
-    Returns a VGroup. Animate entry yourself."""
     cards = VGroup()
     for entry in items:
         if isinstance(entry, dict):
@@ -238,35 +188,6 @@ def fm_stacked_cards(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
 
 
 def fm_clamp_to_frame(*mobjects, margin_x=0.06, margin_y=0.06):
-    """Final on-screen safety net for multi-group layouts. fm_card/fm_two_cards/
-    fm_card_row/fm_stacked_cards/fm_concept_pills each only guarantee THEIR OWN
-    width or height fits the frame while THEY are still centered at their own
-    origin -- none of them know about sibling groups, and none of them
-    re-check the frame boundary once you reposition them with .next_to(),
-    .to_edge(), .shift(), or .move_to(). A group that is individually safe at
-    88% of frame width can still clip the camera once it's shifted toward an
-    edge to sit beside or under another group (e.g. a comparison row stacked
-    above a category-pill row, or two groups flanking each other left/right).
-    Call this LAST, after every top-level group for the chunk has been built
-    and positioned relative to each other, right before any self.play(FadeIn...).
-    Pass every top-level mobject that will be on screen together; it measures
-    their COMBINED bounding box against the real frame edges and, if anything
-    overflows, scales the whole set down (and re-centers it if needed) by the
-    minimum amount required to bring every edge back inside the safe area --
-    relative spacing between the groups is preserved, nothing is reflowed.
-    No-op if everything already fits. The passed-in mobjects are transformed
-    in place -- keep using your original variables for FadeIn/animation.
-    CRITICAL: this must be the absolute LAST thing you do to a group before
-    self.play(). Calling fm_clamp_to_frame and THEN still calling .shift(),
-    .move_to(), .scale(), or VGroup(...)-combining it with something else
-    undoes the guarantee -- the renderer also auto-clamps everything passed
-    to self.play() as a final backstop, but don't rely on that as your only
-    safety net; call this explicitly whenever more than one group shares a
-    chunk.
-    Example: cards = fm_two_cards(...); pills = fm_concept_pills(...)
-    pills.next_to(cards, DOWN, buff=0.6)
-    fm_clamp_to_frame(cards, pills)
-    self.play(FadeIn(cards), FadeIn(pills))"""
     combined = VGroup(*mobjects)
     safe_w = config.frame_width * (1 - 2 * margin_x)
     safe_h = config.frame_height * (1 - 2 * margin_y)
@@ -308,10 +229,8 @@ def _fm_collect_play_targets(anim, out):
 
 
 def fm_animate_counter(scene, start_val, end_val, label_text,
-                        accent_color=BRAND_GOLD, prefix="$", suffix="",
+                        accent_color=BRAND_GOLD, prefix="", suffix="",
                         duration=3.0, position=None, value_size=130, label_size=38):
-    """Counting number using ValueTracker + always_redraw (zero LaTeX).
-    Handles all self.play()/self.wait(). Returns (tracker, counter_mob, label_mob)."""
     if position is None:
         position = ORIGIN
     tracker = ValueTracker(float(start_val))
@@ -322,7 +241,7 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
     def _num():
         v = tracker.get_value()
         if use_decimal:
-            s = f"{prefix}{v:,.1f}{suffix}"
+            s = f"{prefix}{v:,.2f}{suffix}"
         else:
             s = f"{prefix}{int(round(v)):,}{suffix}"
         return Text(s, font_size=value_size, color=BRAND_WHITE, weight=BOLD).move_to(position)
@@ -341,8 +260,6 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
 
 def fm_animate_bar_chart(scene, values, names, colors=None,
                           duration=3.5, title_text=""):
-    """Manual bar chart: Rectangle + Text only, zero BarChart/Tex dependency.
-    Real baseline + y-axis. Auto-ranges. Handles all animation."""
     if colors is None:
         colors = [BRAND_GREEN, BRAND_GOLD, BRAND_RED, BRAND_WHITE]
     bar_colors = [colors[i % len(colors)] for i in range(len(values))]
@@ -367,13 +284,13 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
     for i, (v, name, c) in enumerate(zip(values, names, bar_colors)):
         x     = -total_w / 2 + i * spacing
         bar_h = max(abs(v) * y_scale, 0.16)
-        bar   = Rectangle(width=bar_w, height=bar_h)
+        bar   = RoundedRectangle(width=bar_w, height=bar_h, corner_radius=0.06)
         bar.set_fill(c, opacity=0.92)
         bar.set_stroke(c, width=1.5, opacity=0.55)
         bar.move_to([x, base_y + bar_h / 2, 0])
         bars.add(bar)
 
-        val_str = f"{int(v):,}" if isinstance(v, int) else f"{v:.1f}"
+        val_str = f"{int(v):,}" if isinstance(v, int) else f"{v:.2f}"
         val_lbl = Text(val_str, font_size=26, color=c, weight=BOLD)
         val_lbl.next_to(bar, UP, buff=0.1)
         val_labels.add(val_lbl)
@@ -392,15 +309,15 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
         scene.add(ttl)
 
     scene.add(baseline, cat_labels)
-    grow_t = max(min(duration * 0.70, duration - 0.38), 0.1)
-    hold_t = max(duration - grow_t, 0.05)
+    grow_t = max(min(duration * 0.62, duration - 0.45), 0.1)
+    hold_t = max(duration - grow_t - 0.38, 0.05)
     scene.play(
-        LaggedStart(*[GrowFromEdge(b, DOWN) for b in bars], lag_ratio=0.14),
-        run_time=grow_t * 0.62, rate_func=smooth,
+        LaggedStart(*[GrowFromEdge(b, DOWN) for b in bars], lag_ratio=0.18),
+        run_time=grow_t, rate_func=smooth,
     )
     scene.play(
-        LaggedStart(*[FadeIn(l) for l in val_labels], lag_ratio=0.1),
-        run_time=grow_t * 0.38, rate_func=smooth,
+        LaggedStart(*[FadeIn(l) for l in val_labels], lag_ratio=0.12),
+        run_time=0.38, rate_func=smooth,
     )
     scene.wait(hold_t)
     return bars, val_labels
@@ -409,8 +326,6 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
 def fm_animate_gauge(scene, value, max_val, label_text,
                       accent_color=BRAND_GREEN, duration=3.0,
                       position=None, radius=2.0):
-    """Arc gauge: gray full-circle track + colored fill arc.
-    ValueTracker drives the fill. Handles all animation."""
     if position is None:
         position = ORIGIN
 
@@ -449,8 +364,6 @@ def fm_animate_gauge(scene, value, max_val, label_text,
 def fm_animate_donut(scene, percentage, label_text,
                       accent_color=BRAND_GREEN, duration=3.0,
                       position=None, radius=1.85, thickness=0.52):
-    """Donut ring: gray Annulus track + colored Arc fill + pct hero text inside.
-    Handles all animation."""
     if position is None:
         position = ORIGIN
 
@@ -495,8 +408,6 @@ def fm_animate_donut(scene, percentage, label_text,
 def fm_animate_line_chart(scene, y_values, end_value_label,
                            accent_color=BRAND_GREEN, x_labels=None,
                            duration=3.5, title_text=""):
-    """Axes-based trend line with gradient fill region under the curve.
-    y_values: list of numbers (uniform x-spacing). Handles all animation."""
     n = len(y_values)
     if n < 2:
         return None, None, None
@@ -571,13 +482,6 @@ def fm_animate_line_chart(scene, y_values, end_value_label,
 
 
 def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
-    """Multiple trend lines sharing ONE Axes, for direct comparison
-    (e.g. rent growth vs income growth, two income paths over time).
-    series: list of dicts {"y_values": [...], "label": str, "color": hex}.
-    All series must have the same length (same x-spacing). This is the
-    ONLY safe way to compare two or more trends on one chart -- never
-    build a second raw Axes or a manual multi-line plot by hand.
-    Handles all animation."""
     if not series:
         return None, None
     n = len(series[0]["y_values"])
@@ -678,10 +582,6 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
 
 
 def fm_animate_waterfall(scene, steps, duration=4.5):
-    """Cashflow waterfall. Steps arrive sequentially via GrowFromEdge.
-    steps = list of {"label": str, "value": float, "color": hex (optional)}.
-    Last step is treated as the net/total bar (uses BRAND_GOLD by default).
-    Handles all animation."""
     n = len(steps)
     if n < 2:
         return None, None
@@ -732,13 +632,13 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
             c  = step.get("color", BRAND_RED)
             y0 = axis_y + (base + v) * y_scale
 
-        bar = Rectangle(width=bar_w, height=bar_h)
+        bar = RoundedRectangle(width=bar_w, height=bar_h, corner_radius=0.05)
         bar.set_fill(c, opacity=0.9)
         bar.set_stroke(c, width=1.5, opacity=0.55)
         bar.move_to([x_pos, y0 + bar_h / 2, 0])
         bars.add(bar)
 
-        prefix   = "-$" if v < 0 else "$"
+        prefix   = "-" if v < 0 else ""
         val_str  = f"{prefix}{int(abs(v)):,}" if abs(v) >= 1 else f"{prefix}{abs(v):.2f}"
         val_lbl  = Text(val_str, font_size=22, color=c, weight=BOLD)
         val_lbl.next_to(bar, DOWN if (v < 0) else UP, buff=0.08)
@@ -767,9 +667,6 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
 
 
 def fm_animate_text_reveal(scene, lines, colors=None, duration=3.0, sizes=None):
-    """Sequential text fade-in for hook/chapter moments ONLY.
-    lines: list of strings. colors defaults to [GOLD, WHITE, WHITE, ...].
-    Handles all animation."""
     if colors is None:
         colors = [BRAND_GOLD] + [BRAND_WHITE] * (len(lines) - 1)
     if sizes is None:
@@ -794,9 +691,6 @@ def fm_animate_text_reveal(scene, lines, colors=None, duration=3.0, sizes=None):
 def fm_animate_icon_grid(scene, total, filled, label_text,
                           accent_color=BRAND_GREEN, duration=3.0,
                           cols=10, position=None, icon_radius=0.18):
-    """Crowd/icon grid for population statistics.
-    'filled' icons use accent_color; remainder are faint gray.
-    Shows pct as hero text beside the grid. Handles all animation."""
     if position is None:
         position = ORIGIN
 
@@ -815,40 +709,37 @@ def fm_animate_icon_grid(scene, total, filled, label_text,
         dot    = Circle(radius=icon_radius)
         if i < filled:
             dot.set_fill(accent_color, opacity=0.92)
-            dot.set_stroke(accent_color, width=1.2, opacity=0.6)
+            dot.set_stroke(accent_color, width=1.2, opacity=0.7)
         else:
-            dot.set_fill(BRAND_GRAY, opacity=0.18)
-            dot.set_stroke(BRAND_GRAY, width=0.8, opacity=0.28)
+            dot.set_fill(BRAND_GRAY, opacity=0.12)
+            dot.set_stroke(BRAND_GRAY, width=1.0, opacity=0.28)
         dot.move_to([x, y, 0])
         icons.add(dot)
 
-    icons.move_to(position + LEFT * 1.6)
-    pct      = (filled / total * 100) if total > 0 else 0
-    pct_lbl  = Text(f"{pct:.0f}%", font_size=88, color=BRAND_WHITE, weight=BOLD)
-    pct_lbl.next_to(icons, RIGHT, buff=0.5)
-    cat_lbl  = Text(label_text, font_size=28, color=accent_color)
-    cat_lbl.next_to(pct_lbl, DOWN, buff=0.18)
-    stat_group = VGroup(pct_lbl, cat_lbl)
-    if stat_group.get_left()[0] < icons.get_right()[0] + 0.3:
-        stat_group.next_to(icons, RIGHT, buff=0.45)
+    pct     = filled / max(total, 1) * 100
+    pct_lbl = Text(f"{pct:.0f}%", font_size=80, color=BRAND_WHITE, weight=BOLD)
+    cat_lbl = Text(label_text, font_size=32, color=accent_color)
 
-    anim_t  = max(min(duration * 0.65, duration - 0.4), 0.1)
-    hold_t  = max(duration - anim_t, 0.05)
+    icon_group = VGroup(icons)
+    icon_group.move_to(position + LEFT * 2.2)
+    text_group = VGroup(pct_lbl, cat_lbl).arrange(DOWN, buff=0.28)
+    text_group.move_to(position + RIGHT * 2.8)
+
+    fm_clamp_to_frame(icon_group, text_group)
+
+    anim_t = max(min(duration * 0.68, duration - 0.4), 0.1)
+    hold_t = max(duration - anim_t, 0.05)
     scene.play(
-        LaggedStart(*[FadeIn(ic, scale=0.5) for ic in icons], lag_ratio=0.04),
-        FadeIn(pct_lbl),
-        FadeIn(cat_lbl),
-        run_time=anim_t,
+        LaggedStart(*[FadeIn(ic) for ic in icons], lag_ratio=0.04),
+        FadeIn(text_group),
+        run_time=anim_t, rate_func=smooth,
     )
     scene.wait(hold_t)
     return icons, pct_lbl
 
 
-def fm_animate_stacked_cards(scene, items, duration=4.0, spacing=0.26):
-    """Bill/expense cards arrive from right one at a time.
-    items = [(label, value_str, accent_color), ...]. Handles all animation."""
-    cards = fm_stacked_cards(items, spacing=spacing)
-    cards.move_to(ORIGIN)
+def fm_animate_stacked_cards(scene, items, duration=4.0):
+    cards = fm_stacked_cards(items)
     safe_h = config.frame_height * 0.82
     if cards.height > safe_h:
         cards.scale(safe_h / cards.height)
@@ -864,8 +755,6 @@ def fm_animate_stacked_cards(scene, items, duration=4.0, spacing=0.26):
 def fm_animate_bullet_chart(scene, actual, target, range_low, range_high,
                               label_text, accent_color=BRAND_GREEN,
                               duration=3.0, position=None, bar_length=8.0):
-    """Bullet chart: gray range band + target tick + actual solid bar.
-    'Are you hitting the target?' visual. Handles all animation."""
     if position is None:
         position = ORIGIN
 
@@ -876,7 +765,7 @@ def fm_animate_bullet_chart(scene, actual, target, range_low, range_high,
         return -bar_length / 2 + (v - range_low) * scale
 
     band_w  = (range_high - range_low) * scale
-    band    = Rectangle(width=band_w, height=0.55)
+    band    = RoundedRectangle(width=band_w, height=0.55, corner_radius=0.08)
     band.set_fill(BRAND_GRAY, opacity=0.22)
     band.set_stroke(BRAND_GRAY, width=1.0, opacity=0.3)
     band.move_to([(_x(range_low) + _x(range_high)) / 2, 0, 0])
@@ -894,7 +783,7 @@ def fm_animate_bullet_chart(scene, actual, target, range_low, range_high,
         w = tracker.get_value()
         if w < 0.01:
             return VMobject()
-        b = Rectangle(width=w, height=0.32)
+        b = RoundedRectangle(width=w, height=0.32, corner_radius=0.06)
         b.set_fill(accent_color, opacity=0.95)
         b.set_stroke(accent_color, width=1.0, opacity=0.6)
         b.move_to([_x(range_low) + w / 2, 0, 0])
@@ -903,9 +792,9 @@ def fm_animate_bullet_chart(scene, actual, target, range_low, range_high,
 
     bar = always_redraw(_bar)
 
-    target_lbl = Text(f"Target: ${int(target):,}", font_size=26, color=BRAND_WHITE)
+    target_lbl = Text(f"Target: {int(target):,}", font_size=26, color=BRAND_WHITE)
     target_lbl.next_to(tick, UP, buff=0.22)
-    actual_lbl = Text(f"${int(actual):,}", font_size=42, color=accent_color, weight=BOLD)
+    actual_lbl = Text(f"{int(actual):,}", font_size=42, color=accent_color, weight=BOLD)
     actual_lbl.next_to(band, DOWN, buff=0.32)
     cat_lbl    = Text(label_text, font_size=30, color=BRAND_GRAY)
     cat_lbl.next_to(actual_lbl, DOWN, buff=0.15)
@@ -917,12 +806,10 @@ def fm_animate_bullet_chart(scene, actual, target, range_low, range_high,
     scene.wait(hold_t)
     return tracker, bar, actual_lbl
 
+
 def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
                             duration=3.0, font_size=88, subtitle=None,
                             subtitle_color=None):
-    """Dramatic text reveal with expanding glow rings — the 'Corporate Paycheck'
-    style. Use for chapter titles, major reveals, hook moments.
-    Handles all animation. Returns (text_mob, rings_group)."""
     if subtitle_color is None:
         subtitle_color = accent_color
 
@@ -968,9 +855,6 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
 
 def fm_animate_timeline(scene, events, accent_color=BRAND_GOLD, duration=4.0,
                          show_index=False):
-    """Horizontal timeline: dots evenly spaced on a line, labels alternating
-    above/below to prevent overlapping text. Dots appear with LaggedStart.
-    events = list of str. Handles all animation. Returns (dots, labels)."""
     n = len(events)
     if n < 1:
         return VGroup(), VGroup()
@@ -1017,10 +901,6 @@ def fm_animate_single_value(scene, value_str, label_text,
                              accent_color=BRAND_GOLD, duration=3.0,
                              value_size=140, label_size=38,
                              sublabel=None, sublabel_color=None):
-    """Single hero number with a label — for beats with one number and no
-    comparison. More prominent than fm_animate_counter since the value is
-    already known (no counting needed). Handles all animation.
-    Returns (value_mob, label_mob)."""
     if sublabel_color is None:
         sublabel_color = BRAND_GRAY
 
@@ -1046,16 +926,9 @@ def fm_animate_single_value(scene, value_str, label_text,
     scene.wait(hold_t)
     return val_mob, lbl_mob
 
+
 def fm_formula(scene, lines, font_size=60, color=BRAND_WHITE, duration=3.0,
                position=None):
-    """Plain-Text() formula display (one line or a list of lines for a
-    multi-step calculation), auto-scaled to ALWAYS fit inside the frame
-    no matter how long the string is -- zero LaTeX, zero overflow risk.
-    Use this instead of typing a raw Text() formula yourself: a hand-sized
-    font_size on a long formula string is exactly what runs off the edges
-    of the 16:9 frame. lines: a single string, or a list of strings (each
-    becomes its own row, e.g. the calculation on one line and the
-    simplified result on the next). Handles all animation."""
     if position is None:
         position = ORIGIN
     if isinstance(lines, str):
@@ -1079,14 +952,9 @@ def fm_formula(scene, lines, font_size=60, color=BRAND_WHITE, duration=3.0,
     scene.wait(hold_t)
     return group
 
+
 def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
                                 show_net=True):
-    """Clean income-vs-expense comparison bars. No axis line through bars.
-    items = list of (label_str, value_float, color_hex).
-    Positive values go UP (income/gain), negative go DOWN (expense/loss).
-    If show_net=True, appends a computed net bar in BRAND_GOLD automatically.
-    All bars sized proportionally, properly centered, labels inside-or-above.
-    Handles all animation."""
     if show_net:
         net = sum(v for _, v, _ in items)
         net_color = BRAND_GREEN if net >= 0 else BRAND_RED
@@ -1116,13 +984,13 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
         bar_h  = max(abs(value) * scale, 0.16)
         is_neg = value < 0
         y_bot  = zero_y - bar_h if is_neg else zero_y
-        bar    = Rectangle(width=bar_w, height=bar_h)
+        bar    = RoundedRectangle(width=bar_w, height=bar_h, corner_radius=0.06)
         bar.set_fill(color, opacity=0.92)
         bar.set_stroke(color, width=1.5, opacity=0.55)
         bar.move_to([x, y_bot + bar_h / 2, 0])
         bars.add(bar)
 
-        v_str   = f"${int(abs(value)):,}" if abs(value) >= 1 else f"${abs(value):.2f}"
+        v_str   = f"{int(abs(value)):,}" if abs(value) >= 1 else f"{abs(value):.2f}"
         if is_neg:
             v_str = f"-{v_str}"
         val_lbl = Text(v_str, font_size=28, color=color, weight=BOLD)
@@ -1173,15 +1041,52 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
     scene.wait(hold_t)
     return bars, val_labels
 
-def fm_icon(name, size=1.0, color=BRAND_GOLD):
-    """Pure geometry finance icons — no SVGMobject, no image loading.
-    name options: 'dollar', 'coin', 'house', 'person', 'clock',
-                  'arrow_up', 'arrow_down', 'warning', 'checkmark', 'fire'.
-    Returns a VGroup. Position with .move_to() then self.play(FadeIn(...))."""
-    g   = VGroup()
-    s   = size
 
-    if name == "dollar":
+def fm_icon(name, size=1.0, color=BRAND_GOLD):
+    """Pure geometry icons — no SVGMobject, no image loading.
+    Math/science icons: 'sigma', 'integral', 'pi_sym', 'infinity',
+                        'gradient', 'neuron', 'matrix_sym', 'derivative'.
+    General icons: 'dollar', 'coin', 'house', 'person', 'clock',
+                   'arrow_up', 'arrow_down', 'warning', 'checkmark', 'fire'.
+    Returns a VGroup."""
+    g = VGroup()
+    s = size
+
+    if name == "sigma":
+        g.add(Text("Σ", font_size=int(72 * s), color=color, weight=BOLD))
+
+    elif name == "integral":
+        g.add(Text("∫", font_size=int(80 * s), color=color, weight=BOLD))
+
+    elif name == "pi_sym":
+        g.add(Text("π", font_size=int(72 * s), color=color, weight=BOLD))
+
+    elif name == "infinity":
+        g.add(Text("∞", font_size=int(72 * s), color=color, weight=BOLD))
+
+    elif name == "gradient":
+        g.add(Text("∇", font_size=int(72 * s), color=color, weight=BOLD))
+
+    elif name == "derivative":
+        g.add(Text("d/dx", font_size=int(52 * s), color=color, weight=BOLD))
+
+    elif name == "matrix_sym":
+        inner = Text("[ ]", font_size=int(72 * s), color=color, weight=BOLD)
+        g.add(inner)
+
+    elif name == "neuron":
+        body = Circle(radius=0.38 * s)
+        body.set_fill(color, opacity=0.88).set_stroke(color, width=2.0)
+        for angle in [PI * 0.25, PI * 0.75, PI * 1.25, PI * 1.75]:
+            dendrite = Line(
+                [0, 0, 0],
+                [0.6 * s * math.cos(angle), 0.6 * s * math.sin(angle), 0]
+            )
+            dendrite.set_stroke(color, width=2.0, opacity=0.7)
+            g.add(dendrite)
+        g.add(body)
+
+    elif name == "dollar":
         g.add(Text("$", font_size=int(68 * s), color=color, weight=BOLD))
 
     elif name == "coin":
@@ -1196,7 +1101,7 @@ def fm_icon(name, size=1.0, color=BRAND_GOLD):
         roof_pts = [[-0.48*s, 0, 0], [0, 0.48*s, 0], [0.48*s, 0, 0]]
         roof = Polygon(*roof_pts)
         roof.set_fill(color, opacity=0.88).set_stroke(color, width=1.5, opacity=0.6)
-        body = Rectangle(width=0.65*s, height=0.42*s)
+        body = RoundedRectangle(width=0.65*s, height=0.42*s, corner_radius=0.04)
         body.set_fill(color, opacity=0.65).set_stroke(color, width=1.5, opacity=0.6)
         body.next_to(roof, DOWN, buff=0)
         g.add(roof, body)
@@ -1204,7 +1109,7 @@ def fm_icon(name, size=1.0, color=BRAND_GOLD):
     elif name == "person":
         head = Circle(radius=0.18 * s)
         head.set_fill(color, opacity=0.88).set_stroke(color, width=1.2)
-        body = Rectangle(width=0.30*s, height=0.36*s)
+        body = RoundedRectangle(width=0.30*s, height=0.36*s, corner_radius=0.06)
         body.set_fill(color, opacity=0.72).set_stroke(color, width=1.2)
         body.next_to(head, DOWN, buff=0.04 * s)
         g.add(head, body)
@@ -1217,14 +1122,14 @@ def fm_icon(name, size=1.0, color=BRAND_GOLD):
         g.add(face, hour, minute)
 
     elif name == "arrow_up":
-        shaft = Rectangle(width=0.14*s, height=0.38*s)
+        shaft = RoundedRectangle(width=0.14*s, height=0.38*s, corner_radius=0.04)
         shaft.set_fill(color, opacity=0.90).shift(DOWN * 0.10 * s)
         tip = Polygon([-0.28*s, 0, 0], [0, 0.32*s, 0], [0.28*s, 0, 0])
         tip.set_fill(color, opacity=0.90).shift(UP * 0.14 * s)
         g.add(shaft, tip)
 
     elif name == "arrow_down":
-        shaft = Rectangle(width=0.14*s, height=0.38*s)
+        shaft = RoundedRectangle(width=0.14*s, height=0.38*s, corner_radius=0.04)
         shaft.set_fill(color, opacity=0.90).shift(UP * 0.10 * s)
         tip = Polygon([-0.28*s, 0, 0], [0, -0.32*s, 0], [0.28*s, 0, 0])
         tip.set_fill(color, opacity=0.90).shift(DOWN * 0.14 * s)
@@ -1257,3 +1162,463 @@ def fm_icon(name, size=1.0, color=BRAND_GOLD):
         g.add(c)
 
     return g
+
+
+def fm_animate_vector(scene, direction, label_text, accent_color=BRAND_GOLD,
+                       duration=3.5, origin=None, scale=2.5, show_components=False):
+    """Animated vector arrow drawn from origin via Create.
+    direction: [dx, dy] normalized direction. scale: arrow length.
+    show_components: if True, draws dashed x and y component lines.
+    Returns (arrow, label_mob)."""
+    if origin is None:
+        origin = ORIGIN
+
+    dx, dy = direction[0], direction[1]
+    length = math.sqrt(dx**2 + dy**2)
+    if length > 1e-9:
+        dx, dy = dx / length * scale, dy / length * scale
+
+    tip = [origin[0] + dx, origin[1] + dy, 0]
+    arrow = Arrow(
+        start=origin, end=tip,
+        buff=0,
+        stroke_width=5,
+        max_tip_length_to_length_ratio=0.18,
+        color=accent_color,
+    )
+
+    lbl = Text(label_text, font_size=36, color=accent_color, weight=BOLD)
+    mid = [(origin[0] + tip[0]) / 2, (origin[1] + tip[1]) / 2, 0]
+    perp_x = -dy / max(scale, 0.01) * 0.45
+    perp_y =  dx / max(scale, 0.01) * 0.45
+    lbl.move_to([mid[0] + perp_x, mid[1] + perp_y, 0])
+
+    components = VGroup()
+    if show_components:
+        comp_x = Line(origin, [origin[0] + dx, origin[1], 0])
+        comp_x.set_stroke(BRAND_GRAY, width=2.0, opacity=0.5)
+        comp_y = Line([origin[0] + dx, origin[1], 0], tip)
+        comp_y.set_stroke(BRAND_GRAY, width=2.0, opacity=0.5)
+        comp_x_lbl = Text(f"{dx:.1f}", font_size=22, color=BRAND_GRAY)
+        comp_x_lbl.next_to(comp_x, DOWN, buff=0.12)
+        comp_y_lbl = Text(f"{dy:.1f}", font_size=22, color=BRAND_GRAY)
+        comp_y_lbl.next_to(comp_y, RIGHT, buff=0.12)
+        components.add(comp_x, comp_y, comp_x_lbl, comp_y_lbl)
+        scene.add(components)
+
+    draw_t = max(min(duration * 0.55, 1.6), 0.1)
+    hold_t = max(duration - draw_t - 0.3, 0.05)
+    scene.play(Create(arrow), run_time=draw_t, rate_func=smooth)
+    scene.play(FadeIn(lbl, shift=UP * 0.12), run_time=0.3, rate_func=smooth)
+    scene.wait(hold_t)
+    return arrow, lbl
+
+
+def fm_animate_matrix(scene, rows_data, label_text="", accent_color=BRAND_GOLD,
+                       duration=4.0, position=None, cell_size=0.9, font_size=36):
+    """Animated matrix: bracket notation with cells fading in row by row.
+    rows_data: list of lists of strings or numbers e.g. [['a','b'],['c','d']].
+    Returns (matrix_group, label_mob)."""
+    if position is None:
+        position = ORIGIN
+
+    n_rows = len(rows_data)
+    n_cols = max(len(r) for r in rows_data) if rows_data else 1
+
+    cells = VGroup()
+    for r_idx, row in enumerate(rows_data):
+        for c_idx, val in enumerate(row):
+            val_str = str(val)
+            cell_txt = Text(val_str, font_size=font_size, color=BRAND_WHITE, weight=BOLD)
+            x = (c_idx - (n_cols - 1) / 2) * cell_size
+            y = ((n_rows - 1) / 2 - r_idx) * cell_size
+            cell_txt.move_to([x, y, 0])
+            cells.add(cell_txt)
+
+    total_w = n_cols * cell_size
+    total_h = n_rows * cell_size
+    bracket_h = total_h + 0.3
+
+    left_top    = [-total_w / 2 - 0.55, bracket_h / 2, 0]
+    left_mid_t  = [-total_w / 2 - 0.35, bracket_h / 2, 0]
+    left_mid_b  = [-total_w / 2 - 0.35, -bracket_h / 2, 0]
+    left_bot    = [-total_w / 2 - 0.55, -bracket_h / 2, 0]
+    right_top   = [total_w / 2 + 0.55, bracket_h / 2, 0]
+    right_mid_t = [total_w / 2 + 0.35, bracket_h / 2, 0]
+    right_mid_b = [total_w / 2 + 0.35, -bracket_h / 2, 0]
+    right_bot   = [total_w / 2 + 0.55, -bracket_h / 2, 0]
+
+    left_bracket = VMobject()
+    left_bracket.set_points_as_corners([left_top, left_mid_t, left_mid_b, left_bot])
+    left_bracket.set_stroke(accent_color, width=3.5, opacity=0.9)
+
+    right_bracket = VMobject()
+    right_bracket.set_points_as_corners([right_top, right_mid_t, right_mid_b, right_bot])
+    right_bracket.set_stroke(accent_color, width=3.5, opacity=0.9)
+
+    matrix_group = VGroup(left_bracket, right_bracket, cells)
+    matrix_group.move_to(position)
+
+    lbl_mob = None
+    if label_text:
+        lbl_mob = Text(label_text, font_size=32, color=accent_color)
+        lbl_mob.next_to(matrix_group, DOWN, buff=0.4)
+
+    safe_w = config.frame_width * 0.85
+    safe_h = config.frame_height * 0.80
+    combined = VGroup(matrix_group) if not lbl_mob else VGroup(matrix_group, lbl_mob)
+    if combined.width > safe_w:
+        combined.scale(safe_w / combined.width)
+    if combined.height > safe_h:
+        combined.scale(safe_h / combined.height)
+
+    draw_t = max(min(duration * 0.28, 1.0), 0.1)
+    per_row = max((duration - draw_t - 0.3) / max(n_rows, 1), 0.12)
+    hold_t = max(duration - draw_t - per_row * n_rows - 0.2, 0.05)
+
+    scene.play(
+        Create(left_bracket), Create(right_bracket),
+        run_time=draw_t, rate_func=smooth,
+    )
+    for r_idx in range(n_rows):
+        row_cells = [cells[r_idx * n_cols + c] for c in range(min(n_cols, len(rows_data[r_idx])))]
+        scene.play(
+            LaggedStart(*[FadeIn(c, scale=0.85) for c in row_cells], lag_ratio=0.15),
+            run_time=per_row, rate_func=smooth,
+        )
+    if lbl_mob:
+        scene.play(FadeIn(lbl_mob), run_time=0.2)
+    scene.wait(hold_t)
+    return matrix_group, lbl_mob
+
+
+def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
+                           duration=4.0, position=None, show_std_regions=True,
+                           mean_label="μ", std_label="σ"):
+    """Animated normal distribution curve drawn via Create.
+    show_std_regions: shades the 1σ region under the curve.
+    Returns (curve, fill_region, label_mob)."""
+    if position is None:
+        position = ORIGIN
+
+    n_pts = 120
+    x_range = 3.8
+    curve_w = 9.0
+    curve_h = 3.8
+
+    xs = [(-x_range + i * 2 * x_range / (n_pts - 1)) for i in range(n_pts)]
+    ys = [math.exp(-0.5 * x * x) for x in xs]
+
+    pts = [
+        [position[0] + x / x_range * curve_w / 2,
+         position[1] + y * curve_h,
+         0]
+        for x, y in zip(xs, ys)
+    ]
+
+    curve = VMobject()
+    _fm_set_line_smooth(curve, pts)
+    curve.set_stroke(accent_color, width=4.0, opacity=0.95)
+
+    baseline_y = position[1]
+    fill_pts = pts + [[pts[-1][0], baseline_y, 0], [pts[0][0], baseline_y, 0]]
+    fill_region = Polygon(*fill_pts, fill_opacity=0.15, stroke_width=0)
+    fill_region.set_fill(accent_color)
+
+    std_fill = None
+    if show_std_regions:
+        sigma_x = curve_w / 2 / x_range
+        std_xs  = [x for x in xs if abs(x) <= 1.0]
+        std_ys  = [math.exp(-0.5 * x * x) for x in std_xs]
+        std_pts = [
+            [position[0] + x / x_range * curve_w / 2,
+             position[1] + y * curve_h,
+             0]
+            for x, y in zip(std_xs, std_ys)
+        ]
+        std_fill_pts = std_pts + [
+            [std_pts[-1][0], baseline_y, 0],
+            [std_pts[0][0],  baseline_y, 0],
+        ]
+        std_fill = Polygon(*std_fill_pts, fill_opacity=0.32, stroke_width=0)
+        std_fill.set_fill(accent_color)
+
+    mean_tick = Line(
+        [position[0], baseline_y - 0.1, 0],
+        [position[0], baseline_y + 0.1, 0],
+    )
+    mean_tick.set_stroke(BRAND_WHITE, width=2.5, opacity=0.7)
+    mean_lbl = Text(mean_label, font_size=28, color=BRAND_WHITE)
+    mean_lbl.next_to(mean_tick, DOWN, buff=0.18)
+
+    sigma_x_pos = position[0] + curve_w / 2 / x_range
+    std_tick = Line(
+        [sigma_x_pos, baseline_y - 0.1, 0],
+        [sigma_x_pos, baseline_y + 0.1, 0],
+    )
+    std_tick.set_stroke(BRAND_GRAY, width=2.0, opacity=0.6)
+    std_lbl = Text(std_label, font_size=24, color=BRAND_GRAY)
+    std_lbl.next_to(std_tick, DOWN, buff=0.18)
+
+    lbl_mob = None
+    if label_text:
+        lbl_mob = Text(label_text, font_size=32, color=accent_color)
+        lbl_mob.next_to(
+            [position[0], position[1] + curve_h + 0.2, 0],
+            UP, buff=0.1
+        )
+
+    draw_t = max(min(duration * 0.50, 2.0), 0.1)
+    fill_t = max(min(duration * 0.22, 0.8), 0.05)
+    hold_t = max(duration - draw_t - fill_t - 0.2, 0.05)
+
+    scene.add(fill_region)
+    scene.play(Create(curve), run_time=draw_t, rate_func=smooth)
+    if std_fill is not None:
+        scene.play(FadeIn(std_fill), run_time=fill_t, rate_func=smooth)
+    scene.play(
+        FadeIn(mean_tick), FadeIn(mean_lbl),
+        FadeIn(std_tick),  FadeIn(std_lbl),
+        run_time=0.2,
+    )
+    if lbl_mob:
+        scene.play(FadeIn(lbl_mob, shift=UP * 0.1), run_time=0.2)
+    scene.wait(hold_t)
+    return curve, fill_region, lbl_mob
+
+
+def fm_animate_scatter(scene, points, label_text="", accent_color=BRAND_GOLD,
+                        duration=4.0, position=None, show_regression=False,
+                        x_label="x", y_label="y"):
+    """Animated scatter plot. points: list of (x, y) tuples.
+    show_regression: draws a best-fit line through the data.
+    Returns (dots_group, regression_line)."""
+    if position is None:
+        position = ORIGIN
+    if not points:
+        return VGroup(), None
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+    x_span = max(x_max - x_min, 1.0)
+    y_span = max(y_max - y_min, 1.0)
+
+    plot_w = 8.0
+    plot_h = 4.5
+    pad    = 0.6
+
+    def _to_screen(px, py):
+        sx = position[0] - plot_w / 2 + pad + (px - x_min) / x_span * (plot_w - 2 * pad)
+        sy = position[1] - plot_h / 2 + pad + (py - y_min) / y_span * (plot_h - 2 * pad)
+        return [sx, sy, 0]
+
+    x_axis = Line(
+        [position[0] - plot_w / 2, position[1] - plot_h / 2, 0],
+        [position[0] + plot_w / 2, position[1] - plot_h / 2, 0],
+    )
+    x_axis.set_stroke(BRAND_GRAY, width=2.0, opacity=0.55)
+    y_axis = Line(
+        [position[0] - plot_w / 2, position[1] - plot_h / 2, 0],
+        [position[0] - plot_w / 2, position[1] + plot_h / 2, 0],
+    )
+    y_axis.set_stroke(BRAND_GRAY, width=2.0, opacity=0.55)
+
+    x_lbl_mob = Text(x_label, font_size=24, color=BRAND_GRAY)
+    x_lbl_mob.next_to(x_axis, DOWN, buff=0.2)
+    y_lbl_mob = Text(y_label, font_size=24, color=BRAND_GRAY)
+    y_lbl_mob.next_to(y_axis, LEFT, buff=0.2)
+
+    dots = VGroup()
+    for px, py in points:
+        sp = _to_screen(px, py)
+        dot = Dot(sp, radius=0.10, color=accent_color)
+        dot.set_fill(accent_color, opacity=0.85)
+        dots.add(dot)
+
+    reg_line = None
+    if show_regression and len(points) >= 2:
+        n = len(points)
+        mean_x = sum(xs) / n
+        mean_y = sum(ys) / n
+        num = sum((xs[i] - mean_x) * (ys[i] - mean_y) for i in range(n))
+        den = sum((xs[i] - mean_x) ** 2 for i in range(n))
+        if abs(den) > 1e-9:
+            slope = num / den
+            intercept = mean_y - slope * mean_x
+            y_at_xmin = slope * x_min + intercept
+            y_at_xmax = slope * x_max + intercept
+            reg_start = _to_screen(x_min, y_at_xmin)
+            reg_end   = _to_screen(x_max, y_at_xmax)
+            reg_line  = Line(reg_start, reg_end)
+            reg_line.set_stroke(BRAND_RED, width=3.0, opacity=0.85)
+
+    lbl_mob = None
+    if label_text:
+        lbl_mob = Text(label_text, font_size=30, color=accent_color)
+        lbl_mob.move_to([position[0], position[1] + plot_h / 2 + 0.4, 0])
+
+    scene.add(x_axis, y_axis, x_lbl_mob, y_lbl_mob)
+    if lbl_mob:
+        scene.add(lbl_mob)
+
+    dot_t  = max(min(duration * 0.62, 2.2), 0.1)
+    hold_t = max(duration - dot_t - 0.35, 0.05)
+
+    scene.play(
+        LaggedStart(*[GrowFromCenter(d) for d in dots], lag_ratio=0.06),
+        run_time=dot_t, rate_func=smooth,
+    )
+    if reg_line is not None:
+        scene.play(Create(reg_line), run_time=0.35, rate_func=smooth)
+    scene.wait(hold_t)
+    return dots, reg_line
+
+
+def fm_animate_probability_bar(scene, outcomes, label_text="",
+                                accent_color=BRAND_GOLD, duration=4.0,
+                                position=None):
+    """Probability distribution bar chart. Each bar height = probability (0-1).
+    outcomes: list of (label_str, probability_float) tuples.
+    All probabilities should sum to 1. Returns (bars, val_labels)."""
+    if position is None:
+        position = ORIGIN
+    if not outcomes:
+        return VGroup(), VGroup()
+
+    n       = len(outcomes)
+    bar_w   = min(1.4, 9.0 / max(n, 1))
+    spacing = bar_w * 1.6
+    total_w = (n - 1) * spacing
+    chart_h = 4.0
+    base_y  = position[1] - chart_h / 2
+
+    baseline = Line(
+        [position[0] - total_w / 2 - bar_w / 2 - 0.3, base_y, 0],
+        [position[0] + total_w / 2 + bar_w / 2 + 0.3, base_y, 0],
+    )
+    baseline.set_stroke(BRAND_GRAY, width=2.0, opacity=0.5)
+
+    bars       = VGroup()
+    val_labels = VGroup()
+    cat_labels = VGroup()
+
+    for i, (name, prob) in enumerate(outcomes):
+        prob = max(0.0, min(1.0, float(prob)))
+        x    = position[0] - total_w / 2 + i * spacing
+        bar_h = max(prob * chart_h, 0.06)
+        bar = RoundedRectangle(width=bar_w, height=bar_h, corner_radius=0.06)
+        bar.set_fill(accent_color, opacity=0.88)
+        bar.set_stroke(accent_color, width=1.5, opacity=0.55)
+        bar.move_to([x, base_y + bar_h / 2, 0])
+        bars.add(bar)
+
+        pct_str = f"{prob * 100:.1f}%"
+        val_lbl = Text(pct_str, font_size=24, color=accent_color, weight=BOLD)
+        val_lbl.next_to(bar, UP, buff=0.1)
+        val_labels.add(val_lbl)
+
+        cat_lbl = Text(name, font_size=20, color=BRAND_GRAY)
+        cat_lbl.next_to(bar, DOWN, buff=0.15)
+        cat_labels.add(cat_lbl)
+
+    chart_group = VGroup(baseline, bars, val_labels, cat_labels)
+    chart_group.move_to(position)
+
+    lbl_mob = None
+    if label_text:
+        lbl_mob = Text(label_text, font_size=30, color=accent_color)
+        lbl_mob.next_to(chart_group, UP, buff=0.28)
+        scene.add(lbl_mob)
+
+    scene.add(baseline, cat_labels)
+    grow_t = max(min(duration * 0.65, 2.2), 0.1)
+    hold_t = max(duration - grow_t - 0.35, 0.05)
+
+    scene.play(
+        LaggedStart(*[GrowFromEdge(b, DOWN) for b in bars], lag_ratio=0.16),
+        run_time=grow_t, rate_func=smooth,
+    )
+    scene.play(
+        LaggedStart(*[FadeIn(l) for l in val_labels], lag_ratio=0.12),
+        run_time=0.35, rate_func=smooth,
+    )
+    scene.wait(hold_t)
+    return bars, val_labels
+
+
+def fm_animate_number_line(scene, value, min_val, max_val, label_text="",
+                            accent_color=BRAND_GOLD, duration=3.5,
+                            position=None, line_length=9.0,
+                            tick_labels=None):
+    """Animated number line with a glowing dot moving to the target value.
+    Returns (dot, line_mob, label_mob)."""
+    if position is None:
+        position = ORIGIN
+
+    line_mob = Line(
+        [position[0] - line_length / 2, position[1], 0],
+        [position[0] + line_length / 2, position[1], 0],
+    )
+    line_mob.set_stroke(BRAND_GRAY, width=3.0, opacity=0.55)
+
+    span = max(max_val - min_val, 1.0)
+
+    n_ticks = 5
+    ticks_group = VGroup()
+    for i in range(n_ticks + 1):
+        frac = i / n_ticks
+        tick_val = min_val + frac * span
+        tx = position[0] - line_length / 2 + frac * line_length
+        tick = Line([tx, position[1] - 0.15, 0], [tx, position[1] + 0.15, 0])
+        tick.set_stroke(BRAND_GRAY, width=2.0, opacity=0.4)
+        ticks_group.add(tick)
+        if tick_labels:
+            if i < len(tick_labels):
+                tl = Text(str(tick_labels[i]), font_size=20, color=BRAND_GRAY)
+            else:
+                tl = Text(f"{tick_val:.1f}", font_size=20, color=BRAND_GRAY)
+        else:
+            tl = Text(f"{tick_val:.1f}" if isinstance(tick_val, float) else str(int(tick_val)),
+                      font_size=20, color=BRAND_GRAY)
+        tl.next_to(tick, DOWN, buff=0.15)
+        ticks_group.add(tl)
+
+    frac_val = max(0.0, min(1.0, (value - min_val) / span))
+    target_x = position[0] - line_length / 2 + frac_val * line_length
+
+    tracker = ValueTracker(position[0] - line_length / 2)
+
+    def _dot():
+        cx = tracker.get_value()
+        d  = Dot([cx, position[1], 0], radius=0.18, color=accent_color)
+        d.set_fill(accent_color, opacity=1.0)
+        gl = fm_glow_around(d, color=accent_color, n_layers=3)
+        return gl
+
+    dot = always_redraw(_dot)
+
+    val_str = f"{value:.2f}" if isinstance(value, float) else str(int(value))
+    val_lbl = Text(val_str, font_size=44, color=accent_color, weight=BOLD)
+    val_lbl.move_to([target_x, position[1] + 0.65, 0])
+
+    lbl_mob = None
+    if label_text:
+        lbl_mob = Text(label_text, font_size=30, color=BRAND_GRAY)
+        lbl_mob.move_to([position[0], position[1] - 0.75, 0])
+
+    scene.add(line_mob, ticks_group, dot)
+    if lbl_mob:
+        scene.add(lbl_mob)
+
+    move_t = max(min(duration * 0.65, 2.0), 0.1)
+    hold_t = max(duration - move_t - 0.3, 0.05)
+
+    scene.play(
+        tracker.animate.set_value(target_x),
+        run_time=move_t, rate_func=smooth,
+    )
+    scene.play(FadeIn(val_lbl, shift=DOWN * 0.1), run_time=0.3)
+    scene.wait(hold_t)
+    return dot, line_mob, lbl_mob
