@@ -592,8 +592,8 @@ def fm_animate_line_chart(scene, y_values, end_value_label=None,
     min_y  = min(y_values)
     max_y  = max(y_values)
     y_span = max(max_y - min_y, 1.0)
-    y_pad  = y_span * 0.22
-    y_lo   = max(0.0, min_y - y_pad)
+    y_pad  = y_span * 0.25
+    y_lo   = min_y - y_pad if min_y - y_pad >= 0 else min_y - y_pad * 0.5
     y_hi   = max_y + y_pad
     y_step = max((y_hi - y_lo) / 4, 0.01)
     x_step = max((n - 1) // 5, 1)
@@ -953,44 +953,54 @@ def fm_animate_icon_grid(scene, total, filled, label_text,
     if label_text is None:
         label_text = ""
 
-    filled   = max(0, min(filled, total))
-    rows     = math.ceil(total / max(cols, 1))
-    spacing  = icon_radius * 2.9
-    grid_w   = cols * spacing
-    grid_h   = rows * spacing
+    filled  = max(0, min(filled, total))
+    rows    = math.ceil(total / max(cols, 1))
+    spacing = icon_radius * 2.9
+    grid_w  = cols * spacing
+    grid_h  = rows * spacing
+
+    safe_w = config.frame_width * 0.82
+    safe_h = config.frame_height * 0.62
+    scale  = min(safe_w / max(grid_w, 0.1), safe_h / max(grid_h, 0.1), 1.0)
+    spacing *= scale
+    grid_w  *= scale
+    grid_h  *= scale
+    r_scaled = icon_radius * scale
 
     icons = VGroup()
     for i in range(total):
-        r_idx  = i // cols
-        c_idx  = i % cols
-        x      = -grid_w / 2 + c_idx * spacing + spacing / 2
-        y      = grid_h / 2 - r_idx * spacing - spacing / 2
-        dot    = Circle(radius=icon_radius)
+        r_idx = i // cols
+        c_idx = i % cols
+        x = -grid_w / 2 + c_idx * spacing + spacing / 2
+        y =  grid_h / 2 - r_idx * spacing - spacing / 2
+        dot = Circle(radius=r_scaled)
         if i < filled:
             dot.set_fill(accent_color, opacity=0.92)
             dot.set_stroke(accent_color, width=1.2, opacity=0.7)
         else:
-            dot.set_fill(BRAND_GRAY, opacity=0.12)
-            dot.set_stroke(BRAND_GRAY, width=1.0, opacity=0.28)
+            dot.set_fill(BRAND_GRAY, opacity=0.15)
+            dot.set_stroke(BRAND_GRAY, width=1.0, opacity=0.30)
         dot.move_to([x, y, 0])
         icons.add(dot)
 
+    icons.move_to(position + UP * 0.4)
+
     pct     = filled / max(total, 1) * 100
-    pct_lbl = Text(f"{pct:.0f}%", font_size=80, color=BRAND_WHITE, weight=BOLD)
-    cat_lbl = Text(label_text, font_size=32, color=accent_color)
+    pct_lbl = Text(f"{pct:.0f}%", font_size=72, color=BRAND_WHITE, weight=BOLD)
+    cat_lbl = Text(label_text, font_size=30, color=accent_color) if label_text else None
 
-    icon_group = VGroup(icons)
-    icon_group.move_to(position + LEFT * 2.2)
-    text_group = VGroup(pct_lbl, cat_lbl).arrange(DOWN, buff=0.28)
-    text_group.move_to(position + RIGHT * 2.8)
+    labels = VGroup(pct_lbl) if not cat_lbl else VGroup(pct_lbl, cat_lbl)
+    if cat_lbl:
+        labels.arrange(RIGHT, buff=0.4)
+    labels.next_to(icons, DOWN, buff=0.32)
 
-    fm_clamp_to_frame(icon_group, text_group)
+    fm_clamp_to_frame(icons, labels)
 
     anim_t = max(min(duration * 0.68, duration - 0.4), 0.1)
     hold_t = max(duration - anim_t, 0.05)
     scene.play(
         LaggedStart(*[FadeIn(ic) for ic in icons], lag_ratio=0.04),
-        FadeIn(text_group),
+        FadeIn(labels),
         run_time=anim_t, rate_func=smooth,
     )
     scene.wait(hold_t)
@@ -1420,7 +1430,77 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
     return bars, val_labels
 
 
-def fm_icon(name, size=1.0, color=BRAND_GOLD):
+def fm_animate_data_table(scene, headers, rows, duration=4.0,
+                           header_color=BRAND_GOLD, accent_row=None,
+                           accent_color=BRAND_RED):
+    """Animated data table with header row and data rows.
+    headers: list of column header strings.
+    rows: list of lists (each inner list = one row of values as strings).
+    accent_row: index of row to highlight (0-based), or None.
+    Renders centered and clamped to frame."""
+    n_cols = len(headers)
+    n_rows = len(rows)
+
+    safe_w    = config.frame_width * 0.80
+    safe_h    = config.frame_height * 0.78
+    col_w     = min(safe_w / max(n_cols, 1), 3.2)
+    row_h     = min(safe_h / max(n_rows + 1, 1), 1.05)
+    total_w   = col_w * n_cols
+    total_h   = row_h * (n_rows + 1)
+
+    all_cells = VGroup()
+
+    for c_idx, hdr in enumerate(headers):
+        x = -total_w / 2 + c_idx * col_w + col_w / 2
+        y =  total_h / 2 - row_h / 2
+        bg = Rectangle(width=col_w, height=row_h)
+        bg.set_fill(BRAND_PANEL, opacity=0.95)
+        bg.set_stroke(header_color, width=1.5, opacity=0.55)
+        bg.move_to([x, y, 0])
+        lbl = Text(str(hdr), font_size=min(int(row_h * 28), 32), color=header_color, weight=BOLD)
+        lbl.move_to([x, y, 0])
+        if lbl.width > col_w * 0.88:
+            lbl.scale(col_w * 0.88 / lbl.width)
+        all_cells.add(bg, lbl)
+
+    row_mobs = []
+    for r_idx, row in enumerate(rows):
+        is_accent = (accent_row is not None and r_idx == accent_row)
+        fill_c    = accent_color if is_accent else BRAND_PANEL
+        fill_op   = 0.30 if is_accent else 0.65
+        text_c    = accent_color if is_accent else BRAND_WHITE
+        row_group = VGroup()
+        for c_idx, val in enumerate(row):
+            x = -total_w / 2 + c_idx * col_w + col_w / 2
+            y =  total_h / 2 - (r_idx + 1) * row_h - row_h / 2
+            bg = Rectangle(width=col_w, height=row_h)
+            bg.set_fill(fill_c, opacity=fill_op)
+            bg.set_stroke(BRAND_GRAY, width=0.8, opacity=0.30)
+            bg.move_to([x, y, 0])
+            lbl = Text(str(val), font_size=min(int(row_h * 26), 30), color=text_c)
+            lbl.move_to([x, y, 0])
+            if lbl.width > col_w * 0.88:
+                lbl.scale(col_w * 0.88 / lbl.width)
+            row_group.add(bg, lbl)
+        all_cells.add(row_group)
+        row_mobs.append(row_group)
+
+    all_cells.move_to(ORIGIN)
+    fm_clamp_to_frame(all_cells, margin_x=0.06, margin_y=0.08)
+
+    intro_t = max(min(duration * 0.30, 1.0), 0.15)
+    per_row = max((duration - intro_t) / max(n_rows, 1) * 0.55, 0.12)
+    hold_t  = max(duration - intro_t - per_row * n_rows, 0.1)
+
+    header_cells = VGroup(*[all_cells[i] for i in range(n_cols * 2)])
+    scene.play(FadeIn(header_cells), run_time=intro_t, rate_func=smooth)
+    for row_group in row_mobs:
+        scene.play(FadeIn(row_group, shift=UP * 0.08), run_time=per_row, rate_func=smooth)
+    scene.wait(hold_t)
+    return all_cells
+
+
+
     g = VGroup()
     s = size
 

@@ -3876,7 +3876,7 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
                 "fm_animate_timeline", "fm_animate_text_reveal",
                 "fm_animate_bell_curve", "fm_animate_vector", "fm_animate_matrix",
                 "fm_animate_scatter", "fm_animate_probability_bar",
-                "fm_animate_number_line",
+                "fm_animate_number_line", "fm_animate_data_table",
             }
 
             if fn_name == "play":
@@ -4617,7 +4617,7 @@ def group_beats_into_concept_chunks(beats: list, concept_segments: list) -> list
     return chunks
 
 
-
+def group_beats_into_manim_chunks(beats: list, target_chunk_seconds: float = 4.5) -> list:
     """Groups consecutive beats into chunks of roughly target_chunk_seconds
     each, without splitting any single beat across two chunks -- a
     chunk boundary always falls between beats, never inside one, since
@@ -4717,18 +4717,22 @@ Default to a chart, plot, matrix, vector, distribution, number line, formula, or
 
 === VISUAL METAPHOR MAPPING ===
 - Probability / frequency / proportion → fm_animate_probability_bar, fm_animate_donut, fm_animate_icon_grid
-- Distribution / bell curve / normal → fm_animate_bell_curve
+- Distribution / bell curve / normal → fm_animate_bell_curve (MAX once per 8 chunks)
+- Uncertainty / spread → fm_animate_number_line, fm_animate_comparison_bars, fm_animate_scatter
 - Trend / growth / sequence → fm_animate_line_chart, fm_animate_line_chart_multi
 - Vector / direction / linear combination → fm_animate_vector
 - Matrix / transformation / system → fm_animate_matrix
 - Single statistic / key number → fm_animate_counter, fm_animate_single_value
-- Comparison between values → fm_animate_comparison_bars, fm_two_cards
-- Formula / equation / calculation → fm_formula
-- Scatter data / correlation → fm_animate_scatter
-- Number line / range / interval → fm_animate_number_line
+- Comparison between values → fm_animate_comparison_bars, fm_two_cards, fm_animate_bar_chart
+- Formula / equation / rate with denominator → fm_formula
+- Scatter data / correlation → fm_animate_scatter (show_regression=True for correlation)
+- Number line / range / interval / uncertainty → fm_animate_number_line
 - Concept names / taxonomy → fm_concept_pills
 - Chapter / hook / major reveal → fm_animate_glow_reveal
 - Step-by-step process → fm_animate_timeline
+- Experiment results / category table → fm_animate_data_table
+- Population vs sample → fm_animate_icon_grid
+- Sampling variability / noise → fm_animate_line_chart with jagged values
 
 === AXES AND GEOMETRY ARE ALLOWED AND ENCOURAGED ===
 Unlike the previous pipeline, Axes, NumberLine, NumberPlane, and Rectangle ARE available and encouraged when the fm_* library does not cover the visual well. Use them correctly:
@@ -4838,6 +4842,10 @@ fm_formula(scene, lines, font_size, color, duration, position)
 fm_animate_counter(scene, start_val, end_val, label_text, accent_color, prefix, suffix, duration, position, value_size, label_size)
   prefix and suffix default to empty string (not "$"). Pass prefix="$" only if showing currency.
 
+fm_animate_data_table(scene, headers, rows, duration, header_color, accent_row, accent_color)
+  headers: list of strings. rows: list of lists of strings. accent_row: index to highlight (0-based) or None.
+  Use for comparison tables, experiment results, category breakdowns. Auto-fits to frame.
+
 fm_animate_bar_chart(scene, values, names, colors, duration, title_text)
 fm_animate_line_chart(scene, y_values, end_value_label, accent_color, x_labels, duration, title_text)
   end_value_label: string label shown at the end dot. Pass None or "" for no label.
@@ -4866,15 +4874,33 @@ fm_glow_around(mobject, color, n_layers) -- returns VGroup(glow_layers, original
 fm_clamp_to_frame(*mobjects, margin_x, margin_y) -- call LAST before self.play()
 fm_icon(name, size, color) -- names: sigma, integral, pi_sym, infinity, gradient, neuron, matrix_sym, derivative, dollar, coin, house, person, clock, arrow_up, arrow_down, warning, checkmark, fire
 
-=== VISUAL VARIETY — REQUIRED ===
-Every 4 consecutive chunks must use a DIFFERENT primary visual type. Bell curve → number line → scatter → bar chart is good. Bell curve → bell curve → bell curve → bell curve is unacceptable and WILL be flagged. Rotate through: Axes plots, fm_animate_vector, fm_animate_matrix, fm_animate_scatter, fm_animate_number_line, fm_animate_probability_bar, fm_animate_counter, fm_animate_comparison_bars, fm_animate_bar_chart, fm_animate_line_chart, fm_formula, fm_animate_glow_reveal. Bell curve should appear AT MOST once per 6 chunks.
+=== VISUAL VARIETY — STRICTLY ENFORCED ===
+Bell curve (fm_animate_bell_curve) must appear AT MOST once every 8 chunks. It is not the default for "uncertainty" or "spread" — those ideas have better visuals:
+- "Uncertainty" → fm_animate_number_line with a range band, or fm_animate_comparison_bars showing sample vs population
+- "Spread/variance" → fm_animate_scatter showing clustered vs dispersed data, or fm_animate_bar_chart showing distribution shape
+- "Sampling" → fm_animate_icon_grid (population with filled subset), or fm_animate_probability_bar
+- "Average/mean" → fm_animate_counter showing the computed value, or fm_animate_single_value
+- "Distribution shape" → fm_animate_line_chart with Axes showing the histogram shape — NOT always a bell curve
+
+Lollipop chart (fm_animate_bar_chart style 2) and standard bar chart must alternate — never two lollipop charts in a row. Use fm_animate_comparison_bars, fm_animate_waterfall, fm_animate_scatter, or fm_animate_matrix as alternatives.
+
+Every 4 consecutive content chunks must use a DIFFERENT primary visual type. Bell curve → lollipop → bell curve → lollipop is prohibited. Rotate through: scatter, number_line, probability_bar, counter, matrix, vector, comparison_bars, waterfall, timeline, formula, glow_reveal, icon_grid.
+
+The word "uncertainty" → NOT fm_animate_bell_curve. Use fm_animate_number_line or fm_animate_comparison_bars.
+The word "sample" → fm_animate_icon_grid showing filled vs unfilled dots.
+The word "spread" → fm_animate_scatter or fm_animate_probability_bar.
+The word "correlation" → fm_animate_scatter with show_regression=True.
+The word "mean/average/median" → fm_animate_counter or fm_animate_single_value with the computed value.
+The word "compare" → fm_animate_comparison_bars or fm_two_cards.
+The word "rate/denominator/per" → fm_formula showing the rate equation, then fm_animate_bar_chart.
 
 === QUALITY BAR ===
 - Use Create() for curves, lines, axes. Use FadeIn() for cards, text, dots. Use GrowFromEdge() for bars. Use GrowFromCenter() for dots/icons. Use Write() for end labels.
 - Fill not just outline: bars, arcs, cards must be solid fills in brand colors.
 - Glow/emphasis: use fm_glow_around() or layer 2-3 concentric copies at decreasing opacity.
 - Real proportionality: if a shape represents a quantity, its size must scale with that quantity.
-- Vary the visual type across chunks -- if three consecutive chunks all use the same primitive, pick a different one.
+- NEVER use BRAND_GRAY as the accent_color for bars, dots, or stems — they become invisible on the dark background. Use BRAND_GREEN, BRAND_GOLD, BRAND_RED, or colors from the _ACCENT_POOL.
+- Axes must be wide enough to show data spread — if data goes from 70 to 80, set x_range=[65, 85] not [0, 100].
 
 === ESTABLISHING SHOTS ===
 Occasionally for a chapter-opening beat subclass MathScene3D so a hero object tilts in from an angle and settles flat. Build the hero as a single VGroup, give it a starting rotation (hero.rotate(60 * DEGREES, axis=UP)), then settle it with self.play(Rotate(hero, angle=-60 * DEGREES, axis=UP, run_time=...)). Use sparingly.
