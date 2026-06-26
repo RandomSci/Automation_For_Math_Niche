@@ -597,6 +597,9 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
 
 
 def fm_animate_waterfall(scene, steps, duration=4.5):
+    if steps and isinstance(steps[0], (list, tuple)):
+        steps = [{"label": s[0], "value": float(s[1])} for s in steps]
+    steps = [dict(s) for s in steps]
     n = len(steps)
     if n < 2:
         return None, None
@@ -1310,98 +1313,82 @@ def fm_animate_matrix(scene, rows_data, label_text="", accent_color=BRAND_GOLD,
 
 
 def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
-                           duration=4.0, position=None, show_std_regions=True,
+                           duration=4.0, position=None, show_std_regions=False,
                            mean_label="μ", std_label="σ"):
     """Animated normal distribution curve drawn via Create.
-    show_std_regions: shades the 1σ region under the curve.
+    show_std_regions: draws subtle 1σ tick markers (no filled region).
     Returns (curve, fill_region, label_mob)."""
     if position is None:
         position = ORIGIN
 
-    n_pts = 120
-    x_range = 3.8
-    curve_w = 9.0
-    curve_h = 3.8
+    n_pts   = 120
+    x_range = 3.6
+    curve_w = 10.0
+    curve_h = 3.4
 
     xs = [(-x_range + i * 2 * x_range / (n_pts - 1)) for i in range(n_pts)]
     ys = [math.exp(-0.5 * x * x) for x in xs]
 
+    base_y = position[1] - curve_h * 0.12
+
     pts = [
         [position[0] + x / x_range * curve_w / 2,
-         position[1] + y * curve_h,
+         base_y + y * curve_h,
          0]
         for x, y in zip(xs, ys)
     ]
 
     curve = VMobject()
     _fm_set_line_smooth(curve, pts)
-    curve.set_stroke(accent_color, width=4.0, opacity=0.95)
+    curve.set_stroke(accent_color, width=4.5, opacity=0.95)
 
-    baseline_y = position[1]
-    fill_pts = pts + [[pts[-1][0], baseline_y, 0], [pts[0][0], baseline_y, 0]]
-    fill_region = Polygon(*fill_pts, fill_opacity=0.15, stroke_width=0)
+    fill_pts = pts + [[pts[-1][0], base_y, 0], [pts[0][0], base_y, 0]]
+    fill_region = Polygon(*fill_pts, fill_opacity=0.07, stroke_width=0)
     fill_region.set_fill(accent_color)
 
-    std_fill = None
+    std_markers = VGroup()
     if show_std_regions:
-        sigma_x = curve_w / 2 / x_range
-        std_xs  = [x for x in xs if abs(x) <= 1.0]
-        std_ys  = [math.exp(-0.5 * x * x) for x in std_xs]
-        std_pts = [
-            [position[0] + x / x_range * curve_w / 2,
-             position[1] + y * curve_h,
-             0]
-            for x, y in zip(std_xs, std_ys)
-        ]
-        std_fill_pts = std_pts + [
-            [std_pts[-1][0], baseline_y, 0],
-            [std_pts[0][0],  baseline_y, 0],
-        ]
-        std_fill = Polygon(*std_fill_pts, fill_opacity=0.32, stroke_width=0)
-        std_fill.set_fill(accent_color)
+        for sign in [-1, 1]:
+            sx = position[0] + sign * curve_w / 2 / x_range
+            tick = Line([sx, base_y - 0.12, 0], [sx, base_y + 0.22, 0])
+            tick.set_stroke(accent_color, width=2.0, opacity=0.55)
+            std_markers.add(tick)
 
-    mean_tick = Line(
-        [position[0], baseline_y - 0.1, 0],
-        [position[0], baseline_y + 0.1, 0],
+    baseline = Line(
+        [pts[0][0], base_y, 0],
+        [pts[-1][0], base_y, 0],
     )
+    baseline.set_stroke(BRAND_GRAY, width=1.5, opacity=0.35)
+
+    mean_tick = Line([position[0], base_y - 0.12, 0], [position[0], base_y + 0.22, 0])
     mean_tick.set_stroke(BRAND_WHITE, width=2.5, opacity=0.7)
     _mean_label_str = mean_label if isinstance(mean_label, str) and mean_label else "μ"
-    mean_lbl = Text(_mean_label_str, font_size=28, color=BRAND_WHITE)
-    mean_lbl.next_to(mean_tick, DOWN, buff=0.18)
-
-    sigma_x_pos = position[0] + curve_w / 2 / x_range
-    std_tick = Line(
-        [sigma_x_pos, baseline_y - 0.1, 0],
-        [sigma_x_pos, baseline_y + 0.1, 0],
-    )
-    std_tick.set_stroke(BRAND_GRAY, width=2.0, opacity=0.6)
-    _std_label_str = std_label if isinstance(std_label, str) and std_label else "σ"
-    std_lbl = Text(_std_label_str, font_size=24, color=BRAND_GRAY)
-    std_lbl.next_to(std_tick, DOWN, buff=0.18)
+    mean_lbl = Text(_mean_label_str, font_size=26, color=BRAND_WHITE)
+    mean_lbl.next_to(mean_tick, DOWN, buff=0.16)
 
     lbl_mob = None
     if label_text:
-        lbl_mob = Text(label_text, font_size=32, color=accent_color)
-        lbl_mob.next_to(
-            [position[0], position[1] + curve_h + 0.2, 0],
-            UP, buff=0.1
-        )
+        safe_w = config.frame_width * 0.80
+        lbl_mob = Text(label_text, font_size=34, color=accent_color, weight=BOLD)
+        if lbl_mob.width > safe_w:
+            lbl_mob.scale(safe_w / lbl_mob.width)
+        peak_y = base_y + curve_h
+        lbl_mob.move_to([position[0], peak_y + 0.52, 0])
 
-    draw_t = max(min(duration * 0.50, 2.0), 0.1)
-    fill_t = max(min(duration * 0.22, 0.8), 0.05)
-    hold_t = max(duration - draw_t - fill_t - 0.2, 0.05)
+    draw_t = max(min(duration * 0.55, 2.0), 0.1)
+    hold_t = max(duration - draw_t - 0.25, 0.05)
 
-    scene.add(fill_region)
+    scene.add(baseline, fill_region)
+    if show_std_regions and len(std_markers) > 0:
+        scene.add(std_markers)
     scene.play(Create(curve), run_time=draw_t, rate_func=smooth)
-    if std_fill is not None:
-        scene.play(FadeIn(std_fill), run_time=fill_t, rate_func=smooth)
     scene.play(
         FadeIn(mean_tick), FadeIn(mean_lbl),
-        FadeIn(std_tick),  FadeIn(std_lbl),
-        run_time=0.2,
+        run_time=0.25,
     )
     if lbl_mob:
         scene.play(FadeIn(lbl_mob, shift=UP * 0.1), run_time=0.2)
+        hold_t = max(hold_t - 0.2, 0.05)
     scene.wait(hold_t)
     return curve, fill_region, lbl_mob
 

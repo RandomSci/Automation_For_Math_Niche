@@ -216,6 +216,7 @@ def _detect_sfx_for_chunk(code: str) -> str:
     return None
 
 def _build_sfx_audio_inputs(clip_paths, chunk_code_list):
+    return []
     sfx_events = []
     t = 0.0
     MIN_GAP = 6.0
@@ -3643,6 +3644,8 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'plot_line_graph',
     r'set_stroke\s*\([^)]*dash_length',
     r'get_graph\s*\([^)]*x_range',
+    r'set_style\s*\([^)]*dash_length_ratio',
+    r'\binterpolate_color\b',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
@@ -3867,6 +3870,17 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
                             return False, f"fm_animate_* functions handle their own self.play() internally -- do NOT wrap them in self.play(). Call {inner_name}(self, ...) directly."
 
             if fn_name in _fm_animation_fns:
+                first_arg_is_self = (
+                    len(node.args) > 0
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id == "self"
+                )
+                first_kwarg_scene = any(
+                    isinstance(kw.arg, str) and kw.arg == "scene"
+                    for kw in node.keywords
+                )
+                if not first_arg_is_self and not first_kwarg_scene:
+                    return False, f"{fn_name}() is missing 'self' as its first argument -- correct: {fn_name}(self, ...). The 'scene' parameter must be passed as the first positional argument."
                 for child in ast.walk(node):
                     if isinstance(child, ast.Subscript) and child is not node:
                         pass
@@ -4572,12 +4586,15 @@ If your construct() has more than 2 Text() objects that are not numbers or 1-3 c
 - rotate() does NOT accept run_time as a kwarg -- run_time belongs in self.play().
 - point_at_angle() does NOT exist on Arc -- use arc.point_from_proportion(t).
 - NEVER call fm_* functions as self.fm_* -- they are module-level functions, not Scene methods. Correct: fm_animate_number_line(self, ...). Wrong: self.fm_animate_number_line(...). This will be caught by the safety checker and rejected before rendering.
+- NEVER call fm_animate_* without passing self as the FIRST positional argument. Correct: fm_animate_bar_chart(self, values, names, colors, duration). Wrong: fm_animate_bar_chart(values=values, names=names, colors=colors). The scene parameter is required and must be self.
 - NEVER wrap fm_animate_* calls inside self.play() -- they handle their own animation internally. Correct: fm_animate_comparison_bars(self, ...). Wrong: self.play(fm_animate_comparison_bars(self, ...)).
 - NEVER pass opacity= as a constructor kwarg to Dot, Circle, Line, Arrow or any geometry -- use .set_opacity() AFTER construction. Real failure: Dot([0,0,0], opacity=0.35) crashes. Correct: d = Dot([0,0,0]); d.set_opacity(0.35).
 - plot_line_graph IS BANNED -- it crashes with color kwarg conflicts. Use fm_animate_line_chart or fm_animate_line_chart_multi instead for any trend or curve. Never call axes.plot_line_graph() under any circumstance.
 - axes.get_graph() returns a ParametricFunction -- NEVER call .color= or pass color as a kwarg directly to get_graph(). Set color after: curve = axes.get_graph(func, x_range=[a,b]); curve.set_stroke(BRAND_GREEN, width=4).
 - axes.get_graph() does NOT accept x_range as a kwarg -- use axes.plot(func, x_range=[a,b]) instead. axes.get_graph(func) with no x_range is also valid.
 - set_stroke() does NOT accept dash_length or any dashing kwargs -- dashing is impossible via set_stroke(). Remove dash_length entirely.
+- set_style() does NOT accept dash_length_ratio or dash_offset -- these kwargs do not exist on VMobject in Manim Community v0.20.1. Remove them entirely.
+- interpolate_color() is BANNED -- it crashes when passed hex strings. Use ManimColor directly or pick a fixed color constant instead.
 - axes.get_area() accepts x_range and bounded_graph but NOT dash_length or any stroke dash kwargs -- dashing is impossible on a filled region.
 - DashedLine, DashedVMobject, Ellipse, scipy are BANNED.
 - fm_animate_scatter returns (dots_group, regression_line) -- a plain tuple. NEVER access .axes on the return value. NEVER do scatter.axes.c2p(...). If you need coordinate mapping after calling fm_animate_scatter, build your own Axes separately first.
