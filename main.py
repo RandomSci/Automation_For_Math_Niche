@@ -5198,12 +5198,14 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         to_fade_now = list(dict.fromkeys(to_fade_now))
 
         if to_fade_now:
-            fade_t = min(0.3, wait_needed * 0.8) if wait_needed > 0.1 else 0.25
+            fade_t = 0.35
+            vids_repr = repr(to_fade_now)
+            lines.append(f"        _fade_mobs = [_objects[v] for v in {vids_repr} if v in _objects and _objects[v] is not None]")
+            lines.append(f"        if _fade_mobs:")
+            lines.append(f"            try: self.play(*[FadeOut(m) for m in _fade_mobs], run_time={fade_t})")
+            lines.append(f"            except Exception: pass")
             for fv in to_fade_now:
-                lines.append(f"        if '{fv}' in _objects and _objects['{fv}'] is not None:")
-                lines.append(f"            try: self.play(FadeOut(_objects['{fv}']), run_time={fade_t})")
-                lines.append(f"            except Exception: pass")
-                lines.append(f"            _objects['{fv}'] = None")
+                lines.append(f"        _objects['{fv}'] = None")
             leftover = round(wait_needed - fade_t, 3)
             if leftover > 0.05:
                 lines.append(f"        self.wait({leftover})")
