@@ -3769,6 +3769,13 @@ def _get_chunk_available_names() -> set:
         "BOLD", "NORMAL", "ITALIC", "OBLIQUE", "THIN", "LIGHT",
         "MEDIUM", "SEMIBOLD", "HEAVY", "ULTRABOLD", "ULTRAHEAVY",
         "smooth", "linear", "rush_from", "rush_into",
+        "there_and_back", "there_and_back_with_pause", "running_start",
+        "not_quite_there", "double_smooth", "wiggle",
+        "fm_glow_reveal", "fm_text_reveal", "fm_bar_chart", "fm_line_chart",
+        "fm_scatter", "fm_bell_curve", "fm_icon_grid", "fm_counter",
+        "fm_single_value", "fm_timeline", "fm_waterfall", "fm_gauge",
+        "fm_donut", "fm_matrix", "fm_vector", "fm_number_line",
+        "fm_probability_bar", "fm_comparison_bars", "fm_data_table",
         "ease_in_sine", "ease_out_sine", "ease_in_out_sine",
         "ease_in_quad", "ease_out_quad", "ease_in_out_quad",
         "ease_in_cubic", "ease_out_cubic", "ease_in_out_cubic",
@@ -4965,28 +4972,35 @@ def _resolve_color(s):
 
 
 def _args_to_python(args: dict) -> str:
+    """Converts an args dict to a Python keyword-argument string safe for
+    embedding in generated Manim code. Color constants (BRAND_*) are
+    emitted as bare names; everything else is repr'd via json.dumps to
+    avoid any escaping issues with nested strings or special chars."""
+    if not args:
+        return ""
     parts = []
     for k, v in args.items():
-        if isinstance(v, str) and v.startswith("BRAND_"):
-            parts.append(f"{k}={v}")
-        elif isinstance(v, list):
-            def _render_item(x):
-                if isinstance(x, str) and x.startswith("BRAND_"):
-                    return x
-                elif isinstance(x, str):
-                    return repr(x)
-                elif isinstance(x, list):
-                    return "[" + ", ".join(_render_item(i) for i in x) + "]"
-                elif isinstance(x, tuple):
-                    return "(" + ", ".join(_render_item(i) for i in x) + ")"
-                else:
-                    return repr(x)
-            parts.append(f"{k}=[{', '.join(_render_item(i) for i in v)}]")
-        elif isinstance(v, str):
-            parts.append(f"{k}={repr(v)}")
-        else:
-            parts.append(f"{k}={repr(v)}")
+        parts.append(f"{k}={_value_to_python(v)}")
     return ", ".join(parts)
+
+
+def _value_to_python(v) -> str:
+    if isinstance(v, str) and v.startswith("BRAND_"):
+        return v
+    if isinstance(v, list):
+        return "[" + ", ".join(_value_to_python(i) for i in v) + "]"
+    if isinstance(v, tuple):
+        return "(" + ", ".join(_value_to_python(i) for i in v) + ")"
+    if isinstance(v, dict):
+        pairs = ", ".join(f"{repr(k)}: {_value_to_python(val)}" for k, val in v.items())
+        return "{" + pairs + "}"
+    if v is None:
+        return "None"
+    if isinstance(v, bool):
+        return "True" if v else "False"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    return repr(str(v))
 
 
 def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
@@ -5000,9 +5014,38 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
     where supported, or by calling .move_to(zone_center) on the
     returned object after the call completes."""
 
+    _FN_ALIASES = {
+        "fm_glow_reveal":   "fm_animate_glow_reveal",
+        "fm_text_reveal":   "fm_animate_text_reveal",
+        "fm_bar_chart":     "fm_animate_bar_chart",
+        "fm_line_chart":    "fm_animate_line_chart",
+        "fm_scatter":       "fm_animate_scatter",
+        "fm_bell_curve":    "fm_animate_bell_curve",
+        "fm_icon_grid":     "fm_animate_icon_grid",
+        "fm_counter":       "fm_animate_counter",
+        "fm_single_value":  "fm_animate_single_value",
+        "fm_timeline":      "fm_animate_timeline",
+        "fm_waterfall":     "fm_animate_waterfall",
+        "fm_gauge":         "fm_animate_gauge",
+        "fm_donut":         "fm_animate_donut",
+        "fm_matrix":        "fm_animate_matrix",
+        "fm_vector":        "fm_animate_vector",
+        "fm_number_line":   "fm_animate_number_line",
+        "fm_probability_bar": "fm_animate_probability_bar",
+        "fm_comparison_bars": "fm_animate_comparison_bars",
+        "fm_data_table":    "fm_animate_data_table",
+        "fm_bullet_chart":  "fm_animate_bullet_chart",
+        "fm_stacked_cards": "fm_animate_stacked_cards",
+    }
+
     total_dur = float(manifest.get("total_duration", 4.5))
     visuals   = manifest.get("visuals", [])
     if not visuals:
+        return ""
+
+    for vis in visuals:
+        raw_fn = vis.get("fn", "")
+        vis["fn"] = _FN_ALIASES.get(raw_fn, raw_fn)
         return ""
 
     visuals = sorted(visuals, key=lambda v: float(v.get("show_at", 0)))
@@ -5054,46 +5097,48 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
 
     sorted_show_times = sorted(set(e["show_at"] for e in events))
 
+    prev_t = 0.0
     for t in sorted_show_times:
         batch = [e for e in events if e["show_at"] == t]
+        wait_needed = round(t - prev_t, 3)
 
-        wait_needed = t - 0 if t == sorted_show_times[0] else t - sorted_show_times[sorted_show_times.index(t) - 1]
-        if wait_needed > 0.05:
+        fade_vids = [e["prev_vid"] for e in batch if e.get("prev_vid") and e.get("transition") == "replace"]
+        if fade_vids:
+            lines.append(f"        # t={t:.2f}s — replace {fade_vids}")
+            for fv in fade_vids:
+                lines.append(f"        if '{fv}' in _objects and _objects['{fv}'] is not None:")
+                lines.append(f"            self.play(FadeOut(_objects['{fv}']), run_time=0.3)")
+            if wait_needed > 0.35:
+                lines.append(f"        self.wait({round(wait_needed - 0.3, 3)})")
+        elif wait_needed > 0.05:
             lines.append(f"        # t={t:.2f}s")
-            lines.append(f"        _fade_targets = [_objects.get(vid) for vid in {[e['prev_vid'] for e in batch if e['prev_vid'] and e['transition'] == 'replace']} if _objects.get(vid) is not None]")
-            lines.append(f"        if _fade_targets:")
-            lines.append(f"            self.play(*(FadeOut(m) for m in _fade_targets), run_time=0.35)")
-            if wait_needed > 0.4:
-                lines.append(f"        self.wait({round(wait_needed - 0.35, 3)})")
-            lines.append("")
+            lines.append(f"        self.wait({wait_needed})")
+        lines.append("")
+
+        prev_t = t
 
         for e in batch:
-            vid  = e["vid"]
-            fn   = e["fn"]
-            args = dict(e["args"])
-            dur  = e["dur"]
-            cx   = e["cx"]
-            cy   = e["cy"]
+            vid      = e["vid"]
+            fn       = e["fn"]
+            args     = dict(e["args"]) if isinstance(e["args"], dict) else {}
+            dur      = e["dur"]
+            cx       = e["cx"]
+            cy       = e["cy"]
             args_str = _args_to_python(args)
 
             if fn in fn_supports_position:
-                if args_str:
-                    args_str += f", position=[{cx}, {cy}, 0]"
-                else:
-                    args_str = f"position=[{cx}, {cy}, 0]"
-                lines.append(f"        _r_{vid} = {fn}(self, {args_str}, duration={dur})")
+                pos_str = f"position=[{cx}, {cy}, 0]"
+                call_args = f"{args_str}, {pos_str}" if args_str else pos_str
             else:
-                lines.append(f"        _r_{vid} = {fn}(self, {args_str}, duration={dur})")
-                lines.append(f"        if _r_{vid} is not None:")
-                lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
-                lines.append(f"            _mob_{vid}.move_to([{cx}, {cy}, 0])")
-                lines.append(f"            _objects['{vid}'] = _mob_{vid}")
-                lines.append("")
-                continue
+                call_args = args_str
 
-            lines.append(f"        if _r_{vid} is not None:")
+            lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
+            lines.append(f"        try:")
             lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
-            lines.append(f"            _objects['{vid}'] = _mob_{vid}")
+            if fn not in fn_supports_position:
+                lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
+            lines.append(f"            if _mob_{vid} is not None: _objects['{vid}'] = _mob_{vid}")
+            lines.append(f"        except Exception: pass")
             lines.append("")
 
     remaining = round(total_dur - (sorted_show_times[-1] if sorted_show_times else 0) - max(e["dur"] for e in events if e["show_at"] == sorted_show_times[-1]), 3) if events else total_dur
