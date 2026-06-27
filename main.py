@@ -4995,7 +4995,7 @@ Each visual:
   duration: number
   show_at: number
   hide_at: number
-  transition: string (optional — "replace" | "Transform" | "ReplacementTransform" | "FadeTransform")
+  transition: string (REQUIRED — use "replace" when no special transition needed, or "Transform" | "ReplacementTransform" | "FadeTransform")
 
 === TRANSITIONS — make visuals EVOLVE not just swap ===
 Same zone, new visual appearing: specify transition to control HOW the change happens.
@@ -5457,11 +5457,16 @@ def _sanitize_manifest(manifest: dict) -> dict:
         if hide_at <= show_at:
             hide_at = min(show_at + float(vis.get("duration", 3.0)), total_dur)
 
+        transition = vis.get("transition", "replace")
+        if transition not in ("replace", "Transform", "ReplacementTransform", "FadeTransform"):
+            transition = "replace"
+
         vis["args"] = args
         vis["zone"] = zone
         vis["role"] = role
         vis["show_at"] = show_at
         vis["hide_at"] = hide_at
+        vis["transition"] = transition
         cleaned.append(vis)
 
     manifest["visuals"] = cleaned
@@ -5525,7 +5530,7 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
                                 "hide_at":    {"type": "number"},
                                 "transition": {"type": "string"},
                             },
-                            "required": ["id", "role", "zone", "fn", "args", "duration", "show_at", "hide_at"],
+                            "required": ["id", "role", "zone", "fn", "args", "duration", "show_at", "hide_at", "transition"],
                             "additionalProperties": False,
                         }
                     }
