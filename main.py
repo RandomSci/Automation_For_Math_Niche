@@ -4859,14 +4859,39 @@ MANIFEST_VISUAL_SIZES = {
 }
 
 MANIFEST_TRANSITION_TABLE = {
-    ("fm_animate_bar_chart",    "fm_animate_bar_chart"):    "Transform",
-    ("fm_animate_line_chart",   "fm_animate_line_chart"):   "Transform",
-    ("fm_animate_counter",      "fm_animate_counter"):      "Transform",
-    ("fm_animate_single_value", "fm_animate_single_value"): "Transform",
-    ("fm_animate_counter",      "fm_animate_single_value"): "ReplacementTransform",
-    ("fm_animate_single_value", "fm_animate_counter"):      "ReplacementTransform",
-    ("fm_two_cards",            "fm_two_cards"):            "Transform",
-    ("fm_animate_glow_reveal",  "fm_animate_text_reveal"):  "ReplacementTransform",
+    ("fm_animate_bar_chart",       "fm_animate_bar_chart"):       "Transform",
+    ("fm_animate_line_chart",      "fm_animate_line_chart"):      "Transform",
+    ("fm_animate_line_chart_multi","fm_animate_line_chart_multi"):"Transform",
+    ("fm_animate_counter",         "fm_animate_counter"):         "Transform",
+    ("fm_animate_single_value",    "fm_animate_single_value"):    "Transform",
+    ("fm_animate_gauge",           "fm_animate_gauge"):           "Transform",
+    ("fm_animate_donut",           "fm_animate_donut"):           "Transform",
+    ("fm_animate_bell_curve",      "fm_animate_bell_curve"):      "Transform",
+    ("fm_animate_scatter",         "fm_animate_scatter"):         "Transform",
+    ("fm_animate_probability_bar", "fm_animate_probability_bar"): "Transform",
+    ("fm_animate_comparison_bars", "fm_animate_comparison_bars"): "Transform",
+    ("fm_animate_icon_grid",       "fm_animate_icon_grid"):       "Transform",
+    ("fm_animate_matrix",          "fm_animate_matrix"):          "Transform",
+    ("fm_animate_timeline",        "fm_animate_timeline"):        "Transform",
+    ("fm_animate_waterfall",       "fm_animate_waterfall"):       "Transform",
+    ("fm_animate_glow_reveal",     "fm_animate_glow_reveal"):     "Transform",
+    ("fm_animate_text_reveal",     "fm_animate_text_reveal"):     "Transform",
+    ("fm_formula",                 "fm_formula"):                 "Transform",
+    ("fm_two_cards",               "fm_two_cards"):               "Transform",
+    ("fm_animate_counter",         "fm_animate_single_value"):    "ReplacementTransform",
+    ("fm_animate_single_value",    "fm_animate_counter"):         "ReplacementTransform",
+    ("fm_animate_glow_reveal",     "fm_animate_text_reveal"):     "ReplacementTransform",
+    ("fm_animate_text_reveal",     "fm_animate_glow_reveal"):     "ReplacementTransform",
+    ("fm_animate_bar_chart",       "fm_animate_comparison_bars"): "FadeTransform",
+    ("fm_animate_comparison_bars", "fm_animate_bar_chart"):       "FadeTransform",
+    ("fm_animate_bar_chart",       "fm_animate_line_chart"):      "FadeTransform",
+    ("fm_animate_line_chart",      "fm_animate_bar_chart"):       "FadeTransform",
+    ("fm_animate_scatter",         "fm_animate_line_chart"):      "FadeTransform",
+    ("fm_animate_line_chart",      "fm_animate_scatter"):         "FadeTransform",
+    ("fm_animate_counter",         "fm_animate_gauge"):           "FadeTransform",
+    ("fm_animate_gauge",           "fm_animate_counter"):         "FadeTransform",
+    ("fm_animate_donut",           "fm_animate_gauge"):           "FadeTransform",
+    ("fm_animate_gauge",           "fm_animate_donut"):           "FadeTransform",
 }
 
 _MANIFEST_SYSTEM_PROMPT = None
@@ -4969,7 +4994,24 @@ Each visual:
   args: string (JSON-encoded kwargs dict, e.g. '{{"values": [30, 50, 20], "names": ["A","B","C"]}}')
   duration: number
   show_at: number
-  hide_at: number"""
+  hide_at: number
+  transition: string (optional — "replace" | "Transform" | "ReplacementTransform" | "FadeTransform")
+
+=== TRANSITIONS — make visuals EVOLVE not just swap ===
+Same zone, new visual appearing: specify transition to control HOW the change happens.
+- "replace" (default) — FadeOut old, FadeIn new. Fine but basic.
+- "Transform" — old MORPHS into new. Use when same fn updating data. Bars grow to new heights. Lines redraw.
+- "ReplacementTransform" — old becomes new. Cross-type but same visual family.
+- "FadeTransform" — cross-fade. Different fn types in same zone.
+
+Special action fns (modify existing without replacing):
+- fn="fm_indicate": pulse/flash an existing object. args={{"target_vid":"v2","color":"BRAND_GOLD"}}
+- fn="fm_scale_to_corner": shrink existing to corner. args={{"target_vid":"v0","scale":0.3,"corner_x":5.0,"corner_y":3.0}}
+
+BEST PATTERN — DATA STORY WITH TRANSFORM:
+  v0: fm_animate_bar_chart values=[30,20] show_at=0 zone=CENTER_BOT role=main hide_at=20
+  v1: fm_animate_bar_chart values=[45,60] show_at=10 zone=CENTER_BOT role=main transition="Transform"
+  → Bars smoothly grow to new heights. Incredibly cinematic. USE THIS."""
     return _MANIFEST_SYSTEM_PROMPT
 
 
@@ -5112,10 +5154,14 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         role = vis.get("role", "caption" if strip_zone else _ROLE_DEFAULT.get(fn, "main"))
 
         prev = zone_history.get(zone)
-        transition = "replace"
-        if prev:
+        manifest_transition = vis.get("transition", "").strip()
+        if manifest_transition in ("Transform", "ReplacementTransform", "FadeTransform", "replace"):
+            transition = manifest_transition
+        elif prev:
             prev_fn = prev.get("fn", "")
             transition = MANIFEST_TRANSITION_TABLE.get((prev_fn, fn), "replace")
+        else:
+            transition = "replace"
         zone_history[zone] = {"fn": fn, "vid": vid, "hide_at": hide_at}
 
         extra_fades = []
@@ -5141,6 +5187,13 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
                 if e["zone"] == zone and e["vid"] not in extra_fades:
                     extra_fades.append(e["vid"])
                     e["hide_at"] = show_at
+
+        for e in events:
+            if e["role"] in ("main", "support") and e["hide_at"] >= total_dur - 0.05:
+                later = [x for x in events if x["zone"] == e["zone"] and x["show_at"] > e["show_at"]]
+                if later:
+                    earliest = min(later, key=lambda x: x["show_at"])
+                    e["hide_at"] = earliest["show_at"]
 
         events.append({
             "vid": vid, "zone": zone, "fn": fn, "args": args,
@@ -5216,13 +5269,15 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         prev_t = t
 
         for e in show_batch:
-            vid      = e["vid"]
-            fn       = e["fn"]
-            args     = dict(e["args"]) if isinstance(e["args"], dict) else {}
-            dur      = e["dur"]
-            cx       = e["cx"]
-            cy       = e["cy"]
-            args_str = _args_to_python(args)
+            vid        = e["vid"]
+            fn         = e["fn"]
+            args       = dict(e["args"]) if isinstance(e["args"], dict) else {}
+            dur        = e["dur"]
+            cx         = e["cx"]
+            cy         = e["cy"]
+            transition = e.get("transition", "replace")
+            prev_vid   = e.get("prev_vid")
+            args_str   = _args_to_python(args)
 
             if fn in fn_supports_position:
                 pos_str = f"position=[{cx}, {cy}, 0]"
@@ -5230,17 +5285,67 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
             else:
                 call_args = args_str
 
-            lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})" if fn not in fn_is_constructor else f"        _r_{vid} = {fn}({call_args})")
-            lines.append(f"        try:")
-            lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
+            if fn in ("fm_indicate", "fm_highlight"):
+                target = args.get("target_vid", prev_vid or "")
+                color = args.get("color", "BRAND_GOLD")
+                lines.append(f"        try:")
+                lines.append(f"            if '{target}' in _objects and _objects['{target}'] is not None:")
+                lines.append(f"                self.play(Indicate(_objects['{target}'], color={color}, scale_factor=1.15), run_time=0.6)")
+                lines.append(f"        except Exception: pass")
+                lines.append("")
+                continue
+
+            if fn == "fm_scale_to_corner":
+                target = args.get("target_vid", prev_vid or "")
+                scale = args.get("scale", 0.35)
+                corner_x = args.get("corner_x", cx)
+                corner_y = args.get("corner_y", cy)
+                lines.append(f"        try:")
+                lines.append(f"            if '{target}' in _objects and _objects['{target}'] is not None:")
+                lines.append(f"                self.play(_objects['{target}'].animate.scale({scale}).move_to([{corner_x},{corner_y},0]), run_time=0.5)")
+                lines.append(f"        except Exception: pass")
+                lines.append("")
+                continue
+
             if fn in fn_is_constructor:
+                lines.append(f"        _r_{vid} = {fn}({call_args})")
+                lines.append(f"        try:")
+                lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
                 lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
                 lines.append(f"            if _mob_{vid} is not None: self.play(FadeIn(_mob_{vid}), run_time=0.4)")
-            elif fn not in fn_supports_position:
-                lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
-            lines.append(f"            if _mob_{vid} is not None: _objects['{vid}'] = _mob_{vid}")
-            lines.append(f"        except Exception: pass")
-            lines.append("")
+                lines.append(f"            if _mob_{vid} is not None: _objects['{vid}'] = _mob_{vid}")
+                lines.append(f"        except Exception: pass")
+                lines.append("")
+                continue
+
+            if transition in ("Transform", "ReplacementTransform", "FadeTransform") and prev_vid:
+                lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
+                lines.append(f"        try:")
+                lines.append(f"            _new_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
+                lines.append(f"            if _new_{vid} is not None and '{prev_vid}' in _objects and _objects['{prev_vid}'] is not None:")
+                if transition == "Transform":
+                    lines.append(f"                self.play(Transform(_objects['{prev_vid}'], _new_{vid}), run_time=0.6)")
+                    lines.append(f"                _objects['{vid}'] = _objects['{prev_vid}']")
+                elif transition == "ReplacementTransform":
+                    lines.append(f"                self.play(ReplacementTransform(_objects['{prev_vid}'], _new_{vid}), run_time=0.6)")
+                    lines.append(f"                _objects['{vid}'] = _new_{vid}")
+                elif transition == "FadeTransform":
+                    lines.append(f"                self.play(FadeTransform(_objects['{prev_vid}'], _new_{vid}), run_time=0.5)")
+                    lines.append(f"                _objects['{vid}'] = _new_{vid}")
+                lines.append(f"                _objects['{prev_vid}'] = None")
+                lines.append(f"            elif _new_{vid} is not None:")
+                lines.append(f"                _objects['{vid}'] = _new_{vid}")
+                lines.append(f"        except Exception: pass")
+                lines.append("")
+            else:
+                lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
+                lines.append(f"        try:")
+                lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
+                if fn not in fn_supports_position:
+                    lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
+                lines.append(f"            if _mob_{vid} is not None: _objects['{vid}'] = _mob_{vid}")
+                lines.append(f"        except Exception: pass")
+                lines.append("")
 
     remaining = round(total_dur - prev_t, 3)
     if remaining > 0.05:
@@ -5410,14 +5515,15 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
                         "items": {
                             "type": "object",
                             "properties": {
-                                "id":       {"type": "string"},
-                                "role":     {"type": "string"},
-                                "zone":     {"type": "string"},
-                                "fn":       {"type": "string"},
-                                "args":     {"type": "string"},
-                                "duration": {"type": "number"},
-                                "show_at":  {"type": "number"},
-                                "hide_at":  {"type": "number"},
+                                "id":         {"type": "string"},
+                                "role":       {"type": "string"},
+                                "zone":       {"type": "string"},
+                                "fn":         {"type": "string"},
+                                "args":       {"type": "string"},
+                                "duration":   {"type": "number"},
+                                "show_at":    {"type": "number"},
+                                "hide_at":    {"type": "number"},
+                                "transition": {"type": "string"},
                             },
                             "required": ["id", "role", "zone", "fn", "args", "duration", "show_at", "hide_at"],
                             "additionalProperties": False,

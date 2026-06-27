@@ -1900,7 +1900,7 @@ def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
     return _sc.collected(), curve, fill_region, lbl_mob
 
 
-def fm_animate_scatter(scene, points, label_text="", accent_color=BRAND_GOLD,
+def fm_animate_scatter(scene, points=None, label_text="", accent_color=BRAND_GOLD,
                         duration=4.0, position=None, show_regression=False,
                         x_label="x", y_label="y", highlight_points=None,
                         title_text=""):
@@ -1909,6 +1909,7 @@ def fm_animate_scatter(scene, points, label_text="", accent_color=BRAND_GOLD,
     if position is None:
         position = ORIGIN
     if not points:
+        scene.wait(duration)
         return _sc.collected(), VGroup(), None
 
     clean_points = []
