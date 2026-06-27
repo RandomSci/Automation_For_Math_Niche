@@ -4936,30 +4936,20 @@ The goal: as narration moves through ideas, visuals EVOLVE — not wipe and rest
 
 === OUTPUT FORMAT ===
 Return JSON exactly matching this schema. Do not add extra fields.
-{{
-  "scene_id": "Chunk{{N}}",
-  "total_duration": {{float}},
-  "visuals": [
-    {{
-      "id": "v0",
-      "zone": "FULL",
-      "fn": "fm_animate_bar_chart",
-      "args": {{"values": [73, 41], "names": ["Group A","Group B"], "colors": ["BRAND_GREEN","BRAND_GOLD"], "title_text": "Comparison"}},
-      "duration": 3.5,
-      "show_at": 0.0,
-      "hide_at": 25.0
-    }},
-    {{
-      "id": "v1",
-      "zone": "BOTTOM_BAR",
-      "fn": "fm_formula",
-      "args": {{"lines": ["Rate = Events / Population"], "font_size": 32, "color": "BRAND_GOLD"}},
-      "duration": 1.5,
-      "show_at": 8.0,
-      "hide_at": 25.0
-    }}
-  ]
-}}"""
+IMPORTANT: The "args" field must be a JSON-encoded STRING, not a nested object.
+Serialize your args dict as a JSON string. Use double quotes inside the string with proper JSON escaping.
+
+Example structure (args is a string containing JSON):
+scene_id: string
+total_duration: number
+visuals: array of objects, each with:
+  id: string (e.g. "v0", "v1")
+  zone: string (one of: FULL, LEFT, RIGHT, CENTER_TOP, CENTER_BOT, TOP_TITLE, BOTTOM_BAR)
+  fn: string (e.g. "fm_animate_bar_chart")
+  args: string (JSON-encoded dict of kwargs, e.g. '{"values": [73, 41], "names": ["A", "B"]}')
+  duration: number (seconds for the animation)
+  show_at: number (seconds from chunk start when this visual appears)
+  hide_at: number (seconds from chunk start when this visual disappears)"""
     return _MANIFEST_SYSTEM_PROMPT
 
 
@@ -5172,7 +5162,7 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
                                 "id":       {"type": "string"},
                                 "zone":     {"type": "string"},
                                 "fn":       {"type": "string"},
-                                "args":     {"type": "object", "additionalProperties": True},
+                                "args":     {"type": "string"},
                                 "duration": {"type": "number"},
                                 "show_at":  {"type": "number"},
                                 "hide_at":  {"type": "number"},
@@ -5205,6 +5195,13 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
         raw = response.choices[0].message.content
         manifest = json.loads(raw)
         manifest["total_duration"] = total_duration
+
+        for vis in manifest.get("visuals", []):
+            if isinstance(vis.get("args"), str):
+                try:
+                    vis["args"] = json.loads(vis["args"])
+                except Exception:
+                    vis["args"] = {}
 
         code = _execute_manifest_to_manim_code(manifest, class_name)
         if not code:
