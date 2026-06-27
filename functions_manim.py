@@ -610,9 +610,13 @@ def fm_animate_donut(scene, percentage, label_text,
 
 def fm_animate_line_chart(scene, y_values, end_value_label=None,
                            accent_color=BRAND_GREEN, x_labels=None,
-                           duration=3.5, title_text="", _style=None):
+                           duration=3.5, title_text="", _style=None,
+                           position=None):
     _sc = _Tracker(scene)
     scene = _sc
+    if position is None:
+        position = ORIGIN
+    pos = np.array(position) if not isinstance(position, np.ndarray) else position
     if y_values and isinstance(y_values[0], (list, tuple)):
         series = [{"y_values": s, "color": accent_color, "label": ""} for s in y_values]
         return fm_animate_line_chart_multi(scene._s, series=series, duration=duration, title_text=title_text)
@@ -645,7 +649,7 @@ def fm_animate_line_chart(scene, y_values, end_value_label=None,
             "include_numbers": False,
         },
     )
-    axes.move_to(ORIGIN + DOWN * 0.15)
+    axes.move_to(pos + DOWN * 0.15)
 
     pts = [axes.c2p(i, y_values[i]) for i in range(n)]
 
@@ -1530,9 +1534,12 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
 def fm_animate_data_table(scene, headers, rows, duration=4.0,
                            header_color=BRAND_GOLD, accent_row=None,
                            accent_color=BRAND_RED, label_text=None,
-                           title_text=None):
+                           title_text=None, position=None):
     _sc = _Tracker(scene)
     scene = _sc
+    if position is None:
+        position = ORIGIN
+    pos = np.array(position) if not isinstance(position, np.ndarray) else position
     """Animated data table with header row and data rows.
     headers: list of column header strings.
     rows: list of lists (each inner list = one row of values as strings).
@@ -1585,7 +1592,7 @@ def fm_animate_data_table(scene, headers, rows, duration=4.0,
         all_cells.add(row_group)
         row_mobs.append(row_group)
 
-    all_cells.move_to(ORIGIN)
+    all_cells.move_to(pos)
     fm_clamp_to_frame(all_cells, margin_x=0.06, margin_y=0.08)
 
     intro_t = max(min(duration * 0.30, 1.0), 0.15)

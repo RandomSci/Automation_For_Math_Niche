@@ -5110,6 +5110,7 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         f"        _total_dur = {total_dur}",
         "        _zones = {}",
         "        _vc = [0]",
+        "        self.clear()",
         "",
     ]
 
