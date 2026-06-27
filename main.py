@@ -4795,6 +4795,436 @@ def group_beats_into_manim_chunks(beats: list, target_chunk_seconds: float = 4.5
     return chunks
 
 
+MANIFEST_ZONES = {
+    "FULL":        {"cx": 0.0,   "cy": 0.0,  "w": 12.5, "h": 7.0,  "xmin": -6.2, "xmax": 6.2,  "ymin": -3.5, "ymax": 3.5},
+    "LEFT":        {"cx": -3.2,  "cy": 0.0,  "w": 5.8,  "h": 5.8,  "xmin": -6.1, "xmax": -0.3, "ymin": -2.9, "ymax": 2.9},
+    "RIGHT":       {"cx":  3.2,  "cy": 0.0,  "w": 5.8,  "h": 5.8,  "xmin":  0.3, "xmax":  6.1, "ymin": -2.9, "ymax": 2.9},
+    "CENTER_TOP":  {"cx": 0.0,   "cy": 1.6,  "w": 11.0, "h": 3.5,  "xmin": -5.5, "xmax":  5.5, "ymin": -0.15,"ymax": 3.35},
+    "CENTER_BOT":  {"cx": 0.0,   "cy":-1.6,  "w": 11.0, "h": 3.5,  "xmin": -5.5, "xmax":  5.5, "ymin": -3.35,"ymax": 0.15},
+    "TOP_TITLE":   {"cx": 0.0,   "cy": 3.1,  "w": 12.5, "h": 1.3,  "xmin": -6.2, "xmax":  6.2, "ymin":  2.45,"ymax": 3.75},
+    "BOTTOM_BAR":  {"cx": 0.0,   "cy":-3.1,  "w": 12.5, "h": 1.3,  "xmin": -6.2, "xmax":  6.2, "ymin": -3.75,"ymax":-2.45},
+}
+
+MANIFEST_ZONE_DESCRIPTIONS = """
+ZONES (Manim coordinate space, frame is 14.22w × 8.0h, safe area ±6.5x ±3.8y):
+  FULL        : center=(0,0),   w=12.5, h=7.0  — use for one hero visual filling the frame
+  LEFT        : center=(-3.2,0),w=5.8,  h=5.8  — left half panel
+  RIGHT        : center=(3.2,0), w=5.8,  h=5.8  — right half panel
+  CENTER_TOP  : center=(0,1.6), w=11.0, h=3.5  — upper 2/3 of frame, paired with CENTER_BOT
+  CENTER_BOT  : center=(0,-1.6),w=11.0, h=3.5  — lower 2/3 of frame, paired with CENTER_TOP
+  TOP_TITLE   : center=(0,3.1), w=12.5, h=1.3  — thin top strip for labels/titles only
+  BOTTOM_BAR  : center=(0,-3.1),w=12.5, h=1.3  — thin bottom strip for labels/formulas only
+
+Zone compatibility (no overlap):
+  FULL cannot coexist with any other zone.
+  LEFT + RIGHT can coexist (side by side).
+  CENTER_TOP + CENTER_BOT can coexist (stacked).
+  TOP_TITLE can coexist with LEFT, RIGHT, CENTER_TOP, CENTER_BOT.
+  BOTTOM_BAR can coexist with LEFT, RIGHT, CENTER_TOP, CENTER_BOT.
+"""
+
+MANIFEST_VISUAL_SIZES = {
+    "fm_animate_bar_chart":       {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_line_chart":      {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_line_chart_multi":{"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_scatter":         {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_bell_curve":      {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_icon_grid":       {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_matrix":          {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP"]},
+    "fm_animate_vector":          {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_counter":         {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT", "TOP_TITLE", "BOTTOM_BAR"]},
+    "fm_animate_single_value":    {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT", "TOP_TITLE", "BOTTOM_BAR"]},
+    "fm_animate_comparison_bars": {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_gauge":           {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_donut":           {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_probability_bar": {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_number_line":     {"fits": ["FULL", "CENTER_BOT", "BOTTOM_BAR"]},
+    "fm_animate_glow_reveal":     {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_text_reveal":     {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_timeline":        {"fits": ["FULL", "CENTER_BOT"]},
+    "fm_animate_data_table":      {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_animate_waterfall":       {"fits": ["FULL", "CENTER_BOT"]},
+    "fm_formula":                 {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT", "TOP_TITLE", "BOTTOM_BAR"]},
+    "fm_concept_pills":           {"fits": ["FULL", "CENTER_TOP", "TOP_TITLE"]},
+    "fm_two_cards":               {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
+    "fm_card_row":                {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
+}
+
+MANIFEST_TRANSITION_TABLE = {
+    ("fm_animate_bar_chart",    "fm_animate_bar_chart"):    "Transform",
+    ("fm_animate_line_chart",   "fm_animate_line_chart"):   "Transform",
+    ("fm_animate_counter",      "fm_animate_counter"):      "Transform",
+    ("fm_animate_single_value", "fm_animate_single_value"): "Transform",
+    ("fm_animate_counter",      "fm_animate_single_value"): "ReplacementTransform",
+    ("fm_animate_single_value", "fm_animate_counter"):      "ReplacementTransform",
+    ("fm_two_cards",            "fm_two_cards"):            "Transform",
+    ("fm_animate_glow_reveal",  "fm_animate_text_reveal"):  "ReplacementTransform",
+}
+
+_MANIFEST_SYSTEM_PROMPT = None
+
+def _get_manifest_system_prompt():
+    global _MANIFEST_SYSTEM_PROMPT
+    if _MANIFEST_SYSTEM_PROMPT is not None:
+        return _MANIFEST_SYSTEM_PROMPT
+    _MANIFEST_SYSTEM_PROMPT = f"""You are a visual layout director for a math education YouTube channel (Math Unlocked). You receive a concept chunk — a 30-90 second segment of narration — and produce a SCENE MANIFEST that specifies exactly what visuals appear, where they go, when they appear/disappear, and how they transition.
+
+The manifest is executed by a Python engine that positions each visual in its zone, handles FadeOut timing, and picks transition animations. You NEVER write self.play() or construct() code. You only specify intent.
+
+{MANIFEST_ZONE_DESCRIPTIONS}
+
+=== POSITIONING RULES ===
+Every visual gets a zone. Two visuals in the SAME zone at the SAME time WILL overlap — this is a hard collision. The engine enforces this: if you assign two visuals to the same zone with overlapping time ranges, the second one REPLACES the first (auto FadeOut, then FadeIn).
+
+GOOD layouts:
+  - One hero visual in FULL (alone, no other zones)
+  - LEFT + RIGHT (two visuals side by side — comparison)
+  - CENTER_TOP + CENTER_BOT (stacked — concept above, data below)
+  - CENTER_TOP + BOTTOM_BAR (main visual + persistent formula strip)
+  - TOP_TITLE + CENTER_BOT + BOTTOM_BAR (label + main visual + key value)
+
+BAD: FULL + LEFT (FULL covers the entire frame — LEFT would be invisible)
+BAD: LEFT + LEFT (two visuals both in LEFT — they overlap)
+
+=== TIMING RULES ===
+- beat_start and beat_end are seconds from the START of this concept chunk (not video absolute time)
+- "show_at" is when the visual starts animating in (seconds from chunk start)
+- "hide_at" is when it fades out. Use the chunk's total_duration if it should persist to the end
+- "duration" is how long the visual's own animation takes (typically 2.5-5.0s for a chart, 1.5-2.5s for a label)
+- The visual stays on screen from show_at until hide_at — it does NOT disappear after its animation finishes
+
+=== VISUAL PARAMETERS ===
+Each visual entry has "fn" (the fm_* function name) and "args" (the kwargs to pass it, excluding scene and duration).
+duration is separate and set by you based on the beat window.
+
+Available functions and their key args:
+- fm_animate_bar_chart: values=[...], names=[...], colors=[COLOR,...], title_text=""
+- fm_animate_line_chart: y_values=[...], accent_color=COLOR, x_labels=[...], title_text="", end_value_label=""
+- fm_animate_scatter: points=[(x,y),...], accent_color=COLOR, show_regression=True/False, x_label="", y_label=""
+- fm_animate_bell_curve: accent_color=COLOR, mean_label="μ", std_label="σ" (MAX once per 8 beats total)
+- fm_animate_icon_grid: total=N, filled=K, label_text="", accent_color=COLOR, cols=10
+- fm_animate_matrix: rows_data=[[...],[...]], label_text="", accent_color=COLOR
+- fm_animate_vector: direction=[dx,dy], label_text="", accent_color=COLOR, show_components=False
+- fm_animate_counter: start_val=0, end_val=N, label_text="", accent_color=COLOR, prefix="", suffix=""
+- fm_animate_single_value: value_str="42%", label_text="", accent_color=COLOR
+- fm_animate_comparison_bars: items=[("Label", value, COLOR),...], title_text=""
+- fm_animate_gauge: value=N, max_val=M, label_text="", accent_color=COLOR
+- fm_animate_donut: percentage=0.68, label_text="", accent_color=COLOR
+- fm_animate_probability_bar: outcomes=[("A",0.3,COLOR),("B",0.7,COLOR),...], label_text=""
+- fm_animate_number_line: value=N, min_val=A, max_val=B, label_text="", accent_color=COLOR, tick_labels=[...]
+- fm_animate_glow_reveal: text_str="Key Idea", accent_color=COLOR, font_size=72, subtitle=""
+- fm_animate_timeline: events=["Step 1","Step 2",...], accent_color=COLOR, show_index=True
+- fm_animate_data_table: headers=["Col1","Col2",...], rows=[["val","val",...],...]
+- fm_animate_waterfall: steps=[("Label",value,COLOR),...]
+- fm_formula: lines=["formula text"], font_size=36, color=COLOR
+- fm_animate_comparison_bars: items=[("Label", value, COLOR),...], title_text=""
+- fm_two_cards: left_label="", left_val="", left_color=COLOR, right_label="", right_val="", right_color=COLOR
+- fm_card_row: items=[("label","value",COLOR),...], spacing=0.45
+- fm_concept_pills: labels=["A","B","C"], colors=[COLOR,...]
+
+Color constants: BRAND_GREEN="#38D996", BRAND_GOLD="#FFD166", BRAND_RED="#FF4D4D", BRAND_WHITE="#F5F7FA", BRAND_GRAY="#8A94A6"
+NEVER use BRAND_GRAY as accent_color for bars/dots/stems — they become invisible.
+
+=== SCENE EVOLUTION PHILOSOPHY ===
+Think of this like a presentation deck where each slide can have 1-3 objects. Objects can:
+1. APPEAR: show_at=T, stay until hide_at
+2. PERSIST: set hide_at to chunk end — it stays while new objects appear in other zones
+3. REPLACE: same zone, later show_at — engine auto-FadesOut the previous one first
+4. TRANSFORM: same zone, same fn type — engine uses Manim Transform for smooth morphing
+
+The goal: as narration moves through ideas, visuals EVOLVE — not wipe and restart. A bar chart introduced at beat 1 can STAY while a formula appears at the bottom at beat 3. Then at beat 6 the bar chart transforms into a scatter plot (same zone). The formula persists. This is how 3Blue1Brown builds scenes.
+
+=== OUTPUT FORMAT ===
+Return JSON exactly matching this schema. Do not add extra fields.
+{{
+  "scene_id": "Chunk{{N}}",
+  "total_duration": {{float}},
+  "visuals": [
+    {{
+      "id": "v0",
+      "zone": "FULL",
+      "fn": "fm_animate_bar_chart",
+      "args": {{"values": [73, 41], "names": ["Group A","Group B"], "colors": ["BRAND_GREEN","BRAND_GOLD"], "title_text": "Comparison"}},
+      "duration": 3.5,
+      "show_at": 0.0,
+      "hide_at": 25.0
+    }},
+    {{
+      "id": "v1",
+      "zone": "BOTTOM_BAR",
+      "fn": "fm_formula",
+      "args": {{"lines": ["Rate = Events / Population"], "font_size": 32, "color": "BRAND_GOLD"}},
+      "duration": 1.5,
+      "show_at": 8.0,
+      "hide_at": 25.0
+    }}
+  ]
+}}"""
+    return _MANIFEST_SYSTEM_PROMPT
+
+
+def _resolve_color(s):
+    _COLOR_MAP = {
+        "BRAND_GREEN": "#38D996", "BRAND_GOLD": "#FFD166", "BRAND_RED": "#FF4D4D",
+        "BRAND_WHITE": "#F5F7FA", "BRAND_GRAY": "#8A94A6", "BRAND_PANEL": "#0D1B2A",
+        "BRAND_BG": "#060F1A", "BRAND_NAVY": "#0B1628",
+    }
+    if isinstance(s, str) and s.startswith("BRAND_"):
+        return _COLOR_MAP.get(s, s)
+    return s
+
+
+def _args_to_python(args: dict) -> str:
+    parts = []
+    for k, v in args.items():
+        if isinstance(v, str) and v.startswith("BRAND_"):
+            parts.append(f"{k}={v}")
+        elif isinstance(v, list):
+            def _render_item(x):
+                if isinstance(x, str) and x.startswith("BRAND_"):
+                    return x
+                elif isinstance(x, str):
+                    return repr(x)
+                elif isinstance(x, list):
+                    return "[" + ", ".join(_render_item(i) for i in x) + "]"
+                elif isinstance(x, tuple):
+                    return "(" + ", ".join(_render_item(i) for i in x) + ")"
+                else:
+                    return repr(x)
+            parts.append(f"{k}=[{', '.join(_render_item(i) for i in v)}]")
+        elif isinstance(v, str):
+            parts.append(f"{k}={repr(v)}")
+        else:
+            parts.append(f"{k}={repr(v)}")
+    return ", ".join(parts)
+
+
+def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
+    """Converts a scene manifest JSON into a valid Manim construct() body.
+
+    Handles zone-based positioning, persist/replace lifecycle, and
+    transition type selection. GPT never writes self.play() — this
+    function does, based on the manifest's declarative intent.
+
+    Zone positions are applied by passing position= to each fm_* call
+    where supported, or by calling .move_to(zone_center) on the
+    returned object after the call completes."""
+
+    total_dur = float(manifest.get("total_duration", 4.5))
+    visuals   = manifest.get("visuals", [])
+    if not visuals:
+        return ""
+
+    visuals = sorted(visuals, key=lambda v: float(v.get("show_at", 0)))
+
+    zone_history = {}
+    events = []
+    for vis in visuals:
+        vid      = vis.get("id", f"v{len(events)}")
+        zone     = vis.get("zone", "FULL")
+        fn       = vis.get("fn", "fm_animate_glow_reveal")
+        args     = vis.get("args", {})
+        dur      = float(vis.get("duration", 3.0))
+        show_at  = float(vis.get("show_at", 0.0))
+        hide_at  = float(vis.get("hide_at", total_dur))
+        z        = MANIFEST_ZONES.get(zone, MANIFEST_ZONES["FULL"])
+        cx, cy   = z["cx"], z["cy"]
+
+        prev = zone_history.get(zone)
+        transition = "replace"
+        if prev:
+            prev_fn = prev.get("fn", "")
+            transition = MANIFEST_TRANSITION_TABLE.get((prev_fn, fn), "replace")
+        zone_history[zone] = {"fn": fn, "vid": vid, "hide_at": hide_at}
+
+        events.append({
+            "vid": vid, "zone": zone, "fn": fn, "args": args,
+            "dur": dur, "show_at": show_at, "hide_at": hide_at,
+            "cx": cx, "cy": cy, "transition": transition,
+            "prev_vid": prev["vid"] if prev else None,
+        })
+
+    lines = [
+        "from manim import *",
+        "",
+        f"class {class_name}(MathScene):",
+        "    def construct(self):",
+        f"        _total_dur = {total_dur}",
+        "        _objects = {}",
+        "        _t = 0.0",
+        "",
+    ]
+
+    fn_supports_position = {
+        "fm_animate_counter", "fm_animate_single_value", "fm_animate_gauge",
+        "fm_animate_donut", "fm_animate_bell_curve", "fm_animate_number_line",
+        "fm_animate_icon_grid", "fm_animate_scatter", "fm_animate_vector",
+        "fm_animate_matrix", "fm_formula",
+    }
+
+    sorted_show_times = sorted(set(e["show_at"] for e in events))
+
+    for t in sorted_show_times:
+        batch = [e for e in events if e["show_at"] == t]
+
+        wait_needed = t - 0 if t == sorted_show_times[0] else t - sorted_show_times[sorted_show_times.index(t) - 1]
+        if wait_needed > 0.05:
+            lines.append(f"        # t={t:.2f}s")
+            lines.append(f"        _fade_targets = [_objects.get(vid) for vid in {[e['prev_vid'] for e in batch if e['prev_vid'] and e['transition'] == 'replace']} if _objects.get(vid) is not None]")
+            lines.append(f"        if _fade_targets:")
+            lines.append(f"            self.play(*(FadeOut(m) for m in _fade_targets), run_time=0.35)")
+            if wait_needed > 0.4:
+                lines.append(f"        self.wait({round(wait_needed - 0.35, 3)})")
+            lines.append("")
+
+        for e in batch:
+            vid  = e["vid"]
+            fn   = e["fn"]
+            args = dict(e["args"])
+            dur  = e["dur"]
+            cx   = e["cx"]
+            cy   = e["cy"]
+            args_str = _args_to_python(args)
+
+            if fn in fn_supports_position:
+                if args_str:
+                    args_str += f", position=[{cx}, {cy}, 0]"
+                else:
+                    args_str = f"position=[{cx}, {cy}, 0]"
+                lines.append(f"        _r_{vid} = {fn}(self, {args_str}, duration={dur})")
+            else:
+                lines.append(f"        _r_{vid} = {fn}(self, {args_str}, duration={dur})")
+                lines.append(f"        if _r_{vid} is not None:")
+                lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
+                lines.append(f"            _mob_{vid}.move_to([{cx}, {cy}, 0])")
+                lines.append(f"            _objects['{vid}'] = _mob_{vid}")
+                lines.append("")
+                continue
+
+            lines.append(f"        if _r_{vid} is not None:")
+            lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
+            lines.append(f"            _objects['{vid}'] = _mob_{vid}")
+            lines.append("")
+
+    remaining = round(total_dur - (sorted_show_times[-1] if sorted_show_times else 0) - max(e["dur"] for e in events if e["show_at"] == sorted_show_times[-1]), 3) if events else total_dur
+    if remaining > 0.05:
+        lines.append(f"        self.wait({max(remaining, 0.05)})")
+
+    all_hide_events = sorted(
+        [(e["hide_at"], e["vid"]) for e in events if e["hide_at"] < total_dur - 0.1],
+        key=lambda x: x[0]
+    )
+    if all_hide_events:
+        lines.append("")
+        for hide_t, vid in all_hide_events:
+            lines.append(f"        # auto-hide {vid} at t={hide_t:.2f}s handled by wait/fadeout above")
+
+    return "\n".join(lines)
+
+
+def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, chunk_idx: int, chunk: dict) -> str:
+    """Calls GPT with the manifest prompt for a concept chunk.
+    Returns completed Manim Python code string, or empty string on failure.
+    Falls back to direct Python codegen if manifest parse fails."""
+    if not OPENAI_API_KEY:
+        return ""
+
+    concept_title = chunk.get("concept_title", f"Concept {chunk_idx}")
+    total_duration = round(chunk["end_time"] - chunk["start_time"], 2)
+    concept_start = chunk["start_time"]
+    class_name = f"Chunk{chunk_idx}"
+
+    beat_lines = []
+    for b in chunk.get("beats", []):
+        b_start = round(float(b.get("start_time", 0)) - concept_start, 2)
+        b_end   = round(float(b.get("end_time", 0))   - concept_start, 2)
+        b_text  = b.get("text", "").strip()
+        beat_lines.append(f"  +{b_start:.2f}s-{b_end:.2f}s: {b_text}")
+
+    user_prompt = (
+        f"Topic: {topic}\n"
+        f"Concept: {concept_title}\n"
+        f"Class name: {class_name}\n"
+        f"Total duration: {total_duration}s\n\n"
+        f"Beat timeline (seconds from chunk start):\n"
+        + "\n".join(beat_lines) +
+        f"\n\nProduce a scene manifest for this concept. "
+        f"The manifest must cover the full {total_duration}s. "
+        f"Choose visuals that match the mathematical content of each beat. "
+        f"Use zone combinations that let information persist and evolve — do not wipe the screen unless the topic completely changes."
+    )
+
+    manifest_schema = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "scene_manifest",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "scene_id":       {"type": "string"},
+                    "total_duration": {"type": "number"},
+                    "visuals": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id":       {"type": "string"},
+                                "zone":     {"type": "string"},
+                                "fn":       {"type": "string"},
+                                "args":     {"type": "object", "additionalProperties": True},
+                                "duration": {"type": "number"},
+                                "show_at":  {"type": "number"},
+                                "hide_at":  {"type": "number"},
+                            },
+                            "required": ["id", "zone", "fn", "args", "duration", "show_at", "hide_at"],
+                            "additionalProperties": False,
+                        }
+                    }
+                },
+                "required": ["scene_id", "total_duration", "visuals"],
+                "additionalProperties": False,
+            }
+        }
+    }
+
+    try:
+        def _do():
+            return gpt4o_call(
+                client,
+                model="gpt-4.1",
+                max_tokens=3000,
+                temperature=0.2,
+                response_format=manifest_schema,
+                messages=[
+                    {"role": "system", "content": _get_manifest_system_prompt()},
+                    {"role": "user",   "content": user_prompt},
+                ],
+            )
+        response = _call_with_retry(_do, label=f"manifest Chunk{chunk_idx}")
+        raw = response.choices[0].message.content
+        manifest = json.loads(raw)
+        manifest["total_duration"] = total_duration
+
+        code = _execute_manifest_to_manim_code(manifest, class_name)
+        if not code:
+            return ""
+
+        try:
+            import ast as _ast
+            _ast.parse(code)
+        except SyntaxError as se:
+            print(f"    ⚠ Manifest executor produced invalid syntax for {class_name}: {se}")
+            return ""
+
+        print(f"    🗺  Manifest generated {class_name}: {len(manifest['visuals'])} visuals across {total_duration}s")
+        return code
+
+    except Exception as e:
+        print(f"    ⚠ Manifest generation failed for {class_name}: {e}")
+        return ""
+
+
 def generate_manim_chunk_code(chunks: list, topic: str) -> list:
     """Manim-based replacement for the old PIL/cv2 generate_visual_code.
     Produces one Manim Scene class per chunk (each chunk is roughly
@@ -5185,7 +5615,7 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
     has_concepts = any(c.get("is_concept") for c in codegen_chunks)
     if has_concepts:
         chunk_batch_size = 1
-        print(f"  🧩 Concept mode: sending chunks individually for full-context generation")
+        print(f"  🧩 Concept mode: manifest-based generation (zone-aware, collision-free)")
     else:
         chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=4)
     n_batches = max(1, math.ceil(len(codegen_chunks) / chunk_batch_size)) if codegen_chunks else 0
@@ -5203,21 +5633,40 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
 
         try:
             is_concept_batch = any(batch[j].get("is_concept") for j in range(len(batch)))
-            tokens = 6000 if is_concept_batch else 4000
-            response = _gpt_call_for_prompt(_build_user_prompt(list(zip(batch_global_indices, batch))), max_tokens=tokens)
-            returned = _parse_chunks_from_raw(response.choices[0].message.content)
-            _slot_items(returned, batch_global_indices)
-            missing = [idx for idx in batch_global_indices if idx not in all_results]
-            if missing:
-                print(f"  ⚠ Batch {batch_idx + 1}: parser recovered {len(returned)}/{len(batch)} chunks, retrying {len(missing)} individually...")
-                for idx in missing:
-                    local_i = batch_global_indices.index(idx)
+            if is_concept_batch:
+                for idx, chunk in zip(batch_global_indices, batch):
                     try:
-                        r2 = _gpt_call_for_prompt(_build_user_prompt([(idx, batch[local_i])]))
-                        recovered = _parse_chunks_from_raw(r2.choices[0].message.content)
-                        _slot_items(recovered, [idx])
+                        code = _generate_manifest_chunk(client, system_prompt, topic, idx, chunk)
+                        if code:
+                            all_results[idx] = {"chunk_index": idx, "class_name": f"Chunk{idx}", "code": code}
+                        else:
+                            r = _gpt_call_for_prompt(_build_user_prompt([(idx, chunk)]), max_tokens=6000)
+                            recovered = _parse_chunks_from_raw(r.choices[0].message.content)
+                            _slot_items(recovered, [idx])
                     except Exception as e2:
-                        print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
+                        print(f"    ⚠ Manifest gen for Chunk{idx} failed ({e2}), falling back to direct codegen")
+                        try:
+                            r = _gpt_call_for_prompt(_build_user_prompt([(idx, chunk)]), max_tokens=6000)
+                            recovered = _parse_chunks_from_raw(r.choices[0].message.content)
+                            _slot_items(recovered, [idx])
+                        except Exception as e3:
+                            print(f"    ⚠ Fallback also failed for Chunk{idx}: {e3}")
+            else:
+                tokens = 4000
+                response = _gpt_call_for_prompt(_build_user_prompt(list(zip(batch_global_indices, batch))), max_tokens=tokens)
+                returned = _parse_chunks_from_raw(response.choices[0].message.content)
+                _slot_items(returned, batch_global_indices)
+                missing = [idx for idx in batch_global_indices if idx not in all_results]
+                if missing:
+                    print(f"  ⚠ Batch {batch_idx + 1}: parser recovered {len(returned)}/{len(batch)} chunks, retrying {len(missing)} individually...")
+                    for idx in missing:
+                        local_i = batch_global_indices.index(idx)
+                        try:
+                            r2 = _gpt_call_for_prompt(_build_user_prompt([(idx, batch[local_i])]))
+                            recovered = _parse_chunks_from_raw(r2.choices[0].message.content)
+                            _slot_items(recovered, [idx])
+                        except Exception as e2:
+                            print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
             n_done = sum(1 for idx in batch_global_indices if idx in all_results)
             print(f"  ✅ Manim chunk batch {batch_idx + 1} done: {n_done}/{len(batch)} chunks")
         except Exception as e:
