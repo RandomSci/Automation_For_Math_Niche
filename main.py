@@ -4946,7 +4946,7 @@ visuals: array of objects, each with:
   id: string (e.g. "v0", "v1")
   zone: string (one of: FULL, LEFT, RIGHT, CENTER_TOP, CENTER_BOT, TOP_TITLE, BOTTOM_BAR)
   fn: string (e.g. "fm_animate_bar_chart")
-  args: string (JSON-encoded dict of kwargs, e.g. '{"values": [73, 41], "names": ["A", "B"]}')
+  args: string (JSON-encoded dict of kwargs, e.g. '{{"values": [73, 41], "names": ["A", "B"]}}')
   duration: number (seconds for the animation)
   show_at: number (seconds from chunk start when this visual appears)
   hide_at: number (seconds from chunk start when this visual disappears)"""
