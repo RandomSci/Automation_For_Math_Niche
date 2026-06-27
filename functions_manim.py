@@ -311,7 +311,10 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
 
 
 def fm_animate_bar_chart(scene, values, names, colors=None,
-                          duration=3.5, title_text="", _style=None):
+                          duration=3.5, title_text="", _style=None, position=None):
+    if position is None:
+        position = ORIGIN
+    pos = np.array(position) if not isinstance(position, np.ndarray) else position
     if colors is None:
         colors = [BRAND_GREEN, BRAND_GOLD, BRAND_RED, BRAND_WHITE]
     bar_colors = [colors[i % len(colors)] for i in range(len(values))]
@@ -352,7 +355,7 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
             cat_labels.add(cat_lbl)
 
         chart_group = VGroup(baseline, bars, val_labels, cat_labels)
-        chart_group.move_to(ORIGIN + RIGHT * 0.5)
+        chart_group.move_to(pos + np.array([0.5, 0, 0]))
 
         if title_text:
             ttl = Text(title_text, font_size=28, color=BRAND_GRAY)
@@ -841,7 +844,10 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
     return axes, lines
 
 
-def fm_animate_waterfall(scene, steps, duration=4.5):
+def fm_animate_waterfall(scene, steps, duration=4.5, position=None):
+    if position is None:
+        position = ORIGIN
+    pos = np.array(position) if not isinstance(position, np.ndarray) else position
     if steps and isinstance(steps[0], (list, tuple)):
         steps = [{"label": s[0], "value": float(s[1])} for s in steps]
     steps = [dict(s) for s in steps]
@@ -928,7 +934,10 @@ def fm_animate_waterfall(scene, steps, duration=4.5):
     return bars, labels
 
 
-def fm_animate_text_reveal(scene, lines, colors=None, duration=3.0, sizes=None):
+def fm_animate_text_reveal(scene, lines, colors=None, duration=3.0, sizes=None, position=None):
+    if position is None:
+        position = ORIGIN
+    pos = np.array(position) if not isinstance(position, np.ndarray) else position
     if colors is None:
         colors = [BRAND_GOLD] + [BRAND_WHITE] * (len(lines) - 1)
     if sizes is None:
@@ -940,7 +949,7 @@ def fm_animate_text_reveal(scene, lines, colors=None, duration=3.0, sizes=None):
         for i in range(len(lines))
     ])
     texts.arrange(DOWN, buff=0.36)
-    texts.move_to(ORIGIN)
+    texts.move_to(pos)
 
     per_t  = max(min(duration / max(len(lines), 1) * 0.55, 0.85), 0.1)
     hold_t = max(duration - per_t * len(lines), 0.1)
@@ -1092,9 +1101,12 @@ def fm_animate_bullet_chart(scene, actual, target, range_low, range_high,
 
 def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
                             duration=3.0, font_size=88, subtitle=None,
-                            subtitle_color=None, _style=None):
+                            subtitle_color=None, _style=None, position=None):
     if subtitle_color is None:
         subtitle_color = accent_color
+    if position is None:
+        position = ORIGIN
+    pos = np.array(position) if not isinstance(position, np.ndarray) else position
     style = _style if _style is not None else _fm_style(scene, 3)
 
     safe_w = config.frame_width * 0.84
@@ -1105,9 +1117,9 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
     sub = None
     if subtitle:
         sub = Text(subtitle, font_size=38, color=subtitle_color)
-        VGroup(text, sub).arrange(DOWN, buff=0.42).move_to(ORIGIN)
+        VGroup(text, sub).arrange(DOWN, buff=0.42).move_to(pos)
     else:
-        text.move_to(ORIGIN)
+        text.move_to(pos)
 
     intro_t = max(min(duration * 0.38, 1.3), 0.15)
     hold_t  = max(duration - intro_t - (0.28 if subtitle else 0), 0.05)
@@ -1170,7 +1182,10 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
 
 
 def fm_animate_timeline(scene, events, accent_color=BRAND_GOLD, duration=4.0,
-                         show_index=False, _style=None):
+                         show_index=False, _style=None, position=None):
+    if position is None:
+        position = ORIGIN
+    pos = np.array(position) if not isinstance(position, np.ndarray) else position
     n = len(events)
     if n < 1:
         return VGroup(), VGroup()
@@ -1354,7 +1369,10 @@ def fm_formula(scene, lines="", font_size=60, color=BRAND_WHITE, duration=3.0,
 
 
 def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
-                                show_net=True):
+                                show_net=True, position=None):
+    if position is None:
+        position = ORIGIN
+    pos = np.array(position) if not isinstance(position, np.ndarray) else position
     def _to_float(v):
         if isinstance(v, (int, float)):
             return float(v)
@@ -1453,7 +1471,8 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
 
 def fm_animate_data_table(scene, headers, rows, duration=4.0,
                            header_color=BRAND_GOLD, accent_row=None,
-                           accent_color=BRAND_RED):
+                           accent_color=BRAND_RED, label_text=None,
+                           title_text=None):
     """Animated data table with header row and data rows.
     headers: list of column header strings.
     rows: list of lists (each inner list = one row of values as strings).

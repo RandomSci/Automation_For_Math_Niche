@@ -4975,18 +4975,30 @@ TEXT / LABELS (use sparingly — support charts, never replace them):
 Colors: BRAND_GREEN="#38D996", BRAND_GOLD="#FFD166", BRAND_RED="#FF4D4D", BRAND_WHITE="#F5F7FA", BRAND_GRAY="#8A94A6"
 NEVER use BRAND_GRAY as accent_color for any chart or bar — invisible on dark background.
 
+=== ROLES ===
+Every visual must have a role. The renderer enforces these as hard constraints:
+  main    — the primary data visual (chart, diagram, animation). MAX 1 on screen at any time.
+  support — secondary visual that complements main (a value, icon grid, counter). MAX 2 simultaneously.
+  label   — text-only overlay (glow_reveal, text_reveal, formula). MAX 1 simultaneously.
+  caption — thin strip content (TOP_TITLE, BOTTOM_BAR only). MAX 1 per strip zone.
+
+If you place a second main while one is already visible, the renderer auto-fades the first.
+Use support to add context alongside main without replacing it.
+Use label for opening hooks only — switch to data (main/support) within the first 5 seconds.
+
 === QUALITY RULES ===
 - Screen must NEVER be empty — stagger hide_at and show_at so there is always something visible
-- MAX 3 visuals on screen at once — more is visual noise
-- Charts should have duration 3.0-5.0s minimum
-- Do NOT stack two glow_reveals back to back — use one to open, then switch to data
-- Concept title should appear once (FULL glow_reveal), then either persist as TOP_TITLE or disappear
+- MAX 1 main visual on screen simultaneously — renderer enforces this hard
+- Charts minimum duration 3.0-5.0s
+- Open with glow_reveal (role=label) for max 3-4s, then replace with a main data visual
+- Concept title persists as caption in TOP_TITLE throughout — set hide_at to total_duration
 
 === OUTPUT FORMAT ===
 Return JSON matching this schema exactly. The "args" field must be a JSON-encoded STRING.
 
 Each visual object:
   id: string ("v0", "v1", ...)
+  role: string (main | support | label | caption)
   zone: string (FULL | LEFT | RIGHT | CENTER_TOP | CENTER_BOT | TOP_TITLE | BOTTOM_BAR)
   fn: string (function name from reference above)
   args: string (JSON-encoded kwargs, e.g. '{{"values": [73, 41], "names": ["A", "B"]}}')
@@ -5087,8 +5099,18 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
 
     visuals = sorted(visuals, key=lambda v: float(v.get("show_at", 0)))
 
+    _ROLE_DEFAULT = {
+        "fm_animate_glow_reveal": "label", "fm_animate_text_reveal": "label",
+        "fm_formula": "label", "fm_concept_pills": "label",
+        "fm_animate_single_value": "support", "fm_animate_counter": "support",
+        "fm_animate_gauge": "support", "fm_animate_donut": "support",
+        "fm_two_cards": "support", "fm_card_row": "support", "fm_icon": "support",
+    }
+
     zone_history = {}
+    current_main = None
     events = []
+
     for vis in visuals:
         vid      = vis.get("id", f"v{len(events)}")
         zone     = vis.get("zone", "FULL")
@@ -5100,6 +5122,9 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         z        = MANIFEST_ZONES.get(zone, MANIFEST_ZONES["FULL"])
         cx, cy   = z["cx"], z["cy"]
 
+        strip_zone = zone in ("TOP_TITLE", "BOTTOM_BAR")
+        role = vis.get("role", "caption" if strip_zone else _ROLE_DEFAULT.get(fn, "main"))
+
         prev = zone_history.get(zone)
         transition = "replace"
         if prev:
@@ -5107,11 +5132,19 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
             transition = MANIFEST_TRANSITION_TABLE.get((prev_fn, fn), "replace")
         zone_history[zone] = {"fn": fn, "vid": vid, "hide_at": hide_at}
 
+        extra_fades = []
+        if role == "main" and current_main and current_main["vid"] != vid:
+            if current_main["hide_at"] > show_at:
+                extra_fades.append(current_main["vid"])
+        if role == "main":
+            current_main = {"vid": vid, "hide_at": hide_at}
+
         events.append({
             "vid": vid, "zone": zone, "fn": fn, "args": args,
             "dur": dur, "show_at": show_at, "hide_at": hide_at,
             "cx": cx, "cy": cy, "transition": transition,
             "prev_vid": prev["vid"] if prev else None,
+            "role": role, "extra_fades": extra_fades,
         })
 
     lines = [
@@ -5130,6 +5163,8 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         "fm_animate_donut", "fm_animate_bell_curve", "fm_animate_number_line",
         "fm_animate_icon_grid", "fm_animate_scatter", "fm_animate_vector",
         "fm_animate_matrix", "fm_formula", "fm_animate_probability_bar",
+        "fm_animate_bar_chart", "fm_animate_glow_reveal", "fm_animate_text_reveal",
+        "fm_animate_waterfall", "fm_animate_timeline", "fm_animate_comparison_bars",
     }
 
     fn_is_constructor = {
@@ -5152,6 +5187,8 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         for e in show_batch:
             if e.get("prev_vid"):
                 to_fade_now.append(e["prev_vid"])
+            for fv in e.get("extra_fades", []):
+                to_fade_now.append(fv)
         for e in hide_batch:
             if e["vid"] not in [x["vid"] for x in show_batch]:
                 to_fade_now.append(e["vid"])
@@ -5195,7 +5232,7 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
                 lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
                 lines.append(f"            if _mob_{vid} is not None: self.play(FadeIn(_mob_{vid}), run_time=0.4)")
             elif fn not in fn_supports_position:
-                lines.append(f"            if _mob_{vid} is not None: self.play(_mob_{vid}.animate.move_to([{cx}, {cy}, 0]), run_time=0.25)")
+                lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
             lines.append(f"            if _mob_{vid} is not None: _objects['{vid}'] = _mob_{vid}")
             lines.append(f"        except Exception: pass")
             lines.append("")
