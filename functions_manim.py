@@ -1510,6 +1510,10 @@ def fm_animate_data_table(scene, headers, rows, duration=4.0,
     return all_cells
 
 
+def fm_icon(name: str, size: float = 1.0, color=None):
+    """Return a VGroup icon mobject for the given name. Does not animate — caller positions and adds."""
+    if color is None:
+        color = BRAND_GOLD
 
     g = VGroup()
     s = size

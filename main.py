@@ -3776,6 +3776,7 @@ def _get_chunk_available_names() -> set:
         "fm_single_value", "fm_timeline", "fm_waterfall", "fm_gauge",
         "fm_donut", "fm_matrix", "fm_vector", "fm_number_line",
         "fm_probability_bar", "fm_comparison_bars", "fm_data_table",
+        "fm_icon", "fm_card", "fm_two_cards", "fm_card_row",
         "ease_in_sine", "ease_out_sine", "ease_in_out_sine",
         "ease_in_quad", "ease_out_quad", "ease_in_out_quad",
         "ease_in_cubic", "ease_out_cubic", "ease_in_out_cubic",
@@ -5046,7 +5047,6 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
     for vis in visuals:
         raw_fn = vis.get("fn", "")
         vis["fn"] = _FN_ALIASES.get(raw_fn, raw_fn)
-        return ""
 
     visuals = sorted(visuals, key=lambda v: float(v.get("show_at", 0)))
 
@@ -5095,6 +5095,10 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         "fm_animate_matrix", "fm_formula",
     }
 
+    fn_is_constructor = {
+        "fm_icon", "fm_card", "fm_two_cards", "fm_card_row",
+    }
+
     sorted_show_times = sorted(set(e["show_at"] for e in events))
 
     prev_t = 0.0
@@ -5132,11 +5136,14 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
             else:
                 call_args = args_str
 
-            lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
+            lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})" if fn not in fn_is_constructor else f"        _r_{vid} = {fn}({call_args})")
             lines.append(f"        try:")
             lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
-            if fn not in fn_supports_position:
+            if fn in fn_is_constructor:
                 lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
+                lines.append(f"            if _mob_{vid} is not None: self.play(FadeIn(_mob_{vid}), run_time=0.4)")
+            elif fn not in fn_supports_position:
+                lines.append(f"            if _mob_{vid} is not None: self.play(_mob_{vid}.animate.move_to([{cx}, {cy}, 0]), run_time=0.25)")
             lines.append(f"            if _mob_{vid} is not None: _objects['{vid}'] = _mob_{vid}")
             lines.append(f"        except Exception: pass")
             lines.append("")
