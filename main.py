@@ -4902,50 +4902,67 @@ def _get_manifest_system_prompt():
         return _MANIFEST_SYSTEM_PROMPT
     _MANIFEST_SYSTEM_PROMPT = f"""You are a VISUAL STORY DIRECTOR for Math Unlocked, a math education YouTube channel.
 
-You receive a concept chunk and produce an ACTION SCRIPT: a sequence of scene-building steps executed ONE AT A TIME. No timestamps. No simultaneous chaos. Just a story told step by step like a film director.
+You receive a concept chunk and produce an ACTION SCRIPT: a sequence of scene-building steps executed ONE AT A TIME. No timestamps. No simultaneous chaos. Think like a film director. Each action is a cut or transformation. The viewer sees ONE main thing at a time, building deliberately.
 
 {MANIFEST_ZONE_DESCRIPTIONS}
 
 === ACTIONS (sequential — one completes before next starts) ===
 
-show      — FadeIn a new visual. Auto-clears that zone first if occupied.
-add       — FadeIn alongside existing without clearing other zones. Use for supporting strips only.
-transform — Morph current zone visual into new one. Old BECOMES new. Bars grow, text rewrites, shapes morph.
-move_to   — Animate existing zone visual to new zone (shrink + fly). Great for title from FULL to TOP_TITLE.
-wait      — Hold current screen. Let narration breathe.
-clear     — FadeOut everything. Use between major concept shifts.
-clear_zone — FadeOut one zone only.
+show      — FadeIn a new visual. Auto-clears that zone first.
+            action="show", zone="FULL", fn="fm_animate_glow_reveal", args='{{"text_str":"Title"}}', duration=3.0, from_zone="", to_zone=""
 
-=== THE GOLDEN RULE ===
-NEVER show in an occupied zone — use transform or clear_zone first.
-Maximum 2 zones active at once: 1 main + 1 supporting strip (TOP_TITLE or BOTTOM_BAR).
-"add" is ONLY for TOP_TITLE or BOTTOM_BAR strips alongside a main visual.
+add       — FadeIn alongside existing. Use ONLY for TOP_TITLE or BOTTOM_BAR strips.
+            action="add", zone="BOTTOM_BAR", fn="fm_formula", args='{{"lines":["key insight"]}}', duration=2.0, from_zone="", to_zone=""
+
+transform — Morph current zone visual into new one. Old BECOMES new. Bars grow, shapes morph.
+            action="transform", zone="CENTER_BOT", fn="fm_animate_bar_chart", args='{{"values":[20,80],"names":["A","B"]}}', duration=2.5, from_zone="", to_zone=""
+
+move_to   — Animate existing zone visual to new zone (shrink and fly).
+            action="move_to", zone="", fn="", args="", duration=0.7, from_zone="FULL", to_zone="TOP_TITLE"
+
+wait      — Hold current screen.
+            action="wait", zone="", fn="", args="", duration=2.0, from_zone="", to_zone=""
+
+clear     — FadeOut everything on screen.
+            action="clear", zone="", fn="", args="", duration=0.4, from_zone="", to_zone=""
+
+clear_zone — FadeOut one zone only.
+             action="clear_zone", zone="CENTER_BOT", fn="", args="", duration=0.3, from_zone="", to_zone=""
+
+=== GOLDEN RULES ===
+- NEVER show in an occupied zone without clear_zone or clear first
+- Max 2 zones active: 1 main + 1 strip (TOP_TITLE or BOTTOM_BAR)
+- "add" only for TOP_TITLE or BOTTOM_BAR
+- Use empty string "" for fields not needed by the action
 
 === CINEMATIC PATTERNS ===
 
-PATTERN 1 — HOOK AND BUILD (most common):
-  show FULL glow_reveal "Concept Title"
-  move_to FULL to TOP_TITLE
-  show CENTER_BOT bar_chart [data]
-  add BOTTOM_BAR formula "key insight"
-  transform CENTER_BOT bar_chart [updated data]
-  clear
+PATTERN 1 — HOOK AND BUILD:
+  show FULL glow_reveal "Concept Title" 3s
+  move_to FULL to TOP_TITLE 0.7s
+  show CENTER_BOT bar_chart [data] 4s
+  add BOTTOM_BAR formula "key insight" 2s
+  transform CENTER_BOT bar_chart [updated data] 2.5s
+  wait 2s
+  clear 0.4s
 
-PATTERN 2 — 1+1=2 STYLE (for comparisons):
-  show LEFT single_value "Before"
-  add RIGHT single_value "After"
-  transform LEFT single_value "new Before"
-  add BOTTOM_BAR glow_reveal "The gap is X"
-  clear
+PATTERN 2 — 1+1=2 COMPARE:
+  show LEFT single_value "Before: 70" 2.5s
+  add RIGHT single_value "After: 75" 2.5s
+  add BOTTOM_BAR glow_reveal "5 point gap" 2s
+  transform LEFT single_value "Before: 60" 2s
+  wait 2s
+  clear 0.4s
 
 PATTERN 3 — DATA REVEAL:
-  show FULL counter 0 to N
-  move_to FULL to RIGHT
-  show LEFT bar_chart [breakdown]
-  add BOTTOM_BAR formula "context"
-  clear
+  show FULL counter 0 to 1000000 3s
+  move_to FULL to RIGHT 0.7s
+  show LEFT bar_chart [breakdown] 4s
+  add BOTTOM_BAR glow_reveal "context" 2s
+  wait 2s
+  clear 0.4s
 
-=== FUNCTION SIGNATURES (exact kwargs only) ===
+=== FUNCTION SIGNATURES (exact kwargs only, no position) ===
 fm_animate_bar_chart: values=[...], names=[...], colors=[...], title_text=""
 fm_animate_line_chart: y_values=[...], accent_color=COLOR, x_labels=[...], title_text=""
 fm_animate_scatter: points=[[x,y],...], accent_color=COLOR, show_regression=False
@@ -4970,17 +4987,8 @@ Colors: BRAND_GREEN="#38D996", BRAND_GOLD="#FFD166", BRAND_RED="#FF4D4D", BRAND_
 NEVER use BRAND_GRAY as accent_color.
 
 === OUTPUT FORMAT ===
-Return JSON. "actions" is an array of objects. Each object has "action" plus relevant fields.
-"args" is always a JSON-encoded STRING.
-
-Action fields:
-  show:       action, zone, fn, args, duration
-  add:        action, zone, fn, args, duration
-  transform:  action, zone, fn, args, duration
-  move_to:    action, from_zone, to_zone, duration
-  wait:       action, duration
-  clear:      action, duration
-  clear_zone: action, zone, duration"""
+All fields required on every action. Use empty string for unused string fields, 0.0 for unused duration fields.
+args is always a JSON-encoded STRING: '{{"values": [30, 70], "names": ["A","B"]}}'"""
     return _MANIFEST_SYSTEM_PROMPT
 
 
@@ -5030,9 +5038,7 @@ def _value_to_python(v) -> str:
 
 
 def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
-    """Converts an action-script manifest into a Manim construct() body.
-    Actions execute sequentially — one completes before the next starts.
-    This guarantees no stacking, no overlap, no simultaneous chaos."""
+    """Sequential action-based executor. One action at a time. No stacking possible."""
 
     _FN_ALIASES = {
         "fm_glow_reveal":     "fm_animate_glow_reveal",
@@ -5063,8 +5069,7 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         "fm_animate_matrix", "fm_formula", "fm_animate_probability_bar",
         "fm_animate_bar_chart", "fm_animate_glow_reveal", "fm_animate_text_reveal",
         "fm_animate_waterfall", "fm_animate_timeline", "fm_animate_comparison_bars",
-        "fm_animate_line_chart", "fm_animate_line_chart_multi", "fm_animate_data_table",
-        "fm_animate_scatter", "fm_two_cards", "fm_card_row",
+        "fm_animate_line_chart", "fm_animate_data_table", "fm_two_cards",
     }
 
     fn_is_constructor = {
@@ -5084,6 +5089,18 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
             a["args"].pop("position", None)
             a["args"].pop("scene", None)
             a["args"].pop("duration", None)
+        elif isinstance(a.get("args"), str) and a["args"]:
+            try:
+                import json as _j
+                parsed = _j.loads(a["args"])
+                parsed.pop("position", None)
+                parsed.pop("scene", None)
+                parsed.pop("duration", None)
+                a["args"] = parsed
+            except Exception:
+                a["args"] = {}
+        else:
+            a["args"] = {}
 
     lines = [
         "from manim import *",
@@ -5092,21 +5109,86 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         "    def construct(self):",
         f"        _total_dur = {total_dur}",
         "        _zones = {}",
+        "        _vc = [0]",
         "",
     ]
 
-    vid_counter = [0]
+    def nv():
+        _vc_val = lines.count("_vc[0] +=") + 1
+        return f"_m{_vc_val}"
 
+    vid_idx = [0]
     def next_vid():
-        vid_counter[0] += 1
-        return f"v{vid_counter[0]}"
+        vid_idx[0] += 1
+        return f"_m{vid_idx[0]}"
 
-    def zone_coords(zone):
-        z = MANIFEST_ZONES.get(zone, MANIFEST_ZONES["FULL"])
-        return z["cx"], z["cy"]
+    def zone_cx_cy(zone):
+        z = MANIFEST_ZONES.get(zone, MANIFEST_ZONES.get("FULL", {"cx": 0.0, "cy": 0.0}))
+        return z.get("cx", 0.0), z.get("cy", 0.0)
 
-    def emit_show(fn, args, zone, dur, vid, transition=None, prev_vid_in_zone=None):
-        cx, cy = zone_coords(zone)
+    def zone_scale_for_move(to_zone):
+        z = MANIFEST_ZONES.get(to_zone, MANIFEST_ZONES.get("TOP_TITLE", {"w": 12.0, "h": 1.3}))
+        w, h = z.get("w", 12.0), z.get("h", 1.3)
+        return round(min(w / 12.5, h / 3.5, 0.5), 2)
+
+    elapsed = 0.0
+
+    for a in actions:
+        act = (a.get("action") or "wait").strip().lower()
+        dur = max(float(a.get("duration") or 2.0), 0.1)
+        zone = (a.get("zone") or "").strip() or "FULL"
+        from_zone = (a.get("from_zone") or "").strip()
+        to_zone = (a.get("to_zone") or "").strip()
+        fn = (a.get("fn") or "").strip()
+        args = a.get("args", {}) if isinstance(a.get("args"), dict) else {}
+
+        if act == "wait":
+            lines.append(f"        self.wait({dur})")
+            lines.append("")
+            elapsed += dur
+            continue
+
+        if act == "clear":
+            lines.append(f"        _fade_all = [_m for _m in _zones.values() if _m is not None]")
+            lines.append(f"        if _fade_all:")
+            lines.append(f"            try: self.play(*[FadeOut(_m) for _m in _fade_all], run_time={dur})")
+            lines.append(f"            except Exception: pass")
+            lines.append(f"        _zones.clear()")
+            lines.append("")
+            elapsed += dur
+            continue
+
+        if act == "clear_zone":
+            lines.append(f"        if _zones.get('{zone}') is not None:")
+            lines.append(f"            try: self.play(FadeOut(_zones['{zone}']), run_time={dur})")
+            lines.append(f"            except Exception: pass")
+            lines.append(f"            _zones['{zone}'] = None")
+            lines.append("")
+            elapsed += dur
+            continue
+
+        if act == "move_to":
+            fz = from_zone or zone
+            tz = to_zone or "TOP_TITLE"
+            to_cx, to_cy = zone_cx_cy(tz)
+            sc = zone_scale_for_move(tz)
+            lines.append(f"        if _zones.get('{fz}') is not None:")
+            lines.append(f"            try:")
+            lines.append(f"                self.play(_zones['{fz}'].animate.scale({sc}).move_to([{to_cx}, {to_cy}, 0]), run_time={dur})")
+            lines.append(f"                _zones['{tz}'] = _zones.pop('{fz}', None)")
+            lines.append(f"            except Exception: pass")
+            lines.append("")
+            elapsed += dur
+            continue
+
+        if not fn:
+            lines.append(f"        self.wait({dur})")
+            lines.append("")
+            elapsed += dur
+            continue
+
+        vid = next_vid()
+        cx, cy = zone_cx_cy(zone)
         args_str = _args_to_python(args) if args else ""
 
         if fn in fn_supports_position:
@@ -5115,117 +5197,13 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         else:
             call_args = args_str
 
-        if fn in fn_is_constructor:
-            lines.append(f"        _r_{vid} = {fn}({call_args})")
-            lines.append(f"        try:")
-            lines.append(f"            _m_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
-            lines.append(f"            if _m_{vid} is not None: _m_{vid}.move_to([{cx}, {cy}, 0])")
-            lines.append(f"            if _m_{vid} is not None: self.play(FadeIn(_m_{vid}), run_time=0.4)")
-            lines.append(f"            if _m_{vid} is not None: _zones['{zone}'] = _m_{vid}")
-            lines.append(f"        except Exception: pass")
-        elif transition in ("Transform", "ReplacementTransform") and prev_vid_in_zone:
-            lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
-            lines.append(f"        try:")
-            lines.append(f"            _new_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
-            lines.append(f"            if _new_{vid} is not None and _zones.get('{zone}') is not None:")
-            lines.append(f"                self.play({transition}(_zones['{zone}'], _new_{vid}), run_time=0.7)")
-            lines.append(f"                _zones['{zone}'] = _zones['{zone}']")
-            lines.append(f"            elif _new_{vid} is not None:")
-            lines.append(f"                _zones['{zone}'] = _new_{vid}")
-            lines.append(f"        except Exception: pass")
-        else:
-            lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
-            lines.append(f"        try:")
-            lines.append(f"            _m_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
-            if fn not in fn_supports_position:
-                lines.append(f"            if _m_{vid} is not None: _m_{vid}.move_to([{cx}, {cy}, 0])")
-            lines.append(f"            if _m_{vid} is not None: _zones['{zone}'] = _m_{vid}")
-            lines.append(f"        except Exception: pass")
-        lines.append("")
-
-    elapsed = 0.0
-
-    for a in actions:
-        act = a.get("action", "show")
-        dur = float(a.get("duration", 2.0))
-        zone = a.get("zone", "FULL")
-        fn = a.get("fn", "")
-        args = dict(a.get("args", {})) if isinstance(a.get("args"), dict) else {}
-
-        if act == "wait":
-            lines.append(f"        self.wait({dur})")
-            lines.append("")
-            elapsed += dur
-
-        elif act == "clear":
-            lines.append(f"        _fade_all = [m for m in _zones.values() if m is not None]")
-            lines.append(f"        if _fade_all:")
-            lines.append(f"            try: self.play(*[FadeOut(m) for m in _fade_all], run_time={dur})")
-            lines.append(f"            except Exception: pass")
-            lines.append(f"        _zones.clear()")
-            lines.append("")
-            elapsed += dur
-
-        elif act == "clear_zone":
+        if act == "show":
             lines.append(f"        if _zones.get('{zone}') is not None:")
-            lines.append(f"            try: self.play(FadeOut(_zones['{zone}']), run_time={dur})")
+            lines.append(f"            try: self.play(FadeOut(_zones['{zone}']), run_time=0.3)")
             lines.append(f"            except Exception: pass")
             lines.append(f"            _zones['{zone}'] = None")
-            lines.append("")
-            elapsed += dur
 
-        elif act == "move_to":
-            from_zone = a.get("from_zone", zone)
-            to_zone = a.get("to_zone", "TOP_TITLE")
-            to_cx, to_cy = zone_coords(to_zone)
-            z = MANIFEST_ZONES.get(to_zone, MANIFEST_ZONES["TOP_TITLE"])
-            scale = min(z["w"] / 12.0, z["h"] / 4.0, 0.45)
-            lines.append(f"        if _zones.get('{from_zone}') is not None:")
-            lines.append(f"            try:")
-            lines.append(f"                self.play(")
-            lines.append(f"                    _zones['{from_zone}'].animate.scale({scale:.2f}).move_to([{to_cx}, {to_cy}, 0]),")
-            lines.append(f"                    run_time={dur}")
-            lines.append(f"                )")
-            lines.append(f"                _zones['{to_zone}'] = _zones.pop('{from_zone}', None)")
-            lines.append(f"            except Exception: pass")
-            lines.append("")
-            elapsed += dur
-
-        elif act in ("show", "add"):
-            if not fn:
-                lines.append(f"        self.wait({dur})")
-                lines.append("")
-                elapsed += dur
-                continue
-
-            vid = next_vid()
-
-            if act == "show":
-                lines.append(f"        if _zones.get('{zone}') is not None:")
-                lines.append(f"            try: self.play(FadeOut(_zones['{zone}']), run_time=0.3)")
-                lines.append(f"            except Exception: pass")
-                lines.append(f"            _zones['{zone}'] = None")
-                lines.append("")
-
-            emit_show(fn, args, zone, dur, vid)
-            elapsed += dur
-
-        elif act == "transform":
-            if not fn:
-                elapsed += dur
-                continue
-
-            vid = next_vid()
-            prev = f"_zones.get('{zone}')"
-            cx, cy = zone_coords(zone)
-            args_str = _args_to_python(args) if args else ""
-
-            if fn in fn_supports_position:
-                pos_str = f"position=[{cx}, {cy}, 0]"
-                call_args = f"{args_str}, {pos_str}" if args_str else pos_str
-            else:
-                call_args = args_str
-
+        if act == "transform":
             lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
             lines.append(f"        try:")
             lines.append(f"            _new_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
@@ -5237,15 +5215,34 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
             lines.append(f"                _zones['{zone}'] = _new_{vid}")
             lines.append(f"        except Exception: pass")
             lines.append("")
-            elapsed += dur
+        elif fn in fn_is_constructor:
+            lines.append(f"        _r_{vid} = {fn}({call_args})")
+            lines.append(f"        try:")
+            lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
+            lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
+            lines.append(f"            if _mob_{vid} is not None: self.play(FadeIn(_mob_{vid}), run_time=0.4)")
+            lines.append(f"            if _mob_{vid} is not None: _zones['{zone}'] = _mob_{vid}")
+            lines.append(f"        except Exception: pass")
+            lines.append("")
+        else:
+            lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
+            lines.append(f"        try:")
+            lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
+            if fn not in fn_supports_position:
+                lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
+            lines.append(f"            if _mob_{vid} is not None: _zones['{zone}'] = _mob_{vid}")
+            lines.append(f"        except Exception: pass")
+            lines.append("")
+
+        elapsed += dur
 
     remaining = round(total_dur - elapsed, 3)
     if remaining > 0.1:
         lines.append(f"        self.wait({max(remaining, 0.1)})")
 
-    lines.append(f"        _fade_final = [m for m in _zones.values() if m is not None]")
+    lines.append(f"        _fade_final = [_m for _m in _zones.values() if _m is not None]")
     lines.append(f"        if _fade_final:")
-    lines.append(f"            try: self.play(*[FadeOut(m) for m in _fade_final], run_time=0.5)")
+    lines.append(f"            try: self.play(*[FadeOut(_m) for _m in _fade_final], run_time=0.5)")
     lines.append(f"            except Exception: pass")
 
     return "\n".join(lines)
@@ -5283,11 +5280,10 @@ def _sanitize_manifest(manifest: dict) -> dict:
     VALID_ZONES = {"FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT", "TOP_TITLE", "BOTTOM_BAR"}
     VALID_ROLES = {"main", "support", "label", "caption"}
 
-    actions = manifest.get("actions", manifest.get("visuals", []))
-    visuals = actions
+    visuals = manifest.get("visuals", [])
 
-    if len(actions) > 15:
-        actions = actions[:15]
+    if len(visuals) > 12:
+        visuals = visuals[:12]
 
     total_dur = float(manifest.get("total_duration", 10.0))
 
@@ -5397,9 +5393,9 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
         f"Beat timeline (seconds from chunk start):\n"
         + "\n".join(beat_lines) +
         f"\n\nProduce an action script for this concept. "
-        f"The actions must tell a visual story covering the full {total_duration}s. "
-        f"Start with a hook (show FULL), build up deliberately (add, transform), never stack. "
-        f"Each action executes sequentially — the viewer sees one main thing at a time evolving."
+        f"Cover the full {total_duration}s. "
+        f"Start with show FULL, build deliberately with transform and add, never stack. "
+        f"Empty string for unused fields. Sequential actions only."
     )
 
     manifest_schema = {
@@ -5425,7 +5421,7 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
                                 "args":      {"type": "string"},
                                 "duration":  {"type": "number"},
                             },
-                            "required": ["action", "duration"],
+                            "required": ["action", "zone", "from_zone", "to_zone", "fn", "args", "duration"],
                             "additionalProperties": False,
                         }
                     }
@@ -5454,14 +5450,7 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
         manifest = json.loads(raw)
         manifest["total_duration"] = total_duration
 
-        for vis in manifest.get("visuals", []):
-            if isinstance(vis.get("args"), str):
-                try:
-                    vis["args"] = json.loads(vis["args"])
-                except Exception:
-                    vis["args"] = {}
-
-        for action in manifest.get("actions", []):
+        for action in manifest.get("actions", manifest.get("visuals", [])):
             if isinstance(action.get("args"), str):
                 try:
                     action["args"] = json.loads(action["args"])
