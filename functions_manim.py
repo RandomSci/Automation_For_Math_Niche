@@ -161,7 +161,8 @@ def fm_card(label_text, value_text, accent_color=BRAND_GOLD,
 def fm_two_cards(left_label, left_val, left_color,
                   right_label, right_val, right_color,
                   panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
-                  label_size=30, value_size=68, spacing=0.7, buff=None):
+                  label_size=30, value_size=68, spacing=0.7, buff=None,
+                  title=None, subtitle=None, header=None):
     left  = fm_card(left_label,  left_val,  left_color,  panel_color, text_color, label_size, value_size)
     right = fm_card(right_label, right_val, right_color, panel_color, text_color, label_size, value_size)
     group = VGroup(left, right).arrange(RIGHT, buff=spacing)
@@ -370,7 +371,7 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
             run_time=0.35, rate_func=smooth,
         )
         scene.wait(hold_t)
-        return bars, val_labels
+        return chart_group, bars, val_labels
 
     elif style == 2:
         max_v   = max(abs(v) for v in values) if values else 1
@@ -436,7 +437,7 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
             run_time=0.38, rate_func=smooth,
         )
         scene.wait(hold_t)
-        return dots, val_labels
+        return chart_group, dots, val_labels
 
     else:
         max_v   = max(abs(v) for v in values) if values else 1
@@ -494,7 +495,7 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
             run_time=0.38, rate_func=smooth,
         )
         scene.wait(hold_t)
-        return bars, val_labels
+        return chart_group, bars, val_labels
 
 
 def fm_animate_gauge(scene, value, max_val, label_text,

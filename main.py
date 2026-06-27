@@ -3667,6 +3667,11 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'include_tip.*axis_config|axis_config.*include_tip',
     r'\bLine\s*\([^)]*stroke_color\s*=',
     r'\bVMobject\s*\(\s*\*\s*\[',
+    r'\bBrace\b',
+    r'\bGrowArrow\b',
+    r'\.animate\.set_height\s*\([^)]*stretch\s*=',
+    r'\.animate\.set_width\s*\([^)]*stretch\s*=',
+    r'\.animate\.stretch\b',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math", "random"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
@@ -3734,9 +3739,10 @@ def _get_chunk_available_names() -> set:
         "Text", "Paragraph", "MarkupText", "Tex", "MathTex", "BulletedList",
         "Circle", "Square", "Rectangle", "RoundedRectangle", "Triangle",
         "Polygon", "RegularPolygon", "Arc", "ArcBetweenPoints", "Annulus",
-        "Arrow", "Line", "TipableVMobject", "DoubleArrow",
+        "Arrow", "CurvedArrow", "CurvedDoubleArrow", "Line", "TipableVMobject", "DoubleArrow",
         "Dot", "SmallDot", "Cross", "Star",
         "Axes", "NumberPlane", "NumberLine",
+        "FunctionGraph", "ParametricFunction", "ImplicitFunction",
         "Create", "Write", "FadeIn", "FadeOut", "GrowFromCenter",
         "GrowFromEdge", "GrowFromPoint", "DrawBorderThenFill",
         "Transform", "ReplacementTransform", "TransformFromCopy",
@@ -4923,8 +4929,14 @@ If your construct() has more than 2 Text() objects that are not numbers or 1-3 c
 - NEVER pass stroke_color= as a kwarg to Line(). It crashes. Correct: line = Line(p1, p2); line.set_stroke(BRAND_GREEN, width=3). Wrong: Line(p1, p2, stroke_color=BRAND_GREEN). This will crash with AttributeError.
 - NEVER build a VMobject by passing a list with * spread: VMobject(*[Line(...) for ...]) crashes. Instead build individual Lines and add them to a VGroup: VGroup(*[Line(...) for ...]).
 - SCENE ISOLATION: Each construct() starts with a completely empty scene. You cannot reference or build on objects from a previous concept's construct(). Every construct must be fully self-contained — create everything it needs, animate it, done. No holdovers.
-- CONCEPT CHUNK TIMING: For concept-level chunks covering 30-90 seconds, use self.wait() between animation phases to match beat timestamps. The total of all run_time + wait values must equal the chunk duration. Do not add extra self.wait() that pushes the total beyond the duration.
-- NEVER accumulate objects on screen without FadeOut — if you add an object with self.add() or self.play(FadeIn(...)), it stays visible for the rest of the construct unless you explicitly FadeOut it. This causes objects from beat 1 to still be visible on beat 10, creating the overlap mess seen in output.
+- CANVAS CLEARING BETWEEN BEATS: When transitioning between major visual ideas within one concept chunk, CLEAR the canvas first: self.play(FadeOut(*self.mobjects), run_time=0.4). Then build the next visual fresh. This prevents accumulation of overlapping visuals. If you show a bar chart for beats 1-3, then want to show a scatter plot for beats 4-6, FADE OUT the bar chart first.
+- NEVER accumulate objects on screen without FadeOut — if you add an object with self.add() or self.play(FadeIn(...)), it stays visible for the rest of the construct unless you explicitly FadeOut it. This causes objects from beat 1 to still be visible on beat 10, creating the overlap mess.
+- mob.animate.set_height(h, stretch=True) CRASHES — stretch= is not supported in the animate proxy. Instead use mob.stretch_to_fit_height(h) directly (not through .animate). Same for set_width.
+- mob.animate.stretch(...) CRASHES for the same reason. Never use .animate.stretch().
+- fm_two_cards() does NOT accept title= kwarg. Correct signature: fm_two_cards(left_label, left_val, left_color, right_label, right_val, right_color).
+- fm_animate_bar_chart() returns EXACTLY 3 values: (chart_group, bars, val_labels). Always: chart_group, bars, labels = fm_animate_bar_chart(self, ...). Never unpack as 2 values.
+- CurvedArrow IS a valid Manim class. FunctionGraph IS valid. Use them freely.
+- OpenGLText does NOT exist in Cairo renderer. Use Text() only.
 - fm_glow_around() returns a VGroup -- it is safe to FadeIn but must be stored in a variable first. NEVER pass it inline as part of a multi-arg FadeIn call alongside other mobs in the same self.play() if any of those other mobs might be None.
 - GrowFromEdge() takes edge as the SECOND POSITIONAL argument, not a keyword. Correct: GrowFromEdge(mob, DOWN). Wrong: GrowFromEdge(mob, direction=DOWN). This will crash.
 - fm_animate_number_line tick_labels must be a list of strings/numbers or None -- NEVER pass True or False.
@@ -4970,6 +4982,7 @@ fm_animate_data_table(scene, headers, rows, duration, header_color, accent_row, 
   Use for comparison tables, experiment results, category breakdowns. Auto-fits to frame.
 
 fm_animate_bar_chart(scene, values, names, colors, duration, title_text)
+  Returns EXACTLY 3 values: (chart_group, bars, val_labels). ALWAYS unpack as: chart_group, bars, val_labels = fm_animate_bar_chart(...). Never unpack as 2 values.
 fm_animate_line_chart(scene, y_values, end_value_label, accent_color, x_labels, duration, title_text)
   end_value_label: string label shown at the end dot. Pass None or "" for no label.
 fm_animate_line_chart_multi(scene, series, duration, title_text)
