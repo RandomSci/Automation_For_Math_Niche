@@ -4875,90 +4875,127 @@ def _get_manifest_system_prompt():
     global _MANIFEST_SYSTEM_PROMPT
     if _MANIFEST_SYSTEM_PROMPT is not None:
         return _MANIFEST_SYSTEM_PROMPT
-    _MANIFEST_SYSTEM_PROMPT = f"""You are a visual layout director for a math education YouTube channel (Math Unlocked). You receive a concept chunk — a 30-90 second segment of narration — and produce a SCENE MANIFEST that specifies exactly what visuals appear, where they go, when they appear/disappear, and how they transition.
+    _MANIFEST_SYSTEM_PROMPT = f"""You are a VISUAL STORY DIRECTOR for Math Unlocked, a math education YouTube channel. You receive a concept chunk — a 30-90 second narration segment — and produce a SCENE MANIFEST describing the visual story.
 
-The manifest is executed by a Python engine that positions each visual in its zone, handles FadeOut timing, and picks transition animations. You NEVER write self.play() or construct() code. You only specify intent.
+Think like a film director, not a form filler. Every concept has a visual arc: an opening hook, a build, and a payoff. Visuals should EVOLVE as the narration progresses — not wipe and restart every few seconds.
 
 {MANIFEST_ZONE_DESCRIPTIONS}
 
+=== CINEMATIC STORY PATTERNS ===
+These are the patterns that make educational video look professional. Pick one per concept chunk:
+
+PATTERN 1 — BUILD AND PERSIST:
+  t=0s: Big title in FULL (glow_reveal) — hook the viewer on the concept name
+  t=3s: Same zone becomes TOP_TITLE (shorter glow_reveal), main data visual fills CENTER_BOT
+  t=8s: Main visual stays, a second value or formula appears in BOTTOM_BAR
+  t=15s+: Visuals evolve in their zones, title persists throughout
+  Example use: introducing any new concept — Population vs Sample, Correlation, etc.
+
+PATTERN 2 — COMPARE AND CONTRAST (LEFT + RIGHT):
+  t=0s: Concept A fills LEFT (bar chart, single value, or icon grid)
+  t=3s: Concept B fills RIGHT — both visible simultaneously for comparison
+  t=8s: Label appears in TOP_TITLE naming what's being compared
+  t=15s: One side transforms to show conclusion or result
+  Example use: Population vs Sample, Test Set vs Confirm Set, Mean vs Median
+
+PATTERN 3 — ZOOM OUT (specific → general):
+  t=0s: One dramatic number in FULL (counter animating to the value)
+  t=4s: Counter shrinks to RIGHT, context chart or icon grid fills LEFT
+  t=10s: Both fade, full chart in FULL showing the bigger picture
+  Example use: misleading statistics, sample size dangers, rate vs count
+
+PATTERN 4 — DATA STORY:
+  t=0s: Provocative stat or title in FULL
+  t=3s: Chart builds showing the data (replace FULL)
+  t=8s: Key takeaway formula or label in BOTTOM_BAR, chart stays
+  t=15s+: Chart transforms to show alternative interpretation
+  Example use: charts that mislead, correlation traps, confirmation bias
+
+PATTERN 5 — SEQUENTIAL PROCESS:
+  t=0s: Step 1 in CENTER_TOP
+  t=5s: Step 2 appears in CENTER_BOT (Step 1 persists)
+  t=12s: Both fade, result or conclusion fills FULL
+  Example use: how sampling works, statistical testing steps, distributions
+
 === POSITIONING RULES ===
-Every visual gets a zone. Two visuals in the SAME zone at the SAME time WILL overlap — this is a hard collision. The engine enforces this: if you assign two visuals to the same zone with overlapping time ranges, the second one REPLACES the first (auto FadeOut, then FadeIn).
+Every visual gets a zone. Two visuals in the SAME zone with overlapping show_at/hide_at WILL collide.
+The engine auto-FadesOut the previous visual in a zone before the new one appears.
 
-GOOD layouts:
-  - One hero visual in FULL (alone, no other zones)
-  - LEFT + RIGHT (two visuals side by side — comparison)
-  - CENTER_TOP + CENTER_BOT (stacked — concept above, data below)
-  - CENTER_TOP + BOTTOM_BAR (main visual + persistent formula strip)
-  - TOP_TITLE + CENTER_BOT + BOTTOM_BAR (label + main visual + key value)
+VALID combinations (multiple visuals simultaneously):
+  LEFT + RIGHT — side-by-side comparison
+  CENTER_TOP + CENTER_BOT — stacked concept and data
+  TOP_TITLE + CENTER_BOT — persistent label above main visual
+  TOP_TITLE + LEFT + RIGHT — label with two panels
+  CENTER_TOP + BOTTOM_BAR — main visual with formula strip
+  FULL alone — nothing else allowed when FULL is active
 
-BAD: FULL + LEFT (FULL covers the entire frame — LEFT would be invisible)
-BAD: LEFT + LEFT (two visuals both in LEFT — they overlap)
+NEVER: FULL + anything else. FULL covers the entire 14x8 frame.
 
 === TIMING RULES ===
-- beat_start and beat_end are seconds from the START of this concept chunk (not video absolute time)
-- "show_at" is when the visual starts animating in (seconds from chunk start)
-- "hide_at" is when it fades out. Use the chunk's total_duration if it should persist to the end
-- "duration" is how long the visual's own animation takes (typically 2.5-5.0s for a chart, 1.5-2.5s for a label)
-- The visual stays on screen from show_at until hide_at — it does NOT disappear after its animation finishes
+- show_at and hide_at are seconds from the START of this concept chunk
+- duration is how long the visual's animation plays (2.5-5.0s for charts, 1.0-2.0s for labels)
+- The visual stays VISIBLE from show_at to hide_at — it does NOT disappear after its animation
+- To PERSIST through multiple beats, set hide_at to total_duration
+- To REPLACE in same zone, new show_at must be after previous show_at (engine auto-fades old one)
+- NEVER leave the screen empty — ensure hide_at of old visual overlaps or matches show_at of new one
 
-=== VISUAL PARAMETERS ===
-Each visual entry has "fn" (the fm_* function name) and "args" (the kwargs to pass it, excluding scene and duration).
-duration is separate and set by you based on the beat window.
+=== VISUAL FUNCTION REFERENCE ===
+Use data-rich visuals over text whenever possible. Charts beat words.
 
-Available functions and their key args:
+CHARTS:
 - fm_animate_bar_chart: values=[...], names=[...], colors=[COLOR,...], title_text=""
-- fm_animate_line_chart: y_values=[...], accent_color=COLOR, x_labels=[...], title_text="", end_value_label=""
-- fm_animate_scatter: points=[(x,y),...], accent_color=COLOR, show_regression=True/False, x_label="", y_label=""
-- fm_animate_bell_curve: accent_color=COLOR, mean_label="μ", std_label="σ" (MAX once per 8 beats total)
-- fm_animate_icon_grid: total=N, filled=K, label_text="", accent_color=COLOR, cols=10
-- fm_animate_matrix: rows_data=[[...],[...]], label_text="", accent_color=COLOR
-- fm_animate_vector: direction=[dx,dy], label_text="", accent_color=COLOR, show_components=False
-- fm_animate_counter: start_val=0, end_val=N, label_text="", accent_color=COLOR, prefix="", suffix=""
+- fm_animate_line_chart: y_values=[...], accent_color=COLOR, x_labels=[...], title_text=""
+- fm_animate_scatter: points=[(x,y),...], accent_color=COLOR, show_regression=True/False
+- fm_animate_bell_curve: accent_color=COLOR, mean_label="μ", std_label="σ"
+- fm_animate_waterfall: steps=[("Label",value,COLOR),...]
+- fm_animate_comparison_bars: items=[("Label",value,COLOR),...], title_text=""
+- fm_animate_probability_bar: outcomes=[("A",0.3,COLOR),("B",0.7,COLOR),...], label_text=""
+
+COUNTERS / VALUES:
+- fm_animate_counter: start_val=0, end_val=N, label_text="", prefix="", suffix=""
 - fm_animate_single_value: value_str="42%", label_text="", accent_color=COLOR
-- fm_animate_comparison_bars: items=[("Label", value, COLOR),...], title_text=""
 - fm_animate_gauge: value=N, max_val=M, label_text="", accent_color=COLOR
 - fm_animate_donut: percentage=0.68, label_text="", accent_color=COLOR
-- fm_animate_probability_bar: outcomes=[("A",0.3,COLOR),("B",0.7,COLOR),...], label_text=""
-- fm_animate_number_line: value=N, min_val=A, max_val=B, label_text="", accent_color=COLOR, tick_labels=[...]
-- fm_animate_glow_reveal: text_str="Key Idea", accent_color=COLOR, font_size=72, subtitle=""
-- fm_animate_timeline: events=["Step 1","Step 2",...], accent_color=COLOR, show_index=True
+
+DIAGRAMS:
+- fm_animate_icon_grid: total=N, filled=K, label_text="", accent_color=COLOR, cols=10
+- fm_animate_matrix: rows_data=[[...],[...]], label_text="", accent_color=COLOR
+- fm_animate_vector: direction=[dx,dy], label_text="", accent_color=COLOR
+- fm_animate_number_line: value=N, min_val=A, max_val=B, label_text="", tick_labels=[...]
+- fm_animate_timeline: events=["Step 1","Step 2",...], accent_color=COLOR
 - fm_animate_data_table: headers=["Col1","Col2",...], rows=[["val","val",...],...]
-- fm_animate_waterfall: steps=[("Label",value,COLOR),...]
+
+TEXT / LABELS (use sparingly — support charts, never replace them):
+- fm_animate_glow_reveal: text_str="Key Idea", accent_color=COLOR, font_size=72
+- fm_animate_text_reveal: lines=["line1","line2",...], colors=[COLOR,...], sizes=[72,44,...]
 - fm_formula: lines=["formula text"], font_size=36, color=COLOR
-- fm_animate_comparison_bars: items=[("Label", value, COLOR),...], title_text=""
-- fm_two_cards: left_label="", left_val="", left_color=COLOR, right_label="", right_val="", right_color=COLOR
-- fm_card_row: items=[("label","value",COLOR),...], spacing=0.45
 - fm_concept_pills: labels=["A","B","C"], colors=[COLOR,...]
+- fm_two_cards: left_label="", left_val="", left_color=COLOR, right_label="", right_val="", right_color=COLOR
 
-Color constants: BRAND_GREEN="#38D996", BRAND_GOLD="#FFD166", BRAND_RED="#FF4D4D", BRAND_WHITE="#F5F7FA", BRAND_GRAY="#8A94A6"
-NEVER use BRAND_GRAY as accent_color for bars/dots/stems — they become invisible.
+Colors: BRAND_GREEN="#38D996", BRAND_GOLD="#FFD166", BRAND_RED="#FF4D4D", BRAND_WHITE="#F5F7FA", BRAND_GRAY="#8A94A6"
+NEVER use BRAND_GRAY as accent_color for any chart or bar — invisible on dark background.
 
-=== SCENE EVOLUTION PHILOSOPHY ===
-Think of this like a presentation deck where each slide can have 1-3 objects. Objects can:
-1. APPEAR: show_at=T, stay until hide_at
-2. PERSIST: set hide_at to chunk end — it stays while new objects appear in other zones
-3. REPLACE: same zone, later show_at — engine auto-FadesOut the previous one first
-4. TRANSFORM: same zone, same fn type — engine uses Manim Transform for smooth morphing
-
-The goal: as narration moves through ideas, visuals EVOLVE — not wipe and restart. A bar chart introduced at beat 1 can STAY while a formula appears at the bottom at beat 3. Then at beat 6 the bar chart transforms into a scatter plot (same zone). The formula persists. This is how 3Blue1Brown builds scenes.
+=== QUALITY RULES ===
+- Screen must NEVER be empty — stagger hide_at and show_at so there is always something visible
+- MAX 3 visuals on screen at once — more is visual noise
+- Charts should have duration 3.0-5.0s minimum
+- Do NOT stack two glow_reveals back to back — use one to open, then switch to data
+- Concept title should appear once (FULL glow_reveal), then either persist as TOP_TITLE or disappear
 
 === OUTPUT FORMAT ===
-Return JSON exactly matching this schema. Do not add extra fields.
-IMPORTANT: The "args" field must be a JSON-encoded STRING, not a nested object.
-Serialize your args dict as a JSON string. Use double quotes inside the string with proper JSON escaping.
+Return JSON matching this schema exactly. The "args" field must be a JSON-encoded STRING.
 
-Example structure (args is a string containing JSON):
-scene_id: string
-total_duration: number
-visuals: array of objects, each with:
-  id: string (e.g. "v0", "v1")
-  zone: string (one of: FULL, LEFT, RIGHT, CENTER_TOP, CENTER_BOT, TOP_TITLE, BOTTOM_BAR)
-  fn: string (e.g. "fm_animate_bar_chart")
-  args: string (JSON-encoded dict of kwargs, e.g. '{{"values": [73, 41], "names": ["A", "B"]}}')
-  duration: number (seconds for the animation)
-  show_at: number (seconds from chunk start when this visual appears)
-  hide_at: number (seconds from chunk start when this visual disappears)"""
+Each visual object:
+  id: string ("v0", "v1", ...)
+  zone: string (FULL | LEFT | RIGHT | CENTER_TOP | CENTER_BOT | TOP_TITLE | BOTTOM_BAR)
+  fn: string (function name from reference above)
+  args: string (JSON-encoded kwargs, e.g. '{{"values": [73, 41], "names": ["A", "B"]}}')
+  duration: number
+  show_at: number
+  hide_at: number"""
     return _MANIFEST_SYSTEM_PROMPT
+
+
 
 
 def _resolve_color(s):
@@ -5092,36 +5129,51 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         "fm_animate_counter", "fm_animate_single_value", "fm_animate_gauge",
         "fm_animate_donut", "fm_animate_bell_curve", "fm_animate_number_line",
         "fm_animate_icon_grid", "fm_animate_scatter", "fm_animate_vector",
-        "fm_animate_matrix", "fm_formula",
+        "fm_animate_matrix", "fm_formula", "fm_animate_probability_bar",
     }
 
     fn_is_constructor = {
         "fm_icon", "fm_card", "fm_two_cards", "fm_card_row", "fm_concept_pills",
     }
 
-    sorted_show_times = sorted(set(e["show_at"] for e in events))
+    all_times = sorted(set(
+        [e["show_at"] for e in events] +
+        [e["hide_at"] for e in events if e["hide_at"] < total_dur - 0.05]
+    ))
 
     prev_t = 0.0
-    for t in sorted_show_times:
-        batch = [e for e in events if e["show_at"] == t]
+    for t in all_times:
+        show_batch = [e for e in events if e["show_at"] == t]
+        hide_batch = [e for e in events if abs(e["hide_at"] - t) < 0.01 and e["show_at"] < t]
+
         wait_needed = round(t - prev_t, 3)
 
-        fade_vids = [e["prev_vid"] for e in batch if e.get("prev_vid") and e.get("transition") == "replace"]
-        if fade_vids:
-            lines.append(f"        # t={t:.2f}s — replace {fade_vids}")
-            for fv in fade_vids:
+        to_fade_now = []
+        for e in show_batch:
+            if e.get("prev_vid"):
+                to_fade_now.append(e["prev_vid"])
+        for e in hide_batch:
+            if e["vid"] not in [x["vid"] for x in show_batch]:
+                to_fade_now.append(e["vid"])
+        to_fade_now = list(dict.fromkeys(to_fade_now))
+
+        if to_fade_now:
+            fade_t = min(0.3, wait_needed * 0.8) if wait_needed > 0.1 else 0.25
+            for fv in to_fade_now:
                 lines.append(f"        if '{fv}' in _objects and _objects['{fv}'] is not None:")
-                lines.append(f"            self.play(FadeOut(_objects['{fv}']), run_time=0.3)")
-            if wait_needed > 0.35:
-                lines.append(f"        self.wait({round(wait_needed - 0.3, 3)})")
+                lines.append(f"            try: self.play(FadeOut(_objects['{fv}']), run_time={fade_t})")
+                lines.append(f"            except Exception: pass")
+                lines.append(f"            _objects['{fv}'] = None")
+            leftover = round(wait_needed - fade_t, 3)
+            if leftover > 0.05:
+                lines.append(f"        self.wait({leftover})")
         elif wait_needed > 0.05:
-            lines.append(f"        # t={t:.2f}s")
             lines.append(f"        self.wait({wait_needed})")
         lines.append("")
 
         prev_t = t
 
-        for e in batch:
+        for e in show_batch:
             vid      = e["vid"]
             fn       = e["fn"]
             args     = dict(e["args"]) if isinstance(e["args"], dict) else {}
@@ -5148,18 +5200,9 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
             lines.append(f"        except Exception: pass")
             lines.append("")
 
-    remaining = round(total_dur - (sorted_show_times[-1] if sorted_show_times else 0) - max(e["dur"] for e in events if e["show_at"] == sorted_show_times[-1]), 3) if events else total_dur
+    remaining = round(total_dur - prev_t, 3)
     if remaining > 0.05:
         lines.append(f"        self.wait({max(remaining, 0.05)})")
-
-    all_hide_events = sorted(
-        [(e["hide_at"], e["vid"]) for e in events if e["hide_at"] < total_dur - 0.1],
-        key=lambda x: x[0]
-    )
-    if all_hide_events:
-        lines.append("")
-        for hide_t, vid in all_hide_events:
-            lines.append(f"        # auto-hide {vid} at t={hide_t:.2f}s handled by wait/fadeout above")
 
     return "\n".join(lines)
 

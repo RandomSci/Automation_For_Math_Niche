@@ -584,7 +584,7 @@ def fm_animate_line_chart(scene, y_values, end_value_label=None,
                            accent_color=BRAND_GREEN, x_labels=None,
                            duration=3.5, title_text="", _style=None):
     if y_values and isinstance(y_values[0], (list, tuple)):
-        series = [{"values": s, "color": accent_color, "label": ""} for s in y_values]
+        series = [{"y_values": s, "color": accent_color, "label": ""} for s in y_values]
         return fm_animate_line_chart_multi(scene, series=series, duration=duration, title_text=title_text)
 
     n = len(y_values)
@@ -1324,10 +1324,13 @@ def fm_animate_single_value(scene, value_str, label_text,
     return val_mob, lbl_mob
 
 
-def fm_formula(scene, lines, font_size=60, color=BRAND_WHITE, duration=3.0,
+def fm_formula(scene, lines="", font_size=60, color=BRAND_WHITE, duration=3.0,
                position=None):
     if position is None:
         position = ORIGIN
+    if not lines:
+        scene.wait(duration)
+        return VGroup()
     if isinstance(lines, str):
         lines = [lines]
     safe_w = config.frame_width * 0.86
@@ -1617,7 +1620,10 @@ def fm_icon(name: str, size: float = 1.0, color=None):
 
 
 def fm_animate_vector(scene, direction, label_text, accent_color=BRAND_GOLD,
-                       duration=3.5, origin=None, scale=2.5, show_components=False):
+                       duration=3.5, origin=None, scale=2.5, show_components=False,
+                       position=None):
+    if position is not None:
+        origin = position
     if origin is None:
         origin = ORIGIN
 
@@ -1739,7 +1745,7 @@ def fm_animate_matrix(scene, rows_data, label_text="", accent_color=BRAND_GOLD,
 
 def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
                            duration=4.0, position=None, show_std_regions=False,
-                           mean_label="μ", std_label="σ"):
+                           mean_label="μ", std_label="σ", skew=None):
     if position is None:
         position = ORIGIN
 
