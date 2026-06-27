@@ -5071,6 +5071,8 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
             vis["args"].pop("duration", None)
 
     visuals = sorted(visuals, key=lambda v: float(v.get("show_at", 0)))
+    if len(visuals) > 12:
+        visuals = visuals[:12]
     if visuals:
         visuals[0]["show_at"] = 0.0
 
@@ -5187,12 +5189,14 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         to_fade_now = list(dict.fromkeys(to_fade_now))
 
         if to_fade_now:
-            fade_t = min(0.3, wait_needed * 0.8) if wait_needed > 0.1 else 0.25
+            fade_t = 0.35
+            vids_str = repr(to_fade_now)
+            lines.append(f"        _fade_targets = [_objects.get(v) for v in {vids_str} if _objects.get(v) is not None]")
+            lines.append(f"        if _fade_targets:")
+            lines.append(f"            try: self.play(*[FadeOut(m) for m in _fade_targets], run_time={fade_t})")
+            lines.append(f"            except Exception: pass")
             for fv in to_fade_now:
-                lines.append(f"        if '{fv}' in _objects and _objects['{fv}'] is not None:")
-                lines.append(f"            try: self.play(FadeOut(_objects['{fv}']), run_time={fade_t})")
-                lines.append(f"            except Exception: pass")
-                lines.append(f"            _objects['{fv}'] = None")
+                lines.append(f"        _objects['{fv}'] = None")
             leftover = round(wait_needed - fade_t, 3)
             if leftover > 0.05:
                 lines.append(f"        self.wait({leftover})")
@@ -5217,16 +5221,22 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
             else:
                 call_args = args_str
 
-            lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})" if fn not in fn_is_constructor else f"        _r_{vid} = {fn}({call_args})")
-            lines.append(f"        try:")
-            lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
             if fn in fn_is_constructor:
+                lines.append(f"        _r_{vid} = {fn}({call_args})")
+                lines.append(f"        try:")
+                lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
                 lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
                 lines.append(f"            if _mob_{vid} is not None: self.play(FadeIn(_mob_{vid}), run_time=0.4)")
-            elif fn not in fn_supports_position:
-                lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
-            lines.append(f"            if _mob_{vid} is not None: _objects['{vid}'] = _mob_{vid}")
-            lines.append(f"        except Exception: pass")
+                lines.append(f"            if _mob_{vid} is not None: _objects['{vid}'] = _mob_{vid}")
+                lines.append(f"        except Exception: pass")
+            else:
+                lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
+                lines.append(f"        try:")
+                lines.append(f"            _all_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
+                if fn not in fn_supports_position:
+                    lines.append(f"            if _all_{vid} is not None: _all_{vid}.move_to([{cx}, {cy}, 0])")
+                lines.append(f"            if _all_{vid} is not None: _objects['{vid}'] = _all_{vid}")
+                lines.append(f"        except Exception: pass")
             lines.append("")
 
     remaining = round(total_dur - prev_t, 3)
@@ -6154,6 +6164,11 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
             target_duration = round(max(chunks[i]["end_time"] - chunks[i]["start_time"], 0.05), 3)
             gap_path = os.path.join(MANIM_CHUNK_CACHE_DIR, f"gap_{i:04d}_{target_duration:.3f}.mp4")
             prev_path = clip_paths[i - 1] if i > 0 else None
+            if prev_path is None or not os.path.exists(str(prev_path)):
+                for j in range(i + 1, len(clip_paths)):
+                    if clip_paths[j] and os.path.exists(clip_paths[j]):
+                        prev_path = clip_paths[j]
+                        break
             held_path = None
             if prev_path and os.path.exists(prev_path):
                 held_path = _make_held_frame_filler(prev_path, gap_path, target_duration, w, h, fps)

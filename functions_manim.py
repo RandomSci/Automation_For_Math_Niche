@@ -4,6 +4,37 @@ import random as _fm_random
 import numpy as _fmnp
 
 
+class _SceneWrapper:
+    """Intercepts scene.add() to track every mobject added, enabling full cleanup."""
+    def __init__(self, real_scene):
+        self._scene = real_scene
+        self._added = VGroup()
+
+    def add(self, *mobjects):
+        for m in mobjects:
+            if m is not None:
+                try:
+                    self._added.add(m)
+                except Exception:
+                    pass
+        self._scene.add(*[m for m in mobjects if m is not None])
+
+    def play(self, *args, **kwargs):
+        return self._scene.play(*args, **kwargs)
+
+    def wait(self, duration=1.0, **kwargs):
+        return self._scene.wait(duration, **kwargs)
+
+    def remove(self, *args, **kwargs):
+        return self._scene.remove(*args, **kwargs)
+
+    def get_all_added(self):
+        return self._added
+
+    def __getattr__(self, name):
+        return getattr(self._scene, name)
+
+
 def _fm_style(scene, n_styles):
     return abs(hash(id(scene))) % n_styles
 
@@ -262,6 +293,7 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
                         accent_color=BRAND_GOLD, prefix="", suffix="",
                         duration=3.0, position=None, value_size=130, label_size=38,
                         _style=None):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     style = _style if _style is not None else _fm_style(scene, 3)
@@ -277,7 +309,7 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
             s = f"{prefix}{v:,.2f}{suffix}"
         else:
             s = f"{prefix}{int(round(v)):,}{suffix}"
-        return Text(s, font_size=value_size, color=BRAND_WHITE, weight=BOLD).move_to(position)
+        return scene.get_all_added(), Text(s, font_size=value_size, color=BRAND_WHITE, weight=BOLD).move_to(position)
 
     counter = always_redraw(_num)
     anim_t = max(min(duration * 0.78, duration - 0.25), 0.1)
@@ -307,11 +339,12 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
 
     scene.play(tracker.animate.set_value(end_f), run_time=anim_t, rate_func=smooth)
     scene.wait(hold_t)
-    return tracker, counter, lbl
+    return scene.get_all_added(), tracker, counter, lbl
 
 
 def fm_animate_bar_chart(scene, values, names, colors=None,
                           duration=3.5, title_text="", _style=None, position=None):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     pos = np.array(position) if not isinstance(position, np.ndarray) else position
@@ -374,7 +407,7 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
             run_time=0.35, rate_func=smooth,
         )
         scene.wait(hold_t)
-        return chart_group, bars, val_labels
+        return scene.get_all_added(), chart_group, bars, val_labels
 
     elif style == 2:
         max_v   = max(abs(v) for v in values) if values else 1
@@ -440,7 +473,7 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
             run_time=0.38, rate_func=smooth,
         )
         scene.wait(hold_t)
-        return chart_group, dots, val_labels
+        return scene.get_all_added(), chart_group, dots, val_labels
 
     else:
         max_v   = max(abs(v) for v in values) if values else 1
@@ -498,12 +531,13 @@ def fm_animate_bar_chart(scene, values, names, colors=None,
             run_time=0.38, rate_func=smooth,
         )
         scene.wait(hold_t)
-        return chart_group, bars, val_labels
+        return scene.get_all_added(), chart_group, bars, val_labels
 
 
 def fm_animate_gauge(scene, value, max_val, label_text,
                       accent_color=BRAND_GREEN, duration=3.0,
                       position=None, radius=2.0):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
 
@@ -519,10 +553,10 @@ def fm_animate_gauge(scene, value, max_val, label_text,
     def _arc():
         frac = tracker.get_value()
         if frac < 1e-6:
-            return VMobject()
+            return scene.get_all_added(), VMobject()
         a = Arc(radius=radius, start_angle=start_angle, angle=sweep_total * frac, arc_center=position)
         a.set_stroke(color=accent_color, width=16, opacity=1.0)
-        return a
+        return scene.get_all_added(), a
 
     fill_arc = always_redraw(_arc)
     val_str  = f"{int(value)}" if isinstance(value, int) or float(value) == int(value) else f"{value:.1f}"
@@ -536,12 +570,13 @@ def fm_animate_gauge(scene, value, max_val, label_text,
     hold_t = max(duration - anim_t, 0.05)
     scene.play(tracker.animate.set_value(fill_ratio), run_time=anim_t, rate_func=smooth)
     scene.wait(hold_t)
-    return tracker, val_lbl, cat_lbl
+    return scene.get_all_added(), tracker, val_lbl, cat_lbl
 
 
 def fm_animate_donut(scene, percentage, label_text,
                       accent_color=BRAND_GREEN, duration=3.0,
                       position=None, radius=1.85, thickness=0.52):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
 
@@ -558,7 +593,7 @@ def fm_animate_donut(scene, percentage, label_text,
     def _fill():
         angle = tracker.get_value()
         if angle < 1e-6:
-            return VMobject()
+            return scene.get_all_added(), VMobject()
         arc = Arc(
             radius=inner_r + thickness / 2,
             start_angle=PI / 2,
@@ -567,7 +602,7 @@ def fm_animate_donut(scene, percentage, label_text,
             stroke_width=int(thickness * 105),
         )
         arc.set_stroke(color=accent_color, opacity=1.0)
-        return arc
+        return scene.get_all_added(), arc
 
     fill     = always_redraw(_fill)
     pct_lbl  = Text(f"{pct:.0f}%", font_size=90, color=BRAND_WHITE, weight=BOLD)
@@ -580,19 +615,20 @@ def fm_animate_donut(scene, percentage, label_text,
     hold_t = max(duration - anim_t, 0.05)
     scene.play(tracker.animate.set_value(fill_angle), run_time=anim_t, rate_func=smooth)
     scene.wait(hold_t)
-    return tracker, pct_lbl, cat_lbl
+    return scene.get_all_added(), tracker, pct_lbl, cat_lbl
 
 
 def fm_animate_line_chart(scene, y_values, end_value_label=None,
                            accent_color=BRAND_GREEN, x_labels=None,
                            duration=3.5, title_text="", _style=None):
+    scene = _SceneWrapper(scene)
     if y_values and isinstance(y_values[0], (list, tuple)):
         series = [{"y_values": s, "color": accent_color, "label": ""} for s in y_values]
-        return fm_animate_line_chart_multi(scene, series=series, duration=duration, title_text=title_text)
+        return scene.get_all_added(), fm_animate_line_chart_multi(scene, series=series, duration=duration, title_text=title_text)
 
     n = len(y_values)
     if n < 2:
-        return None, None, None
+        return scene.get_all_added(), None, None, None
 
     end_value_label = end_value_label if end_value_label is not None else ""
     style = _style if _style is not None else _fm_style(scene, 3)
@@ -672,7 +708,7 @@ def fm_animate_line_chart(scene, y_values, end_value_label=None,
         else:
             scene.play(FadeIn(end_dot), run_time=label_t)
         scene.wait(hold_t)
-        return axes, line, end_dot
+        return scene.get_all_added(), axes, line, end_dot
 
     elif style == 2:
         step_pts = []
@@ -707,7 +743,7 @@ def fm_animate_line_chart(scene, y_values, end_value_label=None,
         else:
             scene.play(FadeIn(end_dot), run_time=label_t)
         scene.wait(hold_t)
-        return axes, line, end_dot
+        return scene.get_all_added(), axes, line, end_dot
 
     else:
         line = VMobject()
@@ -736,12 +772,13 @@ def fm_animate_line_chart(scene, y_values, end_value_label=None,
         else:
             scene.play(FadeIn(end_dot), run_time=label_t)
         scene.wait(hold_t)
-        return axes, line, end_dot
+        return scene.get_all_added(), axes, line, end_dot
 
 
 def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
+    scene = _SceneWrapper(scene)
     if not series:
-        return None, None
+        return scene.get_all_added(), None, None
 
     if series and not isinstance(series[0], dict):
         colors_cycle = [BRAND_GREEN, BRAND_GOLD, BRAND_RED, BRAND_WHITE]
@@ -752,7 +789,7 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
 
     n = len(series[0]["y_values"])
     if n < 2:
-        return None, None
+        return scene.get_all_added(), None, None
 
     all_vals = [v for s in series for v in s["y_values"]]
     min_y   = min(all_vals)
@@ -841,10 +878,11 @@ def fm_animate_line_chart_multi(scene, series, duration=4.0, title_text=""):
         run_time=label_t,
     )
     scene.wait(hold_t)
-    return axes, lines
+    return scene.get_all_added(), axes, lines
 
 
 def fm_animate_waterfall(scene, steps, duration=4.5, position=None):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     pos = np.array(position) if not isinstance(position, np.ndarray) else position
@@ -853,7 +891,7 @@ def fm_animate_waterfall(scene, steps, duration=4.5, position=None):
     steps = [dict(s) for s in steps]
     n = len(steps)
     if n < 2:
-        return None, None
+        return scene.get_all_added(), None, None
 
     bar_w   = min(1.5, 10.5 / n)
     spacing = bar_w * 1.55
@@ -931,10 +969,11 @@ def fm_animate_waterfall(scene, steps, duration=4.5, position=None):
     for bar, lbl in zip(bars, labels):
         scene.play(GrowFromEdge(bar, DOWN), FadeIn(lbl), run_time=per_bar, rate_func=smooth)
     scene.wait(hold_t)
-    return bars, labels
+    return scene.get_all_added(), bars, labels
 
 
 def fm_animate_text_reveal(scene, lines, colors=None, duration=3.0, sizes=None, position=None):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     pos = np.array(position) if not isinstance(position, np.ndarray) else position
@@ -956,12 +995,13 @@ def fm_animate_text_reveal(scene, lines, colors=None, duration=3.0, sizes=None, 
     for t in texts:
         scene.play(FadeIn(t, shift=UP * 0.18), run_time=per_t, rate_func=smooth)
     scene.wait(hold_t)
-    return texts
+    return scene.get_all_added(), texts
 
 
 def fm_animate_icon_grid(scene, total, filled, label_text,
                           accent_color=BRAND_GREEN, duration=3.0,
                           cols=10, position=None, icon_radius=0.18):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     if label_text is None:
@@ -1027,7 +1067,7 @@ def fm_animate_icon_grid(scene, total, filled, label_text,
         run_time=anim_t, rate_func=smooth,
     )
     scene.wait(hold_t)
-    return icons, pct_lbl
+    return scene.get_all_added(), icons, pct_lbl
 
 
 def fm_animate_stacked_cards(scene, items, duration=4.0):
@@ -1102,6 +1142,7 @@ def fm_animate_bullet_chart(scene, actual, target, range_low, range_high,
 def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
                             duration=3.0, font_size=88, subtitle=None,
                             subtitle_color=None, _style=None, position=None):
+    scene = _SceneWrapper(scene)
     if subtitle_color is None:
         subtitle_color = accent_color
     if position is None:
@@ -1140,7 +1181,7 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
         if subtitle:
             scene.play(FadeIn(sub, shift=UP * 0.12), run_time=0.28, rate_func=smooth)
         scene.wait(hold_t)
-        return text, rings
+        return scene.get_all_added(), text, rings
 
     elif style == 1:
         underline = Line(
@@ -1156,7 +1197,7 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
         if subtitle:
             scene.play(FadeIn(sub, shift=UP * 0.12), run_time=0.28, rate_func=smooth)
         scene.wait(max(hold_t - 0.35, 0.05))
-        return text, underline
+        return scene.get_all_added(), text, underline
 
     else:
         corner_marks = VGroup()
@@ -1178,17 +1219,18 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
         if subtitle:
             scene.play(FadeIn(sub, shift=UP * 0.12), run_time=0.28, rate_func=smooth)
         scene.wait(hold_t)
-        return text, corner_marks
+        return scene.get_all_added(), text, corner_marks
 
 
 def fm_animate_timeline(scene, events, accent_color=BRAND_GOLD, duration=4.0,
                          show_index=False, _style=None, position=None):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     pos = np.array(position) if not isinstance(position, np.ndarray) else position
     n = len(events)
     if n < 1:
-        return VGroup(), VGroup()
+        return scene.get_all_added(), VGroup(), VGroup()
     style = _style if _style is not None else _fm_style(scene, 2)
 
     line_w = min(max(n * 1.75, 4.0), 11.0)
@@ -1226,7 +1268,7 @@ def fm_animate_timeline(scene, events, accent_color=BRAND_GOLD, duration=4.0,
             run_time=anim_t, rate_func=smooth,
         )
         scene.wait(hold_t)
-        return dots, labels
+        return scene.get_all_added(), dots, labels
 
     else:
         line = Line([-line_w / 2 - 0.1, 0, 0], [line_w / 2 + 0.1, 0, 0])
@@ -1259,7 +1301,7 @@ def fm_animate_timeline(scene, events, accent_color=BRAND_GOLD, duration=4.0,
             run_time=anim_t, rate_func=smooth,
         )
         scene.wait(hold_t)
-        return dots, labels
+        return scene.get_all_added(), dots, labels
 
 
 def fm_animate_single_value(scene, value_str, label_text,
@@ -1267,6 +1309,7 @@ def fm_animate_single_value(scene, value_str, label_text,
                              value_size=140, label_size=38,
                              sublabel=None, sublabel_color=None, _style=None,
                              position=None):
+    scene = _SceneWrapper(scene)
     if sublabel_color is None:
         sublabel_color = BRAND_GRAY
     if position is None:
@@ -1336,16 +1379,17 @@ def fm_animate_single_value(scene, value_str, label_text,
             hold_t = max(hold_t - 0.2, 0.05)
 
     scene.wait(hold_t)
-    return val_mob, lbl_mob
+    return scene.get_all_added(), val_mob, lbl_mob
 
 
 def fm_formula(scene, lines="", font_size=60, color=BRAND_WHITE, duration=3.0,
                position=None):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     if not lines:
         scene.wait(duration)
-        return VGroup()
+        return scene.get_all_added(), VGroup()
     if isinstance(lines, str):
         lines = [lines]
     safe_w = config.frame_width * 0.86
@@ -1365,22 +1409,23 @@ def fm_formula(scene, lines="", font_size=60, color=BRAND_WHITE, duration=3.0,
         run_time=intro_t, rate_func=smooth,
     )
     scene.wait(hold_t)
-    return group
+    return scene.get_all_added(), group
 
 
 def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
                                 show_net=True, position=None):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     pos = np.array(position) if not isinstance(position, np.ndarray) else position
     def _to_float(v):
         if isinstance(v, (int, float)):
-            return float(v)
+            return scene.get_all_added(), float(v)
         s = str(v).strip().rstrip('%').replace(',', '').replace('$', '')
         try:
-            return float(s)
+            return scene.get_all_added(), float(s)
         except (ValueError, TypeError):
-            return 0.0
+            return scene.get_all_added(), 0.0
 
     items = [(label, _to_float(v), color) for label, v, color in items]
 
@@ -1466,13 +1511,14 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
         run_time=grow_t * 0.35, rate_func=smooth,
     )
     scene.wait(hold_t)
-    return bars, val_labels
+    return scene.get_all_added(), bars, val_labels
 
 
 def fm_animate_data_table(scene, headers, rows, duration=4.0,
                            header_color=BRAND_GOLD, accent_row=None,
                            accent_color=BRAND_RED, label_text=None,
                            title_text=None):
+    scene = _SceneWrapper(scene)
     """Animated data table with header row and data rows.
     headers: list of column header strings.
     rows: list of lists (each inner list = one row of values as strings).
@@ -1537,7 +1583,7 @@ def fm_animate_data_table(scene, headers, rows, duration=4.0,
     for row_group in row_mobs:
         scene.play(FadeIn(row_group, shift=UP * 0.08), run_time=per_row, rate_func=smooth)
     scene.wait(hold_t)
-    return all_cells
+    return scene.get_all_added(), all_cells
 
 
 def fm_icon(name: str, size: float = 1.0, color=None):
@@ -1641,6 +1687,7 @@ def fm_icon(name: str, size: float = 1.0, color=None):
 def fm_animate_vector(scene, direction, label_text, accent_color=BRAND_GOLD,
                        duration=3.5, origin=None, scale=2.5, show_components=False,
                        position=None):
+    scene = _SceneWrapper(scene)
     if position is not None:
         origin = position
     if origin is None:
@@ -1684,11 +1731,12 @@ def fm_animate_vector(scene, direction, label_text, accent_color=BRAND_GOLD,
     scene.play(Create(arrow), run_time=draw_t, rate_func=smooth)
     scene.play(FadeIn(lbl, shift=UP * 0.12), run_time=0.3, rate_func=smooth)
     scene.wait(hold_t)
-    return arrow, lbl
+    return scene.get_all_added(), arrow, lbl
 
 
 def fm_animate_matrix(scene, rows_data, label_text="", accent_color=BRAND_GOLD,
                        duration=4.0, position=None, cell_size=0.9, font_size=36):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
 
@@ -1759,12 +1807,13 @@ def fm_animate_matrix(scene, rows_data, label_text="", accent_color=BRAND_GOLD,
     if lbl_mob:
         scene.play(FadeIn(lbl_mob), run_time=0.2)
     scene.wait(hold_t)
-    return matrix_group, lbl_mob
+    return scene.get_all_added(), matrix_group, lbl_mob
 
 
 def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
                            duration=4.0, position=None, show_std_regions=False,
                            mean_label="μ", std_label="σ", skew=None, skewed=None):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
 
@@ -1831,17 +1880,19 @@ def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
         scene.play(FadeIn(lbl_mob, shift=UP * 0.1), run_time=0.2)
         hold_t = max(hold_t - 0.2, 0.05)
     scene.wait(hold_t)
-    return curve, fill_region, lbl_mob
+    return scene.get_all_added(), curve, fill_region, lbl_mob
 
 
-def fm_animate_scatter(scene, points, label_text="", accent_color=BRAND_GOLD,
+def fm_animate_scatter(scene, points=None, label_text="", accent_color=BRAND_GOLD,
                         duration=4.0, position=None, show_regression=False,
                         x_label="x", y_label="y", highlight_points=None,
                         title_text=""):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     if not points:
-        return VGroup(), None
+        scene.wait(duration)
+        return scene.get_all_added(), VGroup(), None
 
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
@@ -1857,7 +1908,7 @@ def fm_animate_scatter(scene, points, label_text="", accent_color=BRAND_GOLD,
     def _to_screen(px, py):
         sx = position[0] - plot_w / 2 + pad + (px - x_min) / x_span * (plot_w - 2 * pad)
         sy = position[1] - plot_h / 2 + pad + (py - y_min) / y_span * (plot_h - 2 * pad)
-        return [sx, sy, 0]
+        return scene.get_all_added(), [sx, sy, 0]
 
     x_axis = Line([position[0] - plot_w / 2, position[1] - plot_h / 2, 0],
                   [position[0] + plot_w / 2, position[1] - plot_h / 2, 0])
@@ -1914,16 +1965,17 @@ def fm_animate_scatter(scene, points, label_text="", accent_color=BRAND_GOLD,
     if reg_line is not None:
         scene.play(Create(reg_line), run_time=0.35, rate_func=smooth)
     scene.wait(hold_t)
-    return dots, reg_line
+    return scene.get_all_added(), dots, reg_line
 
 
 def fm_animate_probability_bar(scene, outcomes, label_text="",
                                 accent_color=BRAND_GOLD, duration=4.0,
                                 position=None):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     if not outcomes:
-        return VGroup(), VGroup()
+        return scene.get_all_added(), VGroup(), VGroup()
 
     n       = len(outcomes)
     bar_w   = min(1.4, 9.0 / max(n, 1))
@@ -1988,13 +2040,14 @@ def fm_animate_probability_bar(scene, outcomes, label_text="",
         run_time=0.35, rate_func=smooth,
     )
     scene.wait(hold_t)
-    return bars, val_labels
+    return scene.get_all_added(), bars, val_labels
 
 
 def fm_animate_number_line(scene, value, min_val, max_val, label_text="",
                             accent_color=BRAND_GOLD, duration=3.5,
                             position=None, line_length=9.0,
                             tick_labels=None):
+    scene = _SceneWrapper(scene)
     if position is None:
         position = ORIGIN
     if not isinstance(tick_labels, (list, tuple)):
@@ -2039,7 +2092,7 @@ def fm_animate_number_line(scene, value, min_val, max_val, label_text="",
         d  = Dot([cx, position[1], 0], radius=0.18, color=accent_color)
         d.set_fill(accent_color, opacity=1.0)
         gl = fm_glow_around(d, color=accent_color, n_layers=3)
-        return gl
+        return scene.get_all_added(), gl
 
     dot = always_redraw(_dot)
 
@@ -2062,4 +2115,4 @@ def fm_animate_number_line(scene, value, min_val, max_val, label_text="",
     scene.play(tracker.animate.set_value(target_x), run_time=move_t, rate_func=smooth)
     scene.play(FadeIn(val_lbl, shift=DOWN * 0.1), run_time=0.3)
     scene.wait(hold_t)
-    return dot, line_mob, lbl_mob
+    return scene.get_all_added(), dot, line_mob, lbl_mob
