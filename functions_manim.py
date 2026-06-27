@@ -1764,7 +1764,7 @@ def fm_animate_matrix(scene, rows_data, label_text="", accent_color=BRAND_GOLD,
 
 def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
                            duration=4.0, position=None, show_std_regions=False,
-                           mean_label="μ", std_label="σ", skew=None):
+                           mean_label="μ", std_label="σ", skew=None, skewed=None):
     if position is None:
         position = ORIGIN
 
@@ -1836,7 +1836,8 @@ def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
 
 def fm_animate_scatter(scene, points, label_text="", accent_color=BRAND_GOLD,
                         duration=4.0, position=None, show_regression=False,
-                        x_label="x", y_label="y"):
+                        x_label="x", y_label="y", highlight_points=None,
+                        title_text=""):
     if position is None:
         position = ORIGIN
     if not points:

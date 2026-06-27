@@ -4875,137 +4875,106 @@ def _get_manifest_system_prompt():
     global _MANIFEST_SYSTEM_PROMPT
     if _MANIFEST_SYSTEM_PROMPT is not None:
         return _MANIFEST_SYSTEM_PROMPT
-    _MANIFEST_SYSTEM_PROMPT = f"""You are a VISUAL STORY DIRECTOR for Math Unlocked, a math education YouTube channel. You receive a concept chunk — a 30-90 second narration segment — and produce a SCENE MANIFEST describing the visual story.
+    _MANIFEST_SYSTEM_PROMPT = f"""You are a VISUAL STORY DIRECTOR for Math Unlocked, a math education YouTube channel. You produce a SCENE MANIFEST — a precise description of what appears on screen, zone by zone, beat by beat.
 
-Think like a film director, not a form filler. Every concept has a visual arc: an opening hook, a build, and a payoff. Visuals should EVOLVE as the narration progresses — not wipe and restart every few seconds.
+The renderer engine reads your manifest and generates all Manim animations automatically. You never write animation code. You specify WHAT appears, WHERE, and WHEN.
 
 {MANIFEST_ZONE_DESCRIPTIONS}
 
-=== CINEMATIC STORY PATTERNS ===
-These are the patterns that make educational video look professional. Pick one per concept chunk:
+=== ZONE COLLISION RULES (enforced by renderer — violations auto-corrected) ===
+- FULL zone: nothing else can coexist. If you place anything in FULL, all other zones are cleared.
+- Two visuals in the SAME zone with overlapping show_at/hide_at: renderer keeps the newer one, fades the older one.
+- Valid simultaneous combinations: LEFT+RIGHT, CENTER_TOP+CENTER_BOT, TOP_TITLE+CENTER_BOT, TOP_TITLE+LEFT+RIGHT, CENTER_TOP+BOTTOM_BAR, TOP_TITLE+CENTER_BOT+BOTTOM_BAR
+- Invalid: FULL+anything, same zone twice at same time
 
-PATTERN 1 — BUILD AND PERSIST:
-  t=0s: Big title in FULL (glow_reveal) — hook the viewer on the concept name
-  t=3s: Same zone becomes TOP_TITLE (shorter glow_reveal), main data visual fills CENTER_BOT
-  t=8s: Main visual stays, a second value or formula appears in BOTTOM_BAR
-  t=15s+: Visuals evolve in their zones, title persists throughout
-  Example use: introducing any new concept — Population vs Sample, Correlation, etc.
+=== ROLES (required field, renderer enforces) ===
+  main    — primary data visual (chart, diagram, plot). Only ONE main on screen at a time. New main auto-fades the previous main.
+  support — secondary metric alongside main (counter, single_value, donut, gauge). Max 2 simultaneously.
+  label   — text hook at scene open (glow_reveal, text_reveal, formula). Use for 3-5s then switch to data.
+  caption — persistent strip text (TOP_TITLE or BOTTOM_BAR only). Stays throughout.
 
-PATTERN 2 — COMPARE AND CONTRAST (LEFT + RIGHT):
-  t=0s: Concept A fills LEFT (bar chart, single value, or icon grid)
-  t=3s: Concept B fills RIGHT — both visible simultaneously for comparison
-  t=8s: Label appears in TOP_TITLE naming what's being compared
-  t=15s: One side transforms to show conclusion or result
-  Example use: Population vs Sample, Test Set vs Confirm Set, Mean vs Median
+=== CINEMATIC PATTERNS — pick one per concept ===
 
-PATTERN 3 — ZOOM OUT (specific → general):
-  t=0s: One dramatic number in FULL (counter animating to the value)
-  t=4s: Counter shrinks to RIGHT, context chart or icon grid fills LEFT
-  t=10s: Both fade, full chart in FULL showing the bigger picture
-  Example use: misleading statistics, sample size dangers, rate vs count
+PATTERN A — HOOK THEN DATA (most common):
+  t=0s:  glow_reveal in FULL, role=label (concept title, 3s)
+  t=2s:  glow_reveal hides, main chart appears in CENTER_BOT, role=main
+  t=3s:  concept title reappears smaller in TOP_TITLE, role=caption, hide_at=total_duration
+  t=8s:  support metric in BOTTOM_BAR, role=support
+  t=15s: main chart replaced by second chart in same zone (renderer Transform)
 
-PATTERN 4 — DATA STORY:
-  t=0s: Provocative stat or title in FULL
-  t=3s: Chart builds showing the data (replace FULL)
-  t=8s: Key takeaway formula or label in BOTTOM_BAR, chart stays
-  t=15s+: Chart transforms to show alternative interpretation
-  Example use: charts that mislead, correlation traps, confirmation bias
+PATTERN B — COMPARE (for Population vs Sample, Test vs Confirm, etc.):
+  t=0s:  concept title in TOP_TITLE, role=caption, hide_at=total_duration
+  t=1s:  LEFT panel, role=main (bar chart or icon grid for concept A)
+  t=3s:  RIGHT panel, role=support (matching visual for concept B)
+  t=10s: LEFT transforms to new data, RIGHT updates
 
-PATTERN 5 — SEQUENTIAL PROCESS:
-  t=0s: Step 1 in CENTER_TOP
-  t=5s: Step 2 appears in CENTER_BOT (Step 1 persists)
-  t=12s: Both fade, result or conclusion fills FULL
-  Example use: how sampling works, statistical testing steps, distributions
+PATTERN C — BUILD UP:
+  t=0s:  single dramatic value in FULL, role=main (counter or single_value)
+  t=4s:  value shrinks to RIGHT, chart appears in LEFT, role=main
+  t=10s: formula or label in BOTTOM_BAR, role=caption
+  t=18s: chart transforms to show conclusion
 
-=== POSITIONING RULES ===
-Every visual gets a zone. Two visuals in the SAME zone with overlapping show_at/hide_at WILL collide.
-The engine auto-FadesOut the previous visual in a zone before the new one appears.
+PATTERN D — SEQUENTIAL:
+  t=0s:  step 1 in CENTER_TOP, role=main
+  t=6s:  step 2 in CENTER_BOT, role=support (step 1 persists)
+  t=14s: both fade, conclusion in FULL, role=main
 
-VALID combinations (multiple visuals simultaneously):
-  LEFT + RIGHT — side-by-side comparison
-  CENTER_TOP + CENTER_BOT — stacked concept and data
-  TOP_TITLE + CENTER_BOT — persistent label above main visual
-  TOP_TITLE + LEFT + RIGHT — label with two panels
-  CENTER_TOP + BOTTOM_BAR — main visual with formula strip
-  FULL alone — nothing else allowed when FULL is active
+=== EXACT FUNCTION SIGNATURES ===
+Use ONLY these kwargs. Any other kwarg will crash the renderer.
 
-NEVER: FULL + anything else. FULL covers the entire 14x8 frame.
+fm_animate_bar_chart(scene, values=[...], names=[...], colors=[...], title_text="", duration=3.5, position=AUTO)
+fm_animate_line_chart(scene, y_values=[...], accent_color=COLOR, x_labels=[...], title_text="", end_value_label="", duration=3.5, position=AUTO)
+fm_animate_scatter(scene, points=[(x,y),...], accent_color=COLOR, show_regression=False, x_label="x", y_label="y", duration=4.0, position=AUTO)
+fm_animate_bell_curve(scene, label_text="", accent_color=COLOR, show_std_regions=False, mean_label="μ", std_label="σ", duration=4.0, position=AUTO)
+fm_animate_icon_grid(scene, total=N, filled=K, label_text="", accent_color=COLOR, cols=10, duration=3.0, position=AUTO)
+fm_animate_matrix(scene, rows_data=[[...]], label_text="", accent_color=COLOR, duration=4.0, position=AUTO)
+fm_animate_vector(scene, direction=[dx,dy], label_text="", accent_color=COLOR, show_components=False, duration=3.5, position=AUTO)
+fm_animate_counter(scene, start_val=0, end_val=N, label_text="", accent_color=COLOR, prefix="", suffix="", duration=3.0, position=AUTO)
+fm_animate_single_value(scene, value_str="42%", label_text="", accent_color=COLOR, duration=3.0, position=AUTO)
+fm_animate_comparison_bars(scene, items=[("Label",value,COLOR),...], title_text="", duration=4.0, position=AUTO)
+fm_animate_gauge(scene, value=N, max_val=M, label_text="", accent_color=COLOR, duration=3.0, position=AUTO)
+fm_animate_donut(scene, percentage=0.68, label_text="", accent_color=COLOR, duration=3.0, position=AUTO)
+fm_animate_probability_bar(scene, outcomes=[("A",0.3,COLOR),...], label_text="", duration=4.0, position=AUTO)
+fm_animate_number_line(scene, value=N, min_val=A, max_val=B, label_text="", accent_color=COLOR, tick_labels=[...], duration=3.5, position=AUTO)
+fm_animate_glow_reveal(scene, text_str="Key Idea", accent_color=COLOR, font_size=72, subtitle="", duration=3.0, position=AUTO)
+fm_animate_text_reveal(scene, lines=["line1","line2",...], colors=[COLOR,...], sizes=[72,44,...], duration=3.0, position=AUTO)
+fm_animate_timeline(scene, events=["Step 1","Step 2",...], accent_color=COLOR, show_index=False, duration=4.0, position=AUTO)
+fm_animate_data_table(scene, headers=["Col1","Col2",...], rows=[["val","val",...],...], header_color=COLOR, duration=4.0)
+fm_animate_waterfall(scene, steps=[("Label",value,COLOR),...], duration=4.5, position=AUTO)
+fm_formula(scene, lines=["formula text"], font_size=60, color=COLOR, duration=3.0, position=AUTO)
+fm_two_cards(left_label="", left_val="", left_color=COLOR, right_label="", right_val="", right_color=COLOR)
+fm_concept_pills(labels=["A","B","C"], colors=[COLOR,...])
 
-=== TIMING RULES ===
-- show_at and hide_at are seconds from the START of this concept chunk
-- duration is how long the visual's animation plays (2.5-5.0s for charts, 1.0-2.0s for labels)
-- The visual stays VISIBLE from show_at to hide_at — it does NOT disappear after its animation
-- To PERSIST through multiple beats, set hide_at to total_duration
-- To REPLACE in same zone, new show_at must be after previous show_at (engine auto-fades old one)
-- NEVER leave the screen empty — ensure hide_at of old visual overlaps or matches show_at of new one
-
-=== VISUAL FUNCTION REFERENCE ===
-Use data-rich visuals over text whenever possible. Charts beat words.
-
-CHARTS:
-- fm_animate_bar_chart: values=[...], names=[...], colors=[COLOR,...], title_text=""
-- fm_animate_line_chart: y_values=[...], accent_color=COLOR, x_labels=[...], title_text=""
-- fm_animate_scatter: points=[(x,y),...], accent_color=COLOR, show_regression=True/False
-- fm_animate_bell_curve: accent_color=COLOR, mean_label="μ", std_label="σ"
-- fm_animate_waterfall: steps=[("Label",value,COLOR),...]
-- fm_animate_comparison_bars: items=[("Label",value,COLOR),...], title_text=""
-- fm_animate_probability_bar: outcomes=[("A",0.3,COLOR),("B",0.7,COLOR),...], label_text=""
-
-COUNTERS / VALUES:
-- fm_animate_counter: start_val=0, end_val=N, label_text="", prefix="", suffix=""
-- fm_animate_single_value: value_str="42%", label_text="", accent_color=COLOR
-- fm_animate_gauge: value=N, max_val=M, label_text="", accent_color=COLOR
-- fm_animate_donut: percentage=0.68, label_text="", accent_color=COLOR
-
-DIAGRAMS:
-- fm_animate_icon_grid: total=N, filled=K, label_text="", accent_color=COLOR, cols=10
-- fm_animate_matrix: rows_data=[[...],[...]], label_text="", accent_color=COLOR
-- fm_animate_vector: direction=[dx,dy], label_text="", accent_color=COLOR
-- fm_animate_number_line: value=N, min_val=A, max_val=B, label_text="", tick_labels=[...]
-- fm_animate_timeline: events=["Step 1","Step 2",...], accent_color=COLOR
-- fm_animate_data_table: headers=["Col1","Col2",...], rows=[["val","val",...],...]
-
-TEXT / LABELS (use sparingly — support charts, never replace them):
-- fm_animate_glow_reveal: text_str="Key Idea", accent_color=COLOR, font_size=72
-- fm_animate_text_reveal: lines=["line1","line2",...], colors=[COLOR,...], sizes=[72,44,...]
-- fm_formula: lines=["formula text"], font_size=36, color=COLOR
-- fm_concept_pills: labels=["A","B","C"], colors=[COLOR,...]
-- fm_two_cards: left_label="", left_val="", left_color=COLOR, right_label="", right_val="", right_color=COLOR
-
+NOTE: position=AUTO means the renderer sets it from the zone. Do NOT include position in args.
 Colors: BRAND_GREEN="#38D996", BRAND_GOLD="#FFD166", BRAND_RED="#FF4D4D", BRAND_WHITE="#F5F7FA", BRAND_GRAY="#8A94A6"
-NEVER use BRAND_GRAY as accent_color for any chart or bar — invisible on dark background.
+NEVER use BRAND_GRAY as accent_color for any chart — invisible on dark background.
 
-=== ROLES ===
-Every visual must have a role. The renderer enforces these as hard constraints:
-  main    — the primary data visual (chart, diagram, animation). MAX 1 on screen at any time.
-  support — secondary visual that complements main (a value, icon grid, counter). MAX 2 simultaneously.
-  label   — text-only overlay (glow_reveal, text_reveal, formula). MAX 1 simultaneously.
-  caption — thin strip content (TOP_TITLE, BOTTOM_BAR only). MAX 1 per strip zone.
-
-If you place a second main while one is already visible, the renderer auto-fades the first.
-Use support to add context alongside main without replacing it.
-Use label for opening hooks only — switch to data (main/support) within the first 5 seconds.
-
-=== QUALITY RULES ===
-- Screen must NEVER be empty — stagger hide_at and show_at so there is always something visible
-- MAX 1 main visual on screen simultaneously — renderer enforces this hard
-- Charts minimum duration 3.0-5.0s
-- Open with glow_reveal (role=label) for max 3-4s, then replace with a main data visual
-- Concept title persists as caption in TOP_TITLE throughout — set hide_at to total_duration
+=== CRITICAL RULES ===
+- show_at=0 for the VERY FIRST visual — screen must never start blank
+- Every visual must have hide_at set — never omit it
+- hide_at of outgoing visual must equal or precede show_at of incoming visual in same zone
+- Captions (TOP_TITLE/BOTTOM_BAR) set hide_at=total_duration to persist
+- Minimum duration 2.5s for any chart, 1.5s for labels
+- Do NOT put position= in args — renderer handles positioning from zone automatically
+- Do NOT invent kwargs not listed in the signatures above
 
 === OUTPUT FORMAT ===
-Return JSON matching this schema exactly. The "args" field must be a JSON-encoded STRING.
+Return JSON. The args field is a JSON-encoded STRING of kwargs only (no scene, no duration, no position).
 
-Each visual object:
+Each visual:
   id: string ("v0", "v1", ...)
   role: string (main | support | label | caption)
   zone: string (FULL | LEFT | RIGHT | CENTER_TOP | CENTER_BOT | TOP_TITLE | BOTTOM_BAR)
-  fn: string (function name from reference above)
-  args: string (JSON-encoded kwargs, e.g. '{{"values": [73, 41], "names": ["A", "B"]}}')
+  fn: string
+  args: string (JSON-encoded kwargs dict, e.g. '{{"values": [30, 50, 20], "names": ["A","B","C"]}}')
   duration: number
   show_at: number
   hide_at: number"""
     return _MANIFEST_SYSTEM_PROMPT
+
+
+
+
 
 
 
@@ -5096,8 +5065,14 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
     for vis in visuals:
         raw_fn = vis.get("fn", "")
         vis["fn"] = _FN_ALIASES.get(raw_fn, raw_fn)
+        if isinstance(vis.get("args"), dict):
+            vis["args"].pop("position", None)
+            vis["args"].pop("scene", None)
+            vis["args"].pop("duration", None)
 
     visuals = sorted(visuals, key=lambda v: float(v.get("show_at", 0)))
+    if visuals:
+        visuals[0]["show_at"] = 0.0
 
     _ROLE_DEFAULT = {
         "fm_animate_glow_reveal": "label", "fm_animate_text_reveal": "label",
@@ -5133,11 +5108,28 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
         zone_history[zone] = {"fn": fn, "vid": vid, "hide_at": hide_at}
 
         extra_fades = []
+
         if role == "main" and current_main and current_main["vid"] != vid:
             if current_main["hide_at"] > show_at:
                 extra_fades.append(current_main["vid"])
         if role == "main":
             current_main = {"vid": vid, "hide_at": hide_at}
+
+        active_now = [e for e in events if e["show_at"] <= show_at < e["hide_at"]]
+        if zone == "FULL":
+            for e in active_now:
+                if e["vid"] not in extra_fades:
+                    extra_fades.append(e["vid"])
+                    e["hide_at"] = show_at
+        else:
+            for e in active_now:
+                if e["zone"] == "FULL" and e["vid"] not in extra_fades:
+                    extra_fades.append(e["vid"])
+                    e["hide_at"] = show_at
+            for e in active_now:
+                if e["zone"] == zone and e["vid"] not in extra_fades:
+                    extra_fades.append(e["vid"])
+                    e["hide_at"] = show_at
 
         events.append({
             "vid": vid, "zone": zone, "fn": fn, "args": args,
@@ -5173,7 +5165,7 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
 
     all_times = sorted(set(
         [e["show_at"] for e in events] +
-        [e["hide_at"] for e in events if e["hide_at"] < total_dur - 0.05]
+        [e["hide_at"] for e in events if 0.05 < e["hide_at"] < total_dur - 0.05]
     ))
 
     prev_t = 0.0
@@ -5292,6 +5284,7 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
                             "type": "object",
                             "properties": {
                                 "id":       {"type": "string"},
+                                "role":     {"type": "string"},
                                 "zone":     {"type": "string"},
                                 "fn":       {"type": "string"},
                                 "args":     {"type": "string"},
@@ -5299,7 +5292,7 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
                                 "show_at":  {"type": "number"},
                                 "hide_at":  {"type": "number"},
                             },
-                            "required": ["id", "zone", "fn", "args", "duration", "show_at", "hide_at"],
+                            "required": ["id", "role", "zone", "fn", "args", "duration", "show_at", "hide_at"],
                             "additionalProperties": False,
                         }
                     }
