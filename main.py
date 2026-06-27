@@ -3776,7 +3776,7 @@ def _get_chunk_available_names() -> set:
         "fm_single_value", "fm_timeline", "fm_waterfall", "fm_gauge",
         "fm_donut", "fm_matrix", "fm_vector", "fm_number_line",
         "fm_probability_bar", "fm_comparison_bars", "fm_data_table",
-        "fm_icon", "fm_card", "fm_two_cards", "fm_card_row",
+        "fm_icon", "fm_card", "fm_two_cards", "fm_card_row", "fm_concept_pills",
         "ease_in_sine", "ease_out_sine", "ease_in_out_sine",
         "ease_in_quad", "ease_out_quad", "ease_in_out_quad",
         "ease_in_cubic", "ease_out_cubic", "ease_in_out_cubic",
@@ -5096,7 +5096,7 @@ def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
     }
 
     fn_is_constructor = {
-        "fm_icon", "fm_card", "fm_two_cards", "fm_card_row",
+        "fm_icon", "fm_card", "fm_two_cards", "fm_card_row", "fm_concept_pills",
     }
 
     sorted_show_times = sorted(set(e["show_at"] for e in events))
