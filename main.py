@@ -5367,10 +5367,11 @@ def _sanitize_manifest(manifest: dict) -> dict:
     return manifest
 
 
-def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, chunk_idx: int, chunk: dict) -> str:
-    """Calls GPT with the manifest prompt for a concept chunk.
-    Returns completed Manim Python code string, or empty string on failure.
-    Falls back to direct Python codegen if manifest parse fails."""
+def _generate_concept_chunk_code(client, topic: str, chunk_idx: int, chunk: dict) -> str:
+    """Direct Manim code generation — Latest Architecture.
+    GPT writes construct() directly based on narration content.
+    No section detection. No manifest. GPT picks the right visual
+    from the full toolkit based on what the narration is actually saying."""
     if not OPENAI_API_KEY:
         return ""
 
@@ -5382,9 +5383,174 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
     beat_lines = []
     for b in chunk.get("beats", []):
         b_start = round(float(b.get("start_time", 0)) - concept_start, 2)
-        b_end   = round(float(b.get("end_time", 0))   - concept_start, 2)
+        b_end   = round(float(b.get("end_time",   0)) - concept_start, 2)
         b_text  = b.get("text", "").strip()
         beat_lines.append(f"  +{b_start:.2f}s-{b_end:.2f}s: {b_text}")
+
+    system_prompt = f"""You are a visual mathematics educator writing Manim animation code for Math Unlocked — a YouTube channel teaching math from statistics to transformers.
+
+For each narration chunk you write ONE complete Manim Scene class. Your visual makes the math OBVIOUS. The audio says the words. You show what those words MEAN mathematically.
+
+=== READ THE NARRATION FIRST, THEN PICK THE VISUAL ===
+Don't categorize the video. Read what the narration is actually saying and pick the visual that makes that specific idea click. Examples:
+
+Narration says "the average income is $50k but most people earn less" → skewed distribution: fm_animate_bell_curve with tail pulled right, or fm_animate_bar_chart showing the skew
+Narration says "we sample 20 people from a population of 100" → fm_animate_icon_grid(total=100, filled=20)
+Narration says "correlation is not causation" → fm_animate_scatter with trend line, then show a second scatter with same correlation but opposite cause
+Narration says "the derivative is the slope of the tangent line" → fm_animate_scatter plotting a curve with a tangent line drawn at a point
+Narration says "gradient descent rolls downhill" → fm_animate_line_chart showing loss descending, or fm_animate_scatter showing a bowl shape with a dot moving
+Narration says "a matrix transforms space" → fm_animate_matrix showing the values, then fm_animate_vector showing input vs output vectors
+Narration says "attention weights tell each token how much to focus on others" → fm_animate_data_table as an attention heatmap matrix
+Narration says "ReLU just clips negatives to zero" → fm_animate_scatter plotting f(x)=max(0,x)
+Narration says "the loss went down from 2.3 to 0.4 over 100 epochs" → fm_animate_line_chart with descending curve
+Narration says "this is useful for neural networks" inside a calculus explanation → still show the calculus concept (derivative/gradient) but label it with the neural network application
+Narration says "softmax turns scores into probabilities" → fm_animate_probability_bar showing outputs summing to 1
+Narration says "eigenvectors don't rotate, they only scale" → fm_animate_vector showing same direction before and after transformation
+
+The pattern: WHAT IS THE MATH DOING? Show that action visually.
+
+=== VISUAL PRIMITIVES — FULL TOOLKIT ===
+Use whichever fits the narration. Don't limit yourself to "statistics" or "ML" functions.
+
+fm_animate_bell_curve(self, label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+  → distributions, normal curves, skew, variance as width, confidence regions
+
+fm_animate_scatter(self, points=[[x,y],...], accent_color=BRAND_GOLD, show_regression=False, x_label="x", y_label="y", duration=D, position=[cx,cy,0])
+  → correlation, function curves (plot many points), decision boundaries, data clouds, ANY 2D curve
+
+fm_animate_bar_chart(self, values=[...], names=[...], colors=[...], title_text="", duration=D, position=[cx,cy,0])
+  → comparisons, distributions as histograms, frequency counts, layer sizes
+
+fm_animate_line_chart(self, y_values=[...], accent_color=BRAND_GREEN, x_labels=[...], title_text="", duration=D, position=[cx,cy,0])
+  → trends over time, loss curves, learning curves, any sequence of values
+
+fm_animate_icon_grid(self, total=100, filled=20, label_text="", accent_color=BRAND_GREEN, cols=10, duration=D, position=[cx,cy,0])
+  → populations, sampling, probability as proportion, dropout (random zeroed nodes), batch selection
+
+fm_animate_number_line(self, value=N, min_val=A, max_val=B, label_text="", tick_labels=[...], duration=D, position=[cx,cy,0])
+  → limits approaching, parameter values, z-scores, single variable ranges, positioning on a scale
+
+fm_animate_matrix(self, rows_data=[[...]], label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+  → matrices, tensors, attention matrices, weight matrices, transformation matrices
+
+fm_animate_vector(self, direction=[dx,dy], label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+  → vectors, gradients, eigenvectors, embeddings as directions, any directional quantity
+
+fm_animate_counter(self, start_val=0, end_val=N, label_text="", accent_color=BRAND_GOLD, prefix="", suffix="", duration=D, position=[cx,cy,0])
+  → counting up, epoch numbers, sample sizes, any growing integer
+
+fm_animate_single_value(self, value_str="42%", label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+  → key metrics, loss values, accuracy, any single important number
+
+fm_animate_comparison_bars(self, items=[["Label",value,COLOR],...], title_text="", duration=D, position=[cx,cy,0])
+  → side-by-side comparison, before/after, attention heads, parameter comparisons
+
+fm_animate_probability_bar(self, outcomes=[["A",0.3,COLOR],...], label_text="", duration=D, position=[cx,cy,0])
+  → discrete probability distributions, softmax outputs, categorical distributions
+
+fm_animate_gauge(self, value=N, max_val=M, label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+  → percentage full, accuracy percentage, single proportion
+
+fm_animate_donut(self, percentage=0.68, label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+  → single proportion, accuracy, fill percentage
+
+fm_animate_data_table(self, headers=[...], rows=[[...]], header_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+  → attention matrices, confusion matrices, lookup tables, any grid of values
+
+fm_animate_glow_reveal(self, text_str="Title", accent_color=BRAND_GOLD, font_size=72, subtitle="", duration=D, position=[cx,cy,0])
+  → concept hook titles ONLY (one per chunk, first beat only), key insight reveals
+
+fm_animate_text_reveal(self, lines=[...], colors=[...], sizes=[...], duration=D, position=[cx,cy,0])
+  → short lists of steps or contrasts (max 3 lines, math labels only, not sentences)
+
+fm_formula(self, lines=["formula"], font_size=60, color=BRAND_WHITE, duration=D, position=[cx,cy,0])
+  → any equation or formula. ALWAYS use this instead of Text() for math notation.
+  → Examples: ["P(A|B) = P(A∩B) / P(B)"], ["loss = -sum(y * log(y_hat))"], ["W = W - lr * dL/dW"]
+
+fm_animate_timeline(self, events=[...], accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+  → sequences of steps, tokenization as word sequence, algorithm steps
+
+fm_animate_waterfall(self, steps=[["Label",value,COLOR],...], duration=D, position=[cx,cy,0])
+  → sequential additions/subtractions, cumulative effects, gradient accumulation
+
+fm_clamp_to_frame(*mobjects) — ALWAYS call before self.play(FadeIn(...)) when >1 group shares screen
+fm_glow_around(mobject, color=BRAND_GOLD) — returns VGroup, add the whole result to scene
+
+=== THE ANTI-CHAOS RULE — ONE THING AT A TIME ===
+Structure: ONE main visual → optional title above → optional formula/label below → Transform if data updates → FadeOut everything at end.
+
+NEVER show two main visuals simultaneously. The FadeOut at end of every construct() is mandatory.
+
+PATTERN 1 — CONCEPT HOOK THEN DATA:
+    r = fm_animate_glow_reveal(self, "Mean vs Median", duration=2.5, position=[0,0,0])
+    title = r[0]
+    self.play(title.animate.scale(0.4).move_to([0, 3.2, 0]), run_time=0.5)
+    chart, _ = fm_animate_bar_chart(self, values=[30,70,50,90,20], names=["A","B","C","D","E"], colors=[BRAND_GOLD]*5, duration=4.0, position=[0,-0.3,0])
+    self.wait(2.0)
+    self.play(FadeOut(title, chart), run_time=0.4)
+
+PATTERN 2 — FORMULA THEN VISUALIZATION:
+    form, _ = fm_formula(self, ["loss = -sum(y * log(y_hat))"], font_size=56, duration=2.5, position=[0, 2.0, 0])
+    self.wait(1.0)
+    chart, _ = fm_animate_line_chart(self, y_values=[2.3,1.8,1.2,0.8,0.5,0.3], accent_color=BRAND_GREEN, x_labels=["1","20","40","60","80","100"], title_text="Training Loss", duration=4.0, position=[0,-0.5,0])
+    self.wait(2.0)
+    self.play(FadeOut(form, chart), run_time=0.4)
+
+PATTERN 3 — LEFT/RIGHT COMPARISON:
+    val_a, _ = fm_animate_single_value(self, "70", label_text="Before", accent_color=BRAND_GRAY, duration=2.0, position=[-3.5, 0, 0])
+    val_b, _ = fm_animate_single_value(self, "75", label_text="After", accent_color=BRAND_GREEN, duration=2.0, position=[3.5, 0, 0])
+    fm_clamp_to_frame(val_a, val_b)
+    self.wait(2.5)
+    self.play(FadeOut(val_a, val_b), run_time=0.4)
+
+PATTERN 4 — TRANSFORM (same visual updating):
+    chart, _ = fm_animate_bar_chart(self, values=[20,80], names=["Sample","Rest"], colors=[BRAND_GOLD, BRAND_GRAY], duration=3.0, position=[0,0,0])
+    self.wait(1.5)
+    chart2, _ = fm_animate_bar_chart(self, values=[40,60], names=["Sample","Rest"], colors=[BRAND_GREEN, BRAND_GRAY], duration=0.1, position=[0,0,0])
+    self.play(Transform(chart, chart2), run_time=0.8)
+    self.wait(2.0)
+    self.play(FadeOut(chart), run_time=0.4)
+
+=== SCREEN POSITIONS ===
+Center: [0, 0, 0] — main visual, full screen
+Top title: [0, 3.2, 0] — after scaling down with .scale(0.4).move_to(...)
+Bottom label: [0, -3.2, 0] — formula or short label
+Left: [-3.5, 0, 0] — left comparison
+Right: [3.5, 0, 0] — right comparison
+Safe zone: x in [-6.5, 6.5], y in [-3.5, 3.5]
+
+NEVER opacity= in Line/Arc/Circle/Dot constructors → use .set_stroke(opacity=...) after
+NEVER MathTex, Tex, SingleStringMathTex → use fm_formula() always
+NEVER DecimalNumber → use always_redraw(lambda: Text(f"{{val:.1f}}", ...)) with ValueTracker
+NEVER BarChart, Axes, NumberLine, NumberPlane, SVGMobject, Rectangle, DashedLine, DashedVMobject, Ellipse, plot_line_graph
+NEVER call self.fm_*() — these are module-level: fm_*(self, ...)
+Triangle() takes NO vertex args → use Polygon([p1],[p2],[p3]) for custom shapes
+Polygon: each vertex is its OWN positional arg: Polygon([0,1,0],[1,0,0],[-1,0,0]) not Polygon([[...]])
+Star(n=5, outer_radius=0.5) — never pass coordinate as first arg
+RoundedRectangle uses corner_radius= NOT radius=
+GrowFromEdge(mob, DOWN) — GrowFromBottom doesn't exist
+Rate funcs: smooth, linear, ease_out_bounce — never bounce_out
+BRAND_* are hex strings → ManimColor(BRAND_GREEN) for interpolate_color()
+fm_clamp_to_frame(*groups) before FadeIn when >1 group shares screen
+ValueTracker must be top-level statement BEFORE any always_redraw lambda
+Never index fm_* returns: (card[0], result[1]) — keep as named variables
+Never self.add() AND animate submobjects of same fm_* result separately
+_ is NOT previous result — always assign: result, _ = fm_*(...)
+fm_animate_scatter returns tuple — first element is VGroup, second is axes or None
+fm_animate_bell_curve: mean_label and std_label must be strings, never None
+fm_animate_number_line: value must be a number, never None
+axes.get_graph() color: .set_stroke(color=...) after construction
+BRAND_* colors: BRAND_GREEN="#38D996" BRAND_GOLD="#FFD166" BRAND_RED="#FF4D4D" BRAND_WHITE="#F5F7FA" BRAND_GRAY="#8A94A6" BRAND_PANEL="#0D1B2A"
+NEVER BRAND_GRAY as main accent — invisible on dark background
+Always FadeOut ALL mobjects at the very end of construct()
+
+=== STRUCTURAL RULES ===
+Exactly ONE class subclassing MathScene. No top-level code outside the class.
+MathScene is already defined — do not redefine it, do not set camera.background_color.
+construct(self) goes straight to content.
+Only imports: manim, numpy, math, random. Nothing else.
+Never reference: open, exec, eval, __import__, os, sys, subprocess.
+Total self.play() + self.wait() durations must match {total_duration}s."""
 
     user_prompt = (
         f"Topic: {topic}\n"
@@ -5393,41 +5559,23 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
         f"Total duration: {total_duration}s\n\n"
         f"Beat timeline (seconds from chunk start):\n"
         + "\n".join(beat_lines) +
-        f"\n\nProduce an action script for this concept. "
-        f"Cover the full {total_duration}s. "
-        f"Start with show FULL, build deliberately with transform and add, never stack. "
-        f"Empty string for unused fields. Sequential actions only."
+        f"\n\nWrite a single MathScene subclass named {class_name}. "
+        f"Read the narration carefully and pick the visual that makes this specific math concept click. "
+        f"One main visual at a time. Total duration {total_duration}s. FadeOut everything at the end."
     )
 
-    manifest_schema = {
+    codegen_schema = {
         "type": "json_schema",
         "json_schema": {
-            "name": "scene_manifest",
+            "name": "manim_chunk",
             "strict": True,
             "schema": {
                 "type": "object",
                 "properties": {
-                    "scene_id":       {"type": "string"},
-                    "total_duration": {"type": "number"},
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action":    {"type": "string"},
-                                "zone":      {"type": "string"},
-                                "from_zone": {"type": "string"},
-                                "to_zone":   {"type": "string"},
-                                "fn":        {"type": "string"},
-                                "args":      {"type": "string"},
-                                "duration":  {"type": "number"},
-                            },
-                            "required": ["action", "zone", "from_zone", "to_zone", "fn", "args", "duration"],
-                            "additionalProperties": False,
-                        }
-                    }
+                    "class_name": {"type": "string"},
+                    "code":       {"type": "string"},
                 },
-                "required": ["scene_id", "total_duration", "actions"],
+                "required": ["class_name", "code"],
                 "additionalProperties": False,
             }
         }
@@ -5438,45 +5586,44 @@ def _generate_manifest_chunk(client, fallback_system_prompt: str, topic: str, ch
             return gpt4o_call(
                 client,
                 model="gpt-4.1",
-                max_tokens=3000,
+                max_tokens=4000,
                 temperature=0.2,
-                response_format=manifest_schema,
+                response_format=codegen_schema,
                 messages=[
-                    {"role": "system", "content": _get_manifest_system_prompt()},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": user_prompt},
                 ],
             )
-        response = _call_with_retry(_do, label=f"manifest Chunk{chunk_idx}")
+        response = _call_with_retry(_do, label=f"codegen Chunk{chunk_idx}")
         raw = response.choices[0].message.content
-        manifest = json.loads(raw)
-        manifest["total_duration"] = total_duration
+        result = json.loads(raw)
+        code = result.get("code", "").strip()
 
-        for action in manifest.get("actions", manifest.get("visuals", [])):
-            if isinstance(action.get("args"), str):
-                try:
-                    action["args"] = json.loads(action["args"])
-                except Exception:
-                    action["args"] = {}
-
-        manifest = _sanitize_manifest(manifest)
-
-        code = _execute_manifest_to_manim_code(manifest, class_name)
         if not code:
             return ""
+
+        if not code.startswith("from manim import"):
+            code = "from manim import *\n\n" + code
+
+        import re as _re
+        code = _re.sub(
+            r'class\s+\w+\s*\(\s*\w+\s*\)',
+            f'class {class_name}(MathScene)',
+            code, count=1
+        )
 
         try:
             import ast as _ast
             _ast.parse(code)
         except SyntaxError as se:
-            print(f"    ⚠ Manifest executor produced invalid syntax for {class_name}: {se}")
+            print(f"    ⚠ Syntax error {class_name}: {se}")
             return ""
 
-        n_actions = len(manifest.get('actions', manifest.get('visuals', [])))
-        print(f"    🗺  Manifest generated {class_name}: {n_actions} actions across {total_duration}s")
+        print(f"    ✏  Generated {class_name}: {len(code)} chars, {total_duration}s")
         return code
 
     except Exception as e:
-        print(f"    ⚠ Manifest generation failed for {class_name}: {e}")
+        print(f"    ⚠ Codegen failed {class_name}: {e}")
         return ""
 
 
@@ -5870,7 +6017,7 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
     has_concepts = any(c.get("is_concept") for c in codegen_chunks)
     if has_concepts:
         chunk_batch_size = 1
-        print(f"  🧩 Concept mode: manifest-based generation (zone-aware, collision-free)")
+        print(f"  🧩 Concept mode: direct Manim codegen (Latest Architecture)")
     else:
         chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=4)
     n_batches = max(1, math.ceil(len(codegen_chunks) / chunk_batch_size)) if codegen_chunks else 0
@@ -5891,7 +6038,7 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
             if is_concept_batch:
                 for idx, chunk in zip(batch_global_indices, batch):
                     try:
-                        code = _generate_manifest_chunk(client, system_prompt, topic, idx, chunk)
+                        code = _generate_concept_chunk_code(client, topic, idx, chunk)
                         if code:
                             all_results[idx] = {"chunk_index": idx, "class_name": f"Chunk{idx}", "code": code}
                         else:
