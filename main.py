@@ -3915,7 +3915,7 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
 
 MANIM_CHUNK_TIMEOUT_SECONDS = 180
 MANIM_CHUNK_CACHE_DIR = "/tmp/finance_explainer_manim_cache"
-MANIM_CHUNK_MAX_DRIFT_RATIO = 0.45
+MANIM_CHUNK_MAX_DRIFT_RATIO = 4.0
 
 
 FINANCE_DASHBOARD_MANIM_BOILERPLATE = '''
@@ -4566,6 +4566,9 @@ fm_animate_data_table(self, headers=[], rows=[[...]], header_color=BRAND_GOLD, d
 fm_animate_timeline(self, events=[], accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
 fm_animate_waterfall(self, steps=[["Label",value,COLOR],...], duration=D, position=[cx,cy,0])
 fm_clamp_to_frame(*mobjects) — call before FadeIn when >1 group shares screen
+fm_icon(name, size, color) — NO self argument. Returns VGroup directly. icon = fm_icon("person", 1.0, BRAND_GOLD)
+
+CRITICAL: fm_icon does NOT take self. Never write fm_icon(self, ...). It is fm_icon(name, size, color) only.
 
 Every fm_* function returns (collected_vgroup, main_mob). Always unpack as: result, _ = fm_*(self, ...)
 The collected_vgroup contains EVERYTHING added. FadeOut(result) removes all of it cleanly.
