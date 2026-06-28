@@ -3997,7 +3997,6 @@ class FinanceDashboardScene(Scene):
 MathScene = FinanceDashboardScene
 MathScene3D = FinanceDashboard3DScene if "FinanceDashboard3DScene" in dir() else FinanceDashboardScene
 
-
 class FinanceDashboard3DScene(ThreeDScene):
     def setup(self):
         self.camera.background_color = "#0B111A"
@@ -4514,30 +4513,55 @@ The viewer understands without reading a single word.
 Axes, plotted curves, bar charts, matrices, vectors, growing numbers, transforming shapes.
 NOT sentences. NOT paragraphs. NOT bullet points. The STRUCTURE of the idea made visible.
 
-Default to a chart, graph, matrix, vector, number line, scatter plot, bell curve, formula, or counter for every beat that has a number, a trend, a proportion, a comparison, a transformation, or a formula — which is nearly every math beat.
+=== MANDATORY VISUAL DECISION TREE — follow in order, stop at first match ===
 
-MATCH THE VISUAL TO THE MATH:
-- Distribution / spread / variance → fm_animate_bell_curve (show width changing)
-- Population vs sample → fm_animate_icon_grid (total=100, filled=20)
-- Correlation → fm_animate_scatter with show_regression=True
-- Proportion / percentage → fm_animate_donut or fm_animate_gauge
-- Comparison of two values → fm_animate_comparison_bars
-- Sequence of values over time → fm_animate_line_chart
-- Formula or equation → fm_formula (NEVER raw Text for math notation)
-- Matrix / array → fm_animate_matrix
-- Vector / direction → fm_animate_vector
-- Counting up to a value → fm_animate_counter
-- Single key number → fm_animate_single_value
-- Probability outcomes → fm_animate_probability_bar
-- Steps in a process → fm_animate_timeline
-- Value on a scale → fm_animate_number_line
-- Concept title hook (first beat only) → fm_animate_glow_reveal
+Read the narration. Find the FIRST matching trigger. Use ONLY that visual. Do not default to bell curve or number line.
 
-WHEN NARRATION MENTIONS MACHINE LEARNING INSIDE A STATS/CALC EXPLANATION:
-Show the math concept FIRST (the derivative, the distribution, the matrix), then label it with the ML context.
-A "gradient" is still a slope on a curve. Show the curve. Show the tangent. Label it "gradient."
-A "weight matrix" is still a matrix. Show fm_animate_matrix with the values.
-Don't skip the math to show abstract ML diagrams.
+1. Narration compares TWO OR MORE values (before/after, group A vs B, method 1 vs 2)?
+   → fm_animate_comparison_bars(self, items=[["Label1",val1,COLOR],["Label2",val2,COLOR],...])
+
+2. Narration mentions a PERCENTAGE, PROPORTION, or "X out of Y"?
+   → fm_animate_donut(self, percentage=0.68, label_text="label") OR fm_animate_gauge(self, value=68, max_val=100, label_text="label")
+
+3. Narration mentions a COUNT of PEOPLE, ITEMS, or POPULATION being SAMPLED or SELECTED?
+   → fm_animate_icon_grid(self, total=100, filled=20, label_text="Sample")
+
+4. Narration mentions a FORMULA, EQUATION, or CALCULATION?
+   → fm_formula(self, lines=["formula here"], font_size=60)
+
+5. Narration mentions a TREND, GROWTH, DECLINE, or values CHANGING OVER TIME?
+   → fm_animate_line_chart(self, y_values=[...], x_labels=[...], title_text="")
+
+6. Narration mentions a NUMBER COUNTING UP or a single KEY STATISTIC?
+   → fm_animate_counter(self, start_val=0, end_val=N, label_text="label") OR fm_animate_single_value(self, value_str="42%", label_text="label")
+
+7. Narration mentions PROBABILITY, LIKELIHOOD, or OUTCOMES with probabilities?
+   → fm_animate_probability_bar(self, outcomes=[["A",0.3,BRAND_GREEN],["B",0.7,BRAND_GOLD]])
+
+8. Narration mentions a MATRIX, TABLE, or GRID OF VALUES?
+   → fm_animate_matrix(self, rows_data=[[...]], label_text="") OR fm_animate_data_table(self, headers=[...], rows=[[...]])
+
+9. Narration mentions a VECTOR, DIRECTION, or ARROW?
+   → fm_animate_vector(self, direction=[dx,dy], label_text="")
+
+10. Narration mentions STEPS IN A PROCESS or a SEQUENCE OF EVENTS?
+    → fm_animate_timeline(self, events=["Step1","Step2","Step3"])
+
+11. Narration mentions SCATTER, CORRELATION, or RELATIONSHIP BETWEEN TWO VARIABLES?
+    → fm_animate_scatter(self, points=[[x,y],...], show_regression=True)
+
+12. Narration mentions a DISTRIBUTION, BELL CURVE, NORMAL, or VARIANCE (ONLY these words)?
+    → fm_animate_bell_curve(self, label_text="label")
+
+13. Narration mentions a RANGE, INTERVAL, or SINGLE VALUE ON A SCALE?
+    → fm_animate_number_line(self, value=N, min_val=A, max_val=B, label_text="")
+
+14. None of the above — first beat of a concept chunk?
+    → fm_animate_glow_reveal(self, text_str="Concept Name", font_size=72)
+
+CRITICAL: fm_animate_bell_curve is trigger 12 — use it ONLY when narration explicitly says distribution/normal/bell/variance/spread. NOT for general statistics concepts. NOT as a default.
+CRITICAL: fm_animate_number_line is trigger 13 — use it ONLY for a single value on a scale. NOT for anything else.
+DO NOT default to these two. Follow the decision tree from trigger 1.
 
 === NEAR-ZERO TEXT RULE ===
 Audio already says the words. Your visual shows the REALITY.
@@ -4566,6 +4590,14 @@ fm_animate_data_table(self, headers=[], rows=[[...]], header_color=BRAND_GOLD, d
 fm_animate_timeline(self, events=[], accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
 fm_animate_waterfall(self, steps=[["Label",value,COLOR],...], duration=D, position=[cx,cy,0])
 fm_clamp_to_frame(*mobjects) — call before FadeIn when >1 group shares screen
+
+FUNCTIONS THAT TAKE NO self (pure constructors — call like fm_icon(...), not fm_icon(self,...)):
+  fm_icon(name, size, color) → returns VGroup
+  fm_card(label_text, value_text, accent_color, ...) → returns VGroup
+  fm_two_cards(...) → returns VGroup
+  fm_formula_text(...) → returns VGroup
+
+ALL OTHER fm_animate_* functions DO take self as first argument.
 fm_icon(name, size, color) — NO self argument. Returns VGroup directly. icon = fm_icon("person", 1.0, BRAND_GOLD)
 
 CRITICAL: fm_icon does NOT take self. Never write fm_icon(self, ...). It is fm_icon(name, size, color) only.
@@ -4597,7 +4629,11 @@ ValueTracker must be top-level statement BEFORE any always_redraw lambda
 Never index fm_* return values as card[0], result[2] etc.
 Never self.add() AND animate submobjects of same fm_* result separately
 fm_clamp_to_frame(*all_groups) before FadeIn when >1 group shares screen
-Always FadeOut everything at end of construct()
+Always FadeOut everything at end of construct().
+BETWEEN fm_* calls: always FadeOut the previous result before calling the next fm_* function.
+WRONG: call fm_animate_bell_curve, then call fm_animate_bar_chart without FadeOut between them.
+RIGHT: call fm_animate_bell_curve, then self.play(FadeOut(result)), then call fm_animate_bar_chart.
+ONE fm_* call per construct() in most cases. Two is the maximum. Never three simultaneously.
 
 === STRUCTURE ===
 Exactly ONE class subclassing MathScene per chunk. Nothing outside the class.

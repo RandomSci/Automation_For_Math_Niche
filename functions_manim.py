@@ -1904,6 +1904,10 @@ def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
         scene.play(FadeIn(lbl_mob, shift=UP * 0.1), run_time=0.2)
         hold_t = max(hold_t - 0.2, 0.05)
     scene.wait(hold_t)
+    try:
+        scene.play(FadeOut(_sc.collected()), run_time=0.25)
+    except Exception:
+        pass
     return _sc.collected(), curve
 
 
