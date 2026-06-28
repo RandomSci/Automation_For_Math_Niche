@@ -4,7 +4,6 @@ import json
 import random
 import math
 import re
-import sys
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import requests
 import traceback
@@ -24,7 +23,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Math Unlocked")
+app = FastAPI(title="Finance Explainer v2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 current_job = {"status": "idle", "progress": 0, "output": None, "error": None, "started_at": None}
@@ -323,7 +322,7 @@ def _probe_clip_health(filepath: str) -> tuple[bool, str]:
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Math Unlocked YouTube Content Generator Starting...")
+    print("🚀 Vaults of History v3 starting...")
     broll_dirs = ['space_vids','ancient_ruins_vids','cosmic_vids',
                   'dark_sky_vids','temple_vids']
     print("📁 Broll folder audit:")
@@ -1575,7 +1574,7 @@ def _static_safety_check(code: str) -> tuple[bool, str]:
 
 import hashlib
 
-_PRERENDER_CACHE_DIR = os.path.join(tempfile.gettempdir(), "math_unlocked_beat_cache")
+_PRERENDER_CACHE_DIR = os.path.join(tempfile.gettempdir(), "finance_explainer_beat_cache")
 INTERNAL_VISUAL_FPS = 15
 
 
@@ -3022,11 +3021,11 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
     print(f"  ✅ Render complete: {output_path}")
 
 
-FINANCE_EXPLAINER_CTA_TEXT = "Subscribe to Math Unlocked"
+FINANCE_EXPLAINER_CTA_TEXT = "Subscribe for More"
 FINANCE_EXPLAINER_USE_BACKGROUND_MUSIC = False
 
 
-class MathUnlockedGenerator:
+class FinanceGenerator:
     def __init__(self, audio_path: str, output_path: str = "output.mp4", niche_config: dict = None):
         self.audio_path  = audio_path
         self.output_path = output_path
@@ -3351,12 +3350,12 @@ class MathUnlockedGenerator:
         else:
             print(f"  ✨ CTA added")
 
-    def create_math_video(self, bg_volume: float = 0.12, fps: int = 30) -> bool:
+    def create_finance_video(self, bg_volume: float = 0.12, fps: int = 30) -> bool:
         import time
         t0 = time.time()
 
         print(f"\n{'='*70}")
-        print(f"🧮  MATH UNLOCKED -- Manim renderer")
+        print(f"📊  FINANCE EXPLAINER v2 -- full Manim renderer")
         print(f"{'='*70}")
 
         try:
@@ -3374,42 +3373,30 @@ class MathUnlockedGenerator:
         whisper_segments = transcription.get('segments', [])
         print(f"  ✅ {len(full_text)} chars, {len(whisper_segments)} segments")
 
-        print(f"\n[STEP 3] GPT Call 1: Story Beats + Concept Segmentation...")
+        print(f"\n[STEP 3] GPT Call 1: Story Beats...")
         try:
             topic_hint = list(self.broll_dirs.keys())[0] if self.broll_dirs else "finance"
-            with ThreadPoolExecutor(max_workers=3) as _outer_pool:
+            with ThreadPoolExecutor(max_workers=2) as _outer_pool:
                 _beats_future    = _outer_pool.submit(analyze_story_beats, full_text, whisper_segments, topic_hint, duration)
                 _sections_future = _outer_pool.submit(extract_section_outline, full_text, whisper_segments, duration)
-                _concepts_future = _outer_pool.submit(segment_into_concepts, full_text, whisper_segments, duration)
                 beats_result = _beats_future.result()
                 try:
                     sections = _sections_future.result()
                 except Exception as e:
                     print(f"  ⚠ Section outline failed, skipping navigation overlay: {e}")
                     sections = []
-                try:
-                    concept_segments = _concepts_future.result()
-                except Exception as e:
-                    print(f"  ⚠ Concept segmentation failed, will use chunk-level fallback: {e}")
-                    concept_segments = []
             topic = beats_result.get('topic', 'finance')
             beats = beats_result.get('beats', [])
 
             _whisper_words = build_whisper_word_list(whisper_segments)
             beats = realign_beat_times(beats, _whisper_words)
             print(f"  🎯 Realigned {len(beats)} beat timestamps to Whisper word boundaries")
-            if concept_segments:
-                print(f"  🧩 {len(concept_segments)} concept segment(s) identified")
         except Exception as e:
             raise Exception(f"STEP 3 FAILED: {e}")
 
-        print(f"\n[STEP 4] Grouping beats into concepts + fallback chunks...")
-        if concept_segments:
-            chunks = group_beats_into_concept_chunks(beats, concept_segments)
-            print(f"  ✅ {len(beats)} beats -> {len(chunks)} concept chunk(s)")
-        else:
-            chunks = group_beats_into_manim_chunks(beats, target_chunk_seconds=4.5)
-            print(f"  ✅ {len(beats)} beats -> {len(chunks)} chunk(s) (fallback mode)")
+        print(f"\n[STEP 4] Grouping beats into Manim chunks...")
+        chunks = group_beats_into_manim_chunks(beats, target_chunk_seconds=4.5)
+        print(f"  ✅ {len(beats)} beats -> {len(chunks)} chunk(s)")
 
         print(f"\n[STEP 5] GPT Call: Manim chunk code generation...")
         try:
@@ -3442,7 +3429,6 @@ class MathUnlockedGenerator:
             print(f"\n[STEP 7] Rendering Manim chunks (parallel) + concatenating...")
             clip_paths = render_all_manim_chunks(chunks, chunk_code_list,
                                                   w=OUTPUT_WIDTH, h=OUTPUT_HEIGHT, fps=fps)
-
             concat_manim_clips(clip_paths, concat_output)
             print(f"  ✅ {len(clip_paths)} chunks concatenated -> {concat_output}")
 
@@ -3560,7 +3546,7 @@ NICHE_TEMPLATES = {
 
 @app.get("/")
 def root():
-    return {"service": "Math Unlocked", "status": "running",
+    return {"service": "Finance Explainer v1", "status": "running",
             "openai_key": bool(OPENAI_API_KEY)}
 
 @app.post("/generate")
@@ -3577,7 +3563,7 @@ def process_video(niche: str = "finance"):
     global current_job
     try:
         current_job["progress"] = 5
-        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Math_Niche/main/Audio_Voice/vaults_narration.mp3"
+        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/vaults_narration.mp3"
         audio_file  = "Audio_Voice/vaults_narration.mp3"
         output_file = "vaults_output.mp4"
         trans_file  = f"{os.path.splitext(audio_file)[0]}_transcription.json"
@@ -3600,11 +3586,11 @@ def process_video(niche: str = "finance"):
 
         current_job["progress"] = 15
         niche_config = NICHE_TEMPLATES.get(niche, NICHE_TEMPLATES['finance'])
-        gen = MathUnlockedGenerator(audio_path=audio_file, output_path=output_file,
+        gen = FinanceGenerator(audio_path=audio_file, output_path=output_file,
                               niche_config=niche_config)
 
         current_job["progress"] = 20
-        success = gen.create_math_video(bg_volume=0.12, fps=30)
+        success = gen.create_finance_video(bg_volume=0.12, fps=30)
         current_job["progress"] = 95
 
         final = gen.output_path
@@ -3642,8 +3628,10 @@ MANIM_FORBIDDEN_NAMES = {
     "MarkupText", "Integer", "Variable", "BulletedList", "Title", "Paragraph",
     "BarChart", "SVGMobject", "ComplexPlane", "PolarPlane",
     "MathTex", "Tex", "SingleStringMathTex",
-    "DashedLine", "DashedVMobject", "Ellipse",
-    "scipy",
+    "Axes", "NumberLine", "NumberPlane",
+    "Rectangle",
+    "DashedLine", "DashedVMobject",
+    "Ellipse",
 }
 MANIM_FORBIDDEN_PATTERNS = [
     r'\bDecimalNumber\b',
@@ -3651,30 +3639,17 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'\bTitle\b', r'\bParagraph\b', r'\bBarChart\b',
     r'\bSVGMobject\b', r'\bComplexPlane\b', r'\bPolarPlane\b',
     r'\bMathTex\b', r'\bSingleStringMathTex\b', r'\bTex\b',
+    r'\bAxes\b', r'\bNumberLine\b', r'\bNumberPlane\b',
+    r'\bRectangle\b',
     r'\bDashedLine\b', r'\bDashedVMobject\b',
     r'\bEllipse\b',
-    r'\bscipy\b',
-    r'plot_line_graph',
-    r'set_stroke\s*\([^)]*dash_length',
-    r'get_graph\s*\([^)]*x_range',
-    r'set_style\s*\([^)]*dash_length_ratio',
-    r'\binterpolate_color\b',
-    r'Arrow\s*\([^)]*\bleft\s*=',
-    r'Arrow\s*\([^)]*\bright\s*=',
-    r'GrowFromEdge\s*\([^)]*\bdirection\s*=',
-    r'camera\.frame',
-    r'\bLaggedStartMap\b',
-    r'include_tip.*axis_config|axis_config.*include_tip',
-    r'\bLine\s*\([^)]*stroke_color\s*=',
-    r'\bVMobject\s*\(\s*\*\s*\[',
-    r'\bBrace\b',
-    r'\bGrowArrow\b',
-    r'\.animate\.set_height\s*\([^)]*stretch\s*=',
-    r'\.animate\.set_width\s*\([^)]*stretch\s*=',
-    r'\.animate\.stretch\b',
 ]
-MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math", "random"}
+MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
+    "Rectangle": "fm_card / fm_two_cards / fm_stacked_cards (a labeled box) or fm_animate_bar_chart / fm_animate_comparison_bars / fm_animate_waterfall (a bar)",
+    "Axes": "fm_animate_line_chart",
+    "NumberLine": "fm_animate_line_chart, or drop the axis entirely and just show the data",
+    "NumberPlane": "fm_animate_line_chart, or drop the axis entirely and just show the data",
     "MathTex": "fm_formula",
     "Tex": "fm_formula",
     "SingleStringMathTex": "fm_formula",
@@ -3722,106 +3697,23 @@ _MANIM_AVAILABLE_NAMES = None
 
 def _get_chunk_available_names() -> set:
     """Names a chunk can legitimately reference without defining them
-    itself. Built by parsing the boilerplate and functions_manim source
-    with AST (not exec, which silently fails when manim is not importable
-    in the checker process) plus a hardcoded comprehensive set of manim
-    public names and Python builtins."""
+    itself: everything from manim, every fm_* library function and
+    BRAND_* constant, FinanceDashboardScene/3DScene, and Python
+    builtins. Computed once by actually executing the same boilerplate
+    every chunk gets prefixed with, so this can never drift out of
+    sync with what real chunk code actually has access to."""
     global _MANIM_AVAILABLE_NAMES
-    if _MANIM_AVAILABLE_NAMES is not None:
-        return _MANIM_AVAILABLE_NAMES
-
-    names = set()
-    import builtins as _builtins_mod
-    names |= set(dir(_builtins_mod))
-
-    names |= {
-        "Scene", "ThreeDScene", "VGroup", "Group", "Mobject", "VMobject",
-        "Text", "Paragraph", "MarkupText", "Tex", "MathTex", "BulletedList",
-        "Circle", "Square", "Rectangle", "RoundedRectangle", "Triangle",
-        "Polygon", "RegularPolygon", "Arc", "ArcBetweenPoints", "Annulus",
-        "Arrow", "CurvedArrow", "CurvedDoubleArrow", "Line", "TipableVMobject", "DoubleArrow",
-        "Dot", "SmallDot", "Cross", "Star",
-        "Axes", "NumberPlane", "NumberLine",
-        "FunctionGraph", "ParametricFunction", "ImplicitFunction",
-        "Create", "Write", "FadeIn", "FadeOut", "GrowFromCenter",
-        "GrowFromEdge", "GrowFromPoint", "DrawBorderThenFill",
-        "Transform", "ReplacementTransform", "TransformFromCopy",
-        "MoveToTarget", "Restore", "ApplyMethod", "AnimationGroup",
-        "LaggedStart", "Succession", "Wait", "Flash", "ShowPassingFlash",
-        "SurroundingRectangle", "BackgroundRectangle", "Underline",
-        "FocusOn", "Indicate", "Wiggle", "Circumscribe",
-        "ValueTracker", "always_redraw",
-        "UP", "DOWN", "LEFT", "RIGHT", "IN", "OUT",
-        "UL", "UR", "DL", "DR", "ORIGIN",
-        "TAU", "PI", "DEGREES",
-        "WHITE", "BLACK", "GRAY", "GREY", "BLUE", "GREEN", "RED",
-        "YELLOW", "ORANGE", "PINK", "PURPLE", "TEAL", "GOLD",
-        "LIGHT_GRAY", "DARK_GRAY", "LIGHT_GREY", "DARK_GREY",
-        "BLUE_A", "BLUE_B", "BLUE_C", "BLUE_D", "BLUE_E",
-        "GREEN_A", "GREEN_B", "GREEN_C", "GREEN_D", "GREEN_E",
-        "RED_A", "RED_B", "RED_C", "RED_D", "RED_E",
-        "YELLOW_A", "YELLOW_B", "YELLOW_C", "YELLOW_D", "YELLOW_E",
-        "GOLD_A", "GOLD_B", "GOLD_C", "GOLD_D", "GOLD_E",
-        "TEAL_A", "TEAL_B", "TEAL_C", "TEAL_D", "TEAL_E",
-        "MAROON_A", "MAROON_B", "MAROON_C", "MAROON_D", "MAROON_E",
-        "PURPLE_A", "PURPLE_B", "PURPLE_C", "PURPLE_D",
-        "PURE_RED", "PURE_GREEN", "PURE_BLUE", "DARK_BLUE", "DARK_BROWN",
-        "BOLD", "NORMAL", "ITALIC", "OBLIQUE", "THIN", "LIGHT",
-        "MEDIUM", "SEMIBOLD", "HEAVY", "ULTRABOLD", "ULTRAHEAVY",
-        "smooth", "linear", "rush_from", "rush_into",
-        "there_and_back", "there_and_back_with_pause", "running_start",
-        "not_quite_there", "double_smooth", "wiggle",
-        "fm_glow_reveal", "fm_text_reveal", "fm_bar_chart", "fm_line_chart",
-        "fm_scatter", "fm_bell_curve", "fm_icon_grid", "fm_counter",
-        "fm_single_value", "fm_timeline", "fm_waterfall", "fm_gauge",
-        "fm_donut", "fm_matrix", "fm_vector", "fm_number_line",
-        "fm_probability_bar", "fm_comparison_bars", "fm_data_table",
-        "fm_icon", "fm_card", "fm_two_cards", "fm_card_row", "fm_concept_pills",
-        "ease_in_sine", "ease_out_sine", "ease_in_out_sine",
-        "ease_in_quad", "ease_out_quad", "ease_in_out_quad",
-        "ease_in_cubic", "ease_out_cubic", "ease_in_out_cubic",
-        "ease_in_bounce", "ease_out_bounce", "ease_in_out_bounce",
-        "ease_in_elastic", "ease_out_elastic", "ease_in_out_elastic",
-        "config", "np", "math", "random",
-        "ManimColor", "ParametricFunction", "ImplicitFunction",
-        "OpenGLMobject", "OpenGLVMobject",
-        "ThreeDAxes", "Surface", "Sphere",
-    }
-
-    if _FUNCTIONS_MANIM_CODE:
+    if _MANIM_AVAILABLE_NAMES is None:
+        ns = {}
         try:
-            fm_tree = ast.parse(_FUNCTIONS_MANIM_CODE)
-            for node in fm_tree.body:
-                if isinstance(node, ast.FunctionDef):
-                    names.add(node.name)
-                elif isinstance(node, ast.Assign):
-                    for t in node.targets:
-                        if isinstance(t, ast.Name):
-                            names.add(t.id)
-                elif isinstance(node, ast.AnnAssign):
-                    if isinstance(node.target, ast.Name):
-                        names.add(node.target.id)
-                elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                    for alias in node.names:
-                        names.add(alias.asname or alias.name)
+            exec(FINANCE_DASHBOARD_MANIM_BOILERPLATE, ns)
         except Exception:
             pass
-
-    try:
-        bp_tree = ast.parse(MATH_SCENE_MANIM_BOILERPLATE)
-        for node in ast.walk(bp_tree):
-            if isinstance(node, ast.FunctionDef):
-                names.add(node.name)
-            elif isinstance(node, ast.ClassDef):
-                names.add(node.name)
-            elif isinstance(node, ast.Assign):
-                for t in node.targets:
-                    if isinstance(t, ast.Name):
-                        names.add(t.id)
-    except Exception:
-        pass
-
-    _MANIM_AVAILABLE_NAMES = names
+        names = set(ns.keys())
+        names.discard("__builtins__")
+        import builtins as _builtins_mod
+        names |= set(dir(_builtins_mod))
+        _MANIM_AVAILABLE_NAMES = names
     return _MANIM_AVAILABLE_NAMES
 
 
@@ -3934,7 +3826,10 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             return False, f"references dunder attribute '{node.attr}'"
 
-        
+        # Manim coordinate-system reverse transforms are a recurring crash source.
+        # GPT often calls axes.p2c((x, y)) with a two-value tuple, but Manim expects
+        # a real 3D point for point-to-coordinates conversion. For generated code,
+        # the safe direction is always data -> point via c2p, or better, an fm_* helper.
         if isinstance(node, ast.Attribute) and node.attr in {"p2c", "point_to_coords", "point_to_number", "normalized", "point_at_angle"}:
             return False, f"references unsafe coordinate reverse-transform '{node.attr}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
 
@@ -3945,9 +3840,9 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
             if fn_name in {"p2c", "point_to_coords", "point_to_number", "normalized"}:
                 return False, f"calls unsafe coordinate reverse-transform '{fn_name}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
 
-            if isinstance(fn, ast.Attribute) and fn.attr.startswith("fm_"):
-                return False, f"called self.{fn.attr}() as a method -- fm_* functions are module-level, not Scene methods. Correct: {fn.attr}(self, ...). Wrong: self.{fn.attr}(...)"
-
+            # Real crash: Polygon([[x,y,z], [x,y,z], ...]) passes ONE nested list
+            # as the first vertex. Manim Polygon expects Polygon([x,y,z], [x,y,z], ...).
+            # Reject it before wasting a render.
             if fn_name == "Polygon" and len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
                 return False, "Polygon received one nested list of vertices; use Polygon(*points) or avoid Polygon and use fm_icon/fm_card/fm_* helpers"
 
@@ -3957,39 +3852,13 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
             ):
                 return False, "rotate() does not accept run_time kwarg -- pass run_time to self.play() instead: self.play(obj.animate.rotate(...), run_time=X)"
 
-            _fm_animation_fns = {
-                "fm_animate_gauge", "fm_animate_donut", "fm_animate_counter",
-                "fm_animate_line_chart", "fm_animate_line_chart_multi",
-                "fm_animate_single_value", "fm_animate_glow_reveal",
-                "fm_animate_icon_grid", "fm_animate_comparison_bars",
-                "fm_animate_bar_chart", "fm_animate_waterfall",
-                "fm_animate_stacked_cards", "fm_animate_bullet_chart",
-                "fm_animate_timeline", "fm_animate_text_reveal",
-                "fm_animate_bell_curve", "fm_animate_vector", "fm_animate_matrix",
-                "fm_animate_scatter", "fm_animate_probability_bar",
-                "fm_animate_number_line", "fm_animate_data_table",
-            }
-
-            if fn_name == "play":
-                for arg in node.args:
-                    if isinstance(arg, ast.Call):
-                        inner_fn = arg.func
-                        inner_name = inner_fn.id if isinstance(inner_fn, ast.Name) else (inner_fn.attr if isinstance(inner_fn, ast.Attribute) else "")
-                        if inner_name in _fm_animation_fns:
-                            return False, f"fm_animate_* functions handle their own self.play() internally -- do NOT wrap them in self.play(). Call {inner_name}(self, ...) directly."
-
-            if fn_name in _fm_animation_fns:
-                first_arg_is_self = (
-                    len(node.args) > 0
-                    and isinstance(node.args[0], ast.Name)
-                    and node.args[0].id == "self"
-                )
-                first_kwarg_scene = any(
-                    isinstance(kw.arg, str) and kw.arg == "scene"
-                    for kw in node.keywords
-                )
-                if not first_arg_is_self and not first_kwarg_scene:
-                    return False, f"{fn_name}() is missing 'self' as its first argument -- correct: {fn_name}(self, ...). The 'scene' parameter must be passed as the first positional argument."
+            if fn_name in {"fm_animate_gauge", "fm_animate_donut", "fm_animate_counter",
+                           "fm_animate_line_chart", "fm_animate_line_chart_multi",
+                           "fm_animate_single_value", "fm_animate_glow_reveal",
+                           "fm_animate_icon_grid", "fm_animate_comparison_bars",
+                           "fm_animate_bar_chart", "fm_animate_waterfall",
+                           "fm_animate_stacked_cards", "fm_animate_bullet_chart",
+                           "fm_animate_timeline", "fm_animate_text_reveal"}:
                 for child in ast.walk(node):
                     if isinstance(child, ast.Subscript) and child is not node:
                         pass
@@ -4006,10 +3875,7 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
                                 "fm_animate_icon_grid", "fm_animate_comparison_bars",
                                 "fm_animate_bar_chart", "fm_animate_waterfall",
                                 "fm_animate_stacked_cards", "fm_animate_bullet_chart",
-                                "fm_animate_timeline", "fm_animate_text_reveal",
-                                "fm_animate_bell_curve", "fm_animate_vector", "fm_animate_matrix",
-                                "fm_animate_scatter", "fm_animate_probability_bar",
-                                "fm_animate_number_line"}:
+                                "fm_animate_timeline", "fm_animate_text_reveal"}:
                     return False, f"indexing the return value of {fn_name2}() is unsafe -- these functions return None or a fixed-arity tuple; store the return in a named variable and index that, checking the documented arity first"
 
     class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
@@ -4048,11 +3914,11 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
 
 
 MANIM_CHUNK_TIMEOUT_SECONDS = 180
-MANIM_CHUNK_CACHE_DIR = "/tmp/math_unlocked_manim_cache"
+MANIM_CHUNK_CACHE_DIR = "/tmp/finance_explainer_manim_cache"
 MANIM_CHUNK_MAX_DRIFT_RATIO = 0.45
 
 
-MATH_SCENE_MANIM_BOILERPLATE = '''
+FINANCE_DASHBOARD_MANIM_BOILERPLATE = '''
 from manim import *
 import random as _fdb_random
 from manim.utils.rate_functions import (
@@ -4069,7 +3935,7 @@ config.frame_rate = 30
 config.frame_height = 8.0
 
 
-def _math_scene_background_group():
+def _finance_dashboard_background_group():
     fw = config.frame_width
     fh = config.frame_height
     grid = VGroup()
@@ -4082,34 +3948,34 @@ def _math_scene_background_group():
     while y <= fh / 2 + 1e-6:
         grid.add(Line([-fw / 2, y, 0], [fw / 2, y, 0]))
         y += step
-    grid.set_stroke(color="#8A94A6", width=0.6, opacity=0.06)
+    grid.set_stroke(color="#8A94A6", width=0.6, opacity=0.07)
 
     axis = VGroup(
         Line([-fw * 0.46, -fh * 0.42, 0], [-fw * 0.46, fh * 0.42, 0]),
         Line([-fw * 0.46, -fh * 0.42, 0], [fw * 0.46, -fh * 0.42, 0]),
     )
-    axis.set_stroke(color="#8A94A6", width=1.2, opacity=0.12)
+    axis.set_stroke(color="#8A94A6", width=1.2, opacity=0.14)
 
-    symbols = VGroup()
-    rng = _fdb_random.Random(42)
-    math_samples = ["∇", "∑", "∫", "π", "σ", "μ", "λ", "∞", "∂", "∈", "⊗", "≈", "Δ", "θ"]
+    ticker = VGroup()
+    rng = _fdb_random.Random(7)
+    samples = ["+0.4%", "-0.2%", "1.07x", "+1.1%", "-0.6%", "0.98x", "+2.3%", "-1.4%"]
     for i in range(14):
-        val = rng.choice(math_samples)
-        label = Text(val, font_size=16, color="#8A94A6")
-        label.set_opacity(0.09)
+        val = rng.choice(samples)
+        label = Text(val, font_size=14, color="#8A94A6")
+        label.set_opacity(0.10)
         label.move_to([-fw / 2 + (i + 0.5) * (fw / 14), fh / 2 - 0.34, 0])
-        symbols.add(label)
+        ticker.add(label)
 
-    return VGroup(grid, axis, symbols)
+    return VGroup(grid, axis, ticker)
 
 
 _FDB_MIN_WAIT = 0.04
 
 
-class MathScene(Scene):
+class FinanceDashboardScene(Scene):
     def setup(self):
-        self.camera.background_color = "#060F1A"
-        self.add(_math_scene_background_group())
+        self.camera.background_color = "#0B111A"
+        self.add(_finance_dashboard_background_group())
 
     def wait(self, duration=1.0, stop_condition=None, frozen_frame=None):
         if duration < _FDB_MIN_WAIT:
@@ -4128,11 +3994,11 @@ class MathScene(Scene):
         return super().play(*args, **kwargs)
 
 
-class MathScene3D(ThreeDScene):
+class FinanceDashboard3DScene(ThreeDScene):
     def setup(self):
-        self.camera.background_color = "#060F1A"
+        self.camera.background_color = "#0B111A"
         self.set_camera_orientation(phi=0 * DEGREES, theta=-90 * DEGREES)
-        self.add_fixed_in_frame_mobjects(_math_scene_background_group())
+        self.add_fixed_in_frame_mobjects(_finance_dashboard_background_group())
 
     def wait(self, duration=1.0, stop_condition=None, frozen_frame=None):
         if duration < _FDB_MIN_WAIT:
@@ -4167,10 +4033,16 @@ def _ffprobe_duration_seconds(path: str) -> float:
 
 
 def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
-                          w: int = 1920, h: int = 1080, fps: int = 30,
-                          max_drift: float = None) -> tuple:
-    if max_drift is None:
-        max_drift = MANIM_CHUNK_MAX_DRIFT_RATIO
+                          w: int = 1920, h: int = 1080, fps: int = 30) -> tuple:
+    """Forces a rendered Manim chunk onto an exact target duration,
+    independent of whether the GPT-authored run_time/wait math inside
+    the chunk was correct -- never trusts the chunk's own animation
+    timing to be the timeline truth. Measures the actual rendered
+    length via ffprobe, then retimes the whole clip with setpts so it
+    lands exactly on target. If the raw render is wildly off (beyond
+    MANIM_CHUNK_MAX_DRIFT_RATIO), a speed change would look broken
+    rather than subtle, so this rejects the chunk entirely instead of
+    warping it -- the caller falls back to a dashboard filler."""
     try:
         actual = _ffprobe_duration_seconds(raw_path)
     except Exception as e:
@@ -4180,9 +4052,9 @@ def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
         return None, "rendered chunk reported zero or negative duration"
 
     drift = abs(actual - target_duration) / target_duration
-    if drift > max_drift:
+    if drift > MANIM_CHUNK_MAX_DRIFT_RATIO:
         import sys
-        print(f"  ⚠ duration drift {drift*100:.0f}% exceeds {max_drift*100:.0f}% limit — rejecting chunk, falling back to filler", file=sys.stderr)
+        print(f"  ⚠ duration drift {drift*100:.0f}% exceeds {MANIM_CHUNK_MAX_DRIFT_RATIO*100:.0f}% limit — rejecting chunk, falling back to filler", file=sys.stderr)
         return None, f"rendered duration drifted {drift*100:.0f}% from target ({actual:.2f}s vs {target_duration:.2f}s)"
 
     speed_ratio = target_duration / actual
@@ -4253,31 +4125,63 @@ def _chunk_fallback_subtitle(chunk: dict) -> str:
 
 def _make_safe_still_fallback(out_path: str, title: str, subtitle: str, duration: float,
                               w: int = 1920, h: int = 1080, fps: int = 30) -> str:
-    """Creates a clean dark fallback frame — just the background with
-    a subtle math symbol ticker across the top. No card, no text that
-    talks about itself. Viewers see the background; the audio continues."""
+    """Creates a non-blank exact-duration fallback video.
+
+    This is the anti-void safety net. When a GPT-authored Manim chunk crashes,
+    the viewer still sees a branded finance card with the current idea instead
+    of an empty navy/black screen. It intentionally does NOT mention the error.
+    """
     from PIL import Image, ImageDraw
 
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
     frame_path = os.path.join(os.path.dirname(out_path) or '.', f"_fallback_{os.path.basename(out_path)}.png")
 
-    img = Image.new('RGB', (int(w), int(h)), '#060F1A')
+    img = Image.new('RGB', (int(w), int(h)), '#0B111A')
     draw = ImageDraw.Draw(img)
 
-    grid_color = (14, 28, 44)
-    step = max(96, int(min(w, h) * 0.09))
+    grid_color = (32, 43, 56)
+    step = max(80, int(min(w, h) * 0.075))
     for x in range(0, int(w), step):
-        draw.line([(x, 0), (x, h)], fill=grid_color, width=max(1, w // 2000))
+        draw.line([(x, 0), (x, h)], fill=grid_color, width=max(1, w // 1800))
     for y in range(0, int(h), step):
-        draw.line([(0, y), (w, y)], fill=grid_color, width=max(1, h // 1200))
+        draw.line([(0, y), (w, y)], fill=grid_color, width=max(1, h // 1000))
 
-    sym_font = _pil_font(max(28, int(h * 0.030)), bold=False)
-    symbols = "∇  Σ  ∫  π  ≈  ∂  μ  σ  ∇  Σ  ∫  π  ≈  ∂  μ  σ  ∇  Σ  ∫  π"
-    sym_color = (22, 45, 68)
-    try:
-        draw.text((int(w * 0.03), int(h * 0.03)), symbols, fill=sym_color, font=sym_font)
-    except Exception:
-        pass
+    card_w = int(w * 0.70)
+    card_h = int(h * 0.38)
+    x0 = (w - card_w) // 2
+    y0 = (h - card_h) // 2
+    x1 = x0 + card_w
+    y1 = y0 + card_h
+    radius = int(min(w, h) * 0.035)
+    draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, fill='#111A24', outline='#38D996', width=max(4, w // 420))
+
+    title_font = _pil_font(max(54, int(h * 0.055)), bold=True)
+    body_font = _pil_font(max(38, int(h * 0.038)), bold=True)
+    tag_font = _pil_font(max(26, int(h * 0.026)), bold=True)
+
+    title = title or 'Key Idea'
+    subtitle = subtitle or 'The explanation continues'
+
+    tb = draw.textbbox((0, 0), title, font=title_font)
+    tx = (w - (tb[2] - tb[0])) // 2
+    ty = y0 + int(card_h * 0.16)
+    draw.text((tx, ty), title, fill='#FFD166', font=title_font)
+
+    lines = _wrap_text_for_width(draw, subtitle, body_font, int(card_w * 0.82), max_lines=3)
+    line_h = int(h * 0.055)
+    start_y = y0 + int(card_h * 0.40)
+    for j, line in enumerate(lines):
+        bb = draw.textbbox((0, 0), line, font=body_font)
+        lx = (w - (bb[2] - bb[0])) // 2
+        draw.text((lx, start_y + j * line_h), line, fill='#F5F7FA', font=body_font)
+
+    tag = 'continuing'
+    bb = draw.textbbox((0, 0), tag, font=tag_font)
+    pad_x = int(w * 0.018)
+    pad_y = int(h * 0.010)
+    pill = [x1 - (bb[2]-bb[0]) - pad_x*3, y1 - int(h*0.070), x1 - pad_x, y1 - int(h*0.020)]
+    draw.rounded_rectangle(pill, radius=int(h*0.018), fill='#0B111A', outline='#8A94A6', width=max(2, w//900))
+    draw.text((pill[0] + pad_x, pill[1] + pad_y), tag, fill='#8A94A6', font=tag_font)
 
     img.save(frame_path, quality=95)
 
@@ -4351,7 +4255,7 @@ def _make_held_frame_filler(prev_clip_path: str, out_path: str, duration: float,
     return out_path
 
 
-MANIM_CHUNK_DEBUG_LOG_DIR = "/tmp/math_unlocked_manim_logs"
+MANIM_CHUNK_DEBUG_LOG_DIR = "/tmp/finance_explainer_manim_logs"
 
 
 def _extract_manim_error_summary(stderr_text: str, stdout_text: str, max_chars: int = 2500) -> str:
@@ -4394,60 +4298,7 @@ def _save_manim_failure_log(class_name: str, stderr_text: str, stdout_text: str)
     return log_path
 
 
-MANIM_CHUNK_SOURCE_DEBUG_DIR = "/tmp/math_unlocked_manim_sources"
-
-
-def _ai_debug_manim_crash(original_code: str, error_output: str, class_name: str) -> str:
-    """AI first-line-of-defense: when Manim crashes, extract the traceback
-    and ask GPT-4.1 to fix the specific error. Returns fixed code string,
-    or empty string if fix fails or API is unavailable. One attempt only."""
-    if not OPENAI_API_KEY:
-        return ""
-    error_lines = []
-    in_tb = False
-    for line in error_output.split("\n"):
-        if any(x in line for x in ["Traceback", "Error", "TypeError", "AttributeError", "NameError", "ValueError", "IndexError"]):
-            in_tb = True
-        if in_tb:
-            error_lines.append(line)
-        if len(error_lines) > 25:
-            break
-    error_summary = "\n".join(error_lines[:25]).strip()
-    if not error_summary:
-        return ""
-    try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4.1",
-            max_tokens=3000,
-            temperature=0.1,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a Manim crash debugger. Fix the specific Python error shown. "
-                        "Return the complete fixed Python code starting with 'from manim import *'. "
-                        "Keep the same class name. Fix only the crash — nothing else. "
-                        "Never use: stroke_color= on Line(), VMobject(*[...]), LaggedStartMap, "
-                        "camera.frame, MathTex, Tex, Ellipse, DashedLine. "
-                        "Line color must use: line = Line(p1, p2); line.set_stroke(COLOR, width=N). "
-                        "Return raw Python only, no markdown, no comments."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Class: {class_name}\n\nError:\n{error_summary}\n\nCode:\n{original_code}",
-                },
-            ],
-        )
-        fixed = response.choices[0].message.content.strip()
-        if fixed.startswith("```"):
-            fixed = fixed.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        if "from manim import" in fixed and f"class {class_name}" in fixed:
-            return fixed
-        return ""
-    except Exception:
-        return ""
+MANIM_CHUNK_SOURCE_DEBUG_DIR = "/tmp/finance_explainer_manim_sources"
 
 
 def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 1920,
@@ -4456,7 +4307,7 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
     real `manim` CLI as a subprocess (not an in-process exec, since
     Manim's render pipeline isn't a simple function call -- it writes
     its own output file via ffmpeg internally). The GPT-authored code
-    is safety-checked on its own BEFORE MATH_SCENE_MANIM_BOILERPLATE
+    is safety-checked on its own BEFORE FINANCE_DASHBOARD_MANIM_BOILERPLATE
     is prepended, so the structural check still only ever has to trust
     the boilerplate this file controls, not anything GPT wrote. Returns
     (clip_path_or_None, error_str). On any failure (safety rejection,
@@ -4470,7 +4321,7 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
     the wall-clock cost of every chunk that already rendered fine.
 
     Resolution and frame rate are NOT passed as `manim` CLI flags --
-    MATH_SCENE_MANIM_BOILERPLATE sets config.pixel_width,
+    FINANCE_DASHBOARD_MANIM_BOILERPLATE sets config.pixel_width,
     config.pixel_height, and config.frame_rate directly at module
     level instead, since that is a stable Manim Community mechanism
     across versions, whereas CLI flag names/spellings can drift and an
@@ -4508,7 +4359,7 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
     script_path = os.path.join(work_dir, "chunk_scene.py")
     try:
         boilerplate = (
-            MATH_SCENE_MANIM_BOILERPLATE
+            FINANCE_DASHBOARD_MANIM_BOILERPLATE
             .replace("config.pixel_width = 1920", f"config.pixel_width = {int(w)}")
             .replace("config.pixel_height = 1080", f"config.pixel_height = {int(h)}")
             .replace("config.frame_rate = 30", f"config.frame_rate = {int(fps)}")
@@ -4517,7 +4368,7 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
             f.write(boilerplate)
             f.write(code)
 
-        
+        # -qh forces 1080p. For 4K output, Manim must be told to render 2160p.
         quality_flag = "-qk" if int(w) >= 3840 and int(h) >= 2160 else "-qh"
         cmd = [
             "manim", quality_flag, "--disable_caching",
@@ -4535,40 +4386,13 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
         if result.returncode != 0:
             log_path = _save_manim_failure_log(class_name, result.stderr, result.stdout)
             summary = _extract_manim_error_summary(result.stderr, result.stdout)
-            fixed_code = _ai_debug_manim_crash(code, result.stderr + "\n" + result.stdout, class_name)
-            if fixed_code and fixed_code != code:
-                ok2, _ = manim_static_safety_check(fixed_code)
-                if ok2:
-                    try:
-                        with open(script_path, "w") as f:
-                            f.write(boilerplate)
-                            f.write(fixed_code)
-                        result2 = subprocess.run(
-                            cmd, cwd=work_dir, capture_output=True, text=True,
-                            timeout=MANIM_CHUNK_TIMEOUT_SECONDS,
-                        )
-                        if result2.returncode == 0:
-                            produced2 = glob.glob(os.path.join(work_dir, "**", f"{class_name}.mp4"), recursive=True)
-                            if produced2:
-                                locked2, _ = _lock_chunk_duration(
-                                    produced2[0], duration, cached_path, w, h, fps,
-                                    max_drift=1.2 if duration >= 25.0 else MANIM_CHUNK_MAX_DRIFT_RATIO,
-                                )
-                                if locked2:
-                                    print(f"    🤖 AI debugger fixed {class_name}", file=sys.stderr)
-                                    return locked2, ""
-                    except Exception:
-                        pass
             return None, f"manim subprocess failed (exit {result.returncode}), full log: {log_path}\n{summary}"
 
         produced = glob.glob(os.path.join(work_dir, "**", f"{class_name}.mp4"), recursive=True)
         if not produced:
             return None, "manim reported success but no output .mp4 was found"
 
-        locked_path, lock_err = _lock_chunk_duration(
-            produced[0], duration, cached_path, w, h, fps,
-            max_drift=1.2 if duration >= 25.0 else MANIM_CHUNK_MAX_DRIFT_RATIO,
-        )
+        locked_path, lock_err = _lock_chunk_duration(produced[0], duration, cached_path, w, h, fps)
         if not locked_path:
             return None, lock_err
 
@@ -4583,171 +4407,6 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 192
 
 
 GAP_CHUNK_MIN_SECONDS = 0.35
-
-
-def segment_into_concepts(full_text: str, whisper_segments: list, total_duration: float) -> list:
-    """Calls GPT to find natural concept boundaries in the transcript.
-    Returns a list of dicts: [{title, start_time, end_time}, ...].
-    Each concept is a semantically coherent block of narration — not a
-    fixed-time slice. GPT reads the full transcript with Whisper
-    timestamps and identifies where one mathematical idea ends and the
-    next begins. Target 45-90 seconds per concept, never cutting
-    mid-sentence. Falls back gracefully: if segmentation fails or
-    returns nonsense boundaries, the caller uses the old chunked mode."""
-    if not OPENAI_API_KEY:
-        return []
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
-
-    seg_text = []
-    for seg in whisper_segments:
-        s = float(seg.get("start", 0.0))
-        e = float(seg.get("end", s))
-        t = seg.get("text", "").strip()
-        if t:
-            seg_text.append(f"[{s:.1f}s-{e:.1f}s] {t}")
-
-    transcript_block = "\n".join(seg_text)
-
-    system_prompt = """You are a math education video editor. You receive a timestamped transcript and identify natural concept boundaries — points where one mathematical idea ends and the next begins.
-
-Each concept should be 40-120 seconds long. Never cut mid-sentence. Prefer cutting at:
-- Long pauses (gaps between segments)
-- Transition phrases: "now let's", "so what this means", "here's the key", "consider this", "another way to think"
-- When a new example or new term is introduced
-- After a summary or conclusion of an idea
-
-Return ONLY valid JSON:
-{
-  "concepts": [
-    {"title": "Short concept name", "start_time": 0.0, "end_time": 52.3},
-    {"title": "Short concept name", "start_time": 52.3, "end_time": 118.7}
-  ]
-}
-
-Rules:
-- concepts must be contiguous and cover the full video (first start_time = 0.0, last end_time = total duration)
-- Each concept must be at least 30 seconds and at most 150 seconds
-- 6-14 concepts for a 9-10 minute video
-- title is 2-5 words describing the mathematical idea"""
-
-    user_prompt = f"Total duration: {total_duration:.1f}s\n\nTimestamped transcript:\n{transcript_block}"
-
-    try:
-        response = _call_with_retry(lambda: gpt4o_call(
-            client,
-            model="gpt-4.1",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-            max_tokens=1500,
-            timeout=60,
-        ), label="concept segmentation")
-
-        result = json.loads(response.choices[0].message.content)
-        concepts = result.get("concepts", [])
-
-        cleaned = []
-        for c in concepts:
-            try:
-                s = max(0.0, float(c["start_time"]))
-                e = min(float(total_duration), float(c["end_time"]))
-                t = str(c.get("title", "Concept")).strip()
-                if e > s + 25.0 and t:
-                    cleaned.append({"title": t, "start_time": s, "end_time": e})
-            except (KeyError, ValueError, TypeError):
-                continue
-
-        cleaned.sort(key=lambda x: x["start_time"])
-        if len(cleaned) < 2:
-            return []
-
-        print(f"  🧩 Concept segments: {[c['title'] for c in cleaned]}")
-        return cleaned
-
-    except Exception as e:
-        print(f"  ⚠ Concept segmentation error: {e}")
-        return []
-
-
-def group_beats_into_concept_chunks(beats: list, concept_segments: list) -> list:
-    """Groups beats into concept-level chunks using the boundaries from
-    segment_into_concepts. Each concept becomes one chunk containing all
-    its beats. Gap chunks (silence) are inserted between concepts exactly
-    as group_beats_into_manim_chunks does between micro-chunks. If a
-    concept has no beats (e.g. pure silence), it becomes a gap chunk.
-    Concepts that are over 120 seconds are split into two sub-chunks to
-    avoid GPT context overflow and render timeouts."""
-    if not concept_segments or not beats:
-        return group_beats_into_manim_chunks(beats, target_chunk_seconds=4.5)
-
-    MAX_CONCEPT_SECONDS = 110.0
-
-    chunks = []
-    prev_end = 0.0
-
-    for concept in concept_segments:
-        c_start = concept["start_time"]
-        c_end   = concept["end_time"]
-        c_dur   = c_end - c_start
-
-        if prev_end is not None and c_start - prev_end >= GAP_CHUNK_MIN_SECONDS:
-            chunks.append({
-                "beats": [],
-                "start_time": prev_end,
-                "end_time": c_start,
-                "is_gap": True,
-            })
-
-        concept_beats = [
-            b for b in beats
-            if float(b.get("start_time", 0)) >= c_start - 0.1
-            and float(b.get("end_time", 0)) <= c_end + 0.1
-        ]
-
-        if not concept_beats:
-            chunks.append({
-                "beats": [],
-                "start_time": c_start,
-                "end_time": c_end,
-                "is_gap": True,
-                "concept_title": concept["title"],
-            })
-            prev_end = c_end
-            continue
-
-        if c_dur <= MAX_CONCEPT_SECONDS:
-            chunks.append({
-                "beats": concept_beats,
-                "start_time": c_start,
-                "end_time": c_end,
-                "is_concept": True,
-                "concept_title": concept["title"],
-            })
-        else:
-            mid_idx = len(concept_beats) // 2
-            mid_time = float(concept_beats[mid_idx].get("start_time", (c_start + c_end) / 2))
-            chunks.append({
-                "beats": concept_beats[:mid_idx],
-                "start_time": c_start,
-                "end_time": mid_time,
-                "is_concept": True,
-                "concept_title": concept["title"] + " (part 1)",
-            })
-            chunks.append({
-                "beats": concept_beats[mid_idx:],
-                "start_time": mid_time,
-                "end_time": c_end,
-                "is_concept": True,
-                "concept_title": concept["title"] + " (part 2)",
-            })
-
-        prev_end = c_end
-
-    return chunks
 
 
 def group_beats_into_manim_chunks(beats: list, target_chunk_seconds: float = 4.5) -> list:
@@ -4803,830 +4462,6 @@ def group_beats_into_manim_chunks(beats: list, target_chunk_seconds: float = 4.5
     return chunks
 
 
-MANIFEST_ZONES = {
-    "FULL":        {"cx": 0.0,   "cy": 0.0,  "w": 12.5, "h": 7.0,  "xmin": -6.2, "xmax": 6.2,  "ymin": -3.5, "ymax": 3.5},
-    "LEFT":        {"cx": -3.2,  "cy": 0.0,  "w": 5.8,  "h": 5.8,  "xmin": -6.1, "xmax": -0.3, "ymin": -2.9, "ymax": 2.9},
-    "RIGHT":       {"cx":  3.2,  "cy": 0.0,  "w": 5.8,  "h": 5.8,  "xmin":  0.3, "xmax":  6.1, "ymin": -2.9, "ymax": 2.9},
-    "CENTER_TOP":  {"cx": 0.0,   "cy": 1.6,  "w": 11.0, "h": 3.5,  "xmin": -5.5, "xmax":  5.5, "ymin": -0.15,"ymax": 3.35},
-    "CENTER_BOT":  {"cx": 0.0,   "cy":-1.6,  "w": 11.0, "h": 3.5,  "xmin": -5.5, "xmax":  5.5, "ymin": -3.35,"ymax": 0.15},
-    "TOP_TITLE":   {"cx": 0.0,   "cy": 3.1,  "w": 12.5, "h": 1.3,  "xmin": -6.2, "xmax":  6.2, "ymin":  2.45,"ymax": 3.75},
-    "BOTTOM_BAR":  {"cx": 0.0,   "cy":-3.1,  "w": 12.5, "h": 1.3,  "xmin": -6.2, "xmax":  6.2, "ymin": -3.75,"ymax":-2.45},
-}
-
-MANIFEST_ZONE_DESCRIPTIONS = """
-ZONES (Manim coordinate space, frame is 14.22w × 8.0h, safe area ±6.5x ±3.8y):
-  FULL        : center=(0,0),   w=12.5, h=7.0  — use for one hero visual filling the frame
-  LEFT        : center=(-3.2,0),w=5.8,  h=5.8  — left half panel
-  RIGHT        : center=(3.2,0), w=5.8,  h=5.8  — right half panel
-  CENTER_TOP  : center=(0,1.6), w=11.0, h=3.5  — upper 2/3 of frame, paired with CENTER_BOT
-  CENTER_BOT  : center=(0,-1.6),w=11.0, h=3.5  — lower 2/3 of frame, paired with CENTER_TOP
-  TOP_TITLE   : center=(0,3.1), w=12.5, h=1.3  — thin top strip for labels/titles only
-  BOTTOM_BAR  : center=(0,-3.1),w=12.5, h=1.3  — thin bottom strip for labels/formulas only
-
-Zone compatibility (no overlap):
-  FULL cannot coexist with any other zone.
-  LEFT + RIGHT can coexist (side by side).
-  CENTER_TOP + CENTER_BOT can coexist (stacked).
-  TOP_TITLE can coexist with LEFT, RIGHT, CENTER_TOP, CENTER_BOT.
-  BOTTOM_BAR can coexist with LEFT, RIGHT, CENTER_TOP, CENTER_BOT.
-"""
-
-MANIFEST_VISUAL_SIZES = {
-    "fm_animate_bar_chart":       {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_line_chart":      {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_line_chart_multi":{"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_scatter":         {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_bell_curve":      {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_icon_grid":       {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_matrix":          {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP"]},
-    "fm_animate_vector":          {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_counter":         {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT", "TOP_TITLE", "BOTTOM_BAR"]},
-    "fm_animate_single_value":    {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT", "TOP_TITLE", "BOTTOM_BAR"]},
-    "fm_animate_comparison_bars": {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_gauge":           {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_donut":           {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_probability_bar": {"fits": ["FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_number_line":     {"fits": ["FULL", "CENTER_BOT", "BOTTOM_BAR"]},
-    "fm_animate_glow_reveal":     {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_text_reveal":     {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_timeline":        {"fits": ["FULL", "CENTER_BOT"]},
-    "fm_animate_data_table":      {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_animate_waterfall":       {"fits": ["FULL", "CENTER_BOT"]},
-    "fm_formula":                 {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT", "TOP_TITLE", "BOTTOM_BAR"]},
-    "fm_concept_pills":           {"fits": ["FULL", "CENTER_TOP", "TOP_TITLE"]},
-    "fm_two_cards":               {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
-    "fm_card_row":                {"fits": ["FULL", "CENTER_TOP", "CENTER_BOT"]},
-}
-
-MANIFEST_TRANSITION_TABLE = {
-    ("fm_animate_bar_chart",       "fm_animate_bar_chart"):       "Transform",
-    ("fm_animate_line_chart",      "fm_animate_line_chart"):      "Transform",
-    ("fm_animate_line_chart_multi","fm_animate_line_chart_multi"):"Transform",
-    ("fm_animate_counter",         "fm_animate_counter"):         "Transform",
-    ("fm_animate_single_value",    "fm_animate_single_value"):    "Transform",
-    ("fm_animate_gauge",           "fm_animate_gauge"):           "Transform",
-    ("fm_animate_donut",           "fm_animate_donut"):           "Transform",
-    ("fm_animate_bell_curve",      "fm_animate_bell_curve"):      "Transform",
-    ("fm_animate_scatter",         "fm_animate_scatter"):         "Transform",
-    ("fm_animate_probability_bar", "fm_animate_probability_bar"): "Transform",
-    ("fm_animate_comparison_bars", "fm_animate_comparison_bars"): "Transform",
-    ("fm_animate_icon_grid",       "fm_animate_icon_grid"):       "Transform",
-    ("fm_animate_matrix",          "fm_animate_matrix"):          "Transform",
-    ("fm_animate_timeline",        "fm_animate_timeline"):        "Transform",
-    ("fm_animate_waterfall",       "fm_animate_waterfall"):       "Transform",
-    ("fm_animate_glow_reveal",     "fm_animate_glow_reveal"):     "Transform",
-    ("fm_animate_text_reveal",     "fm_animate_text_reveal"):     "Transform",
-    ("fm_formula",                 "fm_formula"):                 "Transform",
-    ("fm_two_cards",               "fm_two_cards"):               "Transform",
-    ("fm_animate_counter",         "fm_animate_single_value"):    "ReplacementTransform",
-    ("fm_animate_single_value",    "fm_animate_counter"):         "ReplacementTransform",
-    ("fm_animate_glow_reveal",     "fm_animate_text_reveal"):     "ReplacementTransform",
-    ("fm_animate_text_reveal",     "fm_animate_glow_reveal"):     "ReplacementTransform",
-    ("fm_animate_bar_chart",       "fm_animate_comparison_bars"): "FadeTransform",
-    ("fm_animate_comparison_bars", "fm_animate_bar_chart"):       "FadeTransform",
-    ("fm_animate_bar_chart",       "fm_animate_line_chart"):      "FadeTransform",
-    ("fm_animate_line_chart",      "fm_animate_bar_chart"):       "FadeTransform",
-    ("fm_animate_scatter",         "fm_animate_line_chart"):      "FadeTransform",
-    ("fm_animate_line_chart",      "fm_animate_scatter"):         "FadeTransform",
-    ("fm_animate_counter",         "fm_animate_gauge"):           "FadeTransform",
-    ("fm_animate_gauge",           "fm_animate_counter"):         "FadeTransform",
-    ("fm_animate_donut",           "fm_animate_gauge"):           "FadeTransform",
-    ("fm_animate_gauge",           "fm_animate_donut"):           "FadeTransform",
-}
-
-_MANIFEST_SYSTEM_PROMPT = None
-
-def _get_manifest_system_prompt():
-    global _MANIFEST_SYSTEM_PROMPT
-    if _MANIFEST_SYSTEM_PROMPT is not None:
-        return _MANIFEST_SYSTEM_PROMPT
-    _MANIFEST_SYSTEM_PROMPT = f"""You are a VISUAL STORY DIRECTOR for Math Unlocked, a math education YouTube channel.
-
-You receive a concept chunk and produce an ACTION SCRIPT: a sequence of scene-building steps executed ONE AT A TIME. No timestamps. No simultaneous chaos. Think like a film director. Each action is a cut or transformation. The viewer sees ONE main thing at a time, building deliberately.
-
-{MANIFEST_ZONE_DESCRIPTIONS}
-
-=== ACTIONS (sequential — one completes before next starts) ===
-
-show      — FadeIn a new visual. Auto-clears that zone first.
-            action="show", zone="FULL", fn="fm_animate_glow_reveal", args='{{"text_str":"Title"}}', duration=3.0, from_zone="", to_zone=""
-
-add       — FadeIn alongside existing. Use ONLY for TOP_TITLE or BOTTOM_BAR strips.
-            action="add", zone="BOTTOM_BAR", fn="fm_formula", args='{{"lines":["key insight"]}}', duration=2.0, from_zone="", to_zone=""
-
-transform — Morph current zone visual into new one. Old BECOMES new. Bars grow, shapes morph.
-            action="transform", zone="CENTER_BOT", fn="fm_animate_bar_chart", args='{{"values":[20,80],"names":["A","B"]}}', duration=2.5, from_zone="", to_zone=""
-
-move_to   — Animate existing zone visual to new zone (shrink and fly).
-            action="move_to", zone="", fn="", args="", duration=0.7, from_zone="FULL", to_zone="TOP_TITLE"
-
-wait      — Hold current screen.
-            action="wait", zone="", fn="", args="", duration=2.0, from_zone="", to_zone=""
-
-clear     — FadeOut everything on screen.
-            action="clear", zone="", fn="", args="", duration=0.4, from_zone="", to_zone=""
-
-clear_zone — FadeOut one zone only.
-             action="clear_zone", zone="CENTER_BOT", fn="", args="", duration=0.3, from_zone="", to_zone=""
-
-=== GOLDEN RULES ===
-- NEVER show in an occupied zone without clear_zone or clear first
-- Max 2 zones active: 1 main + 1 strip (TOP_TITLE or BOTTOM_BAR)
-- "add" only for TOP_TITLE or BOTTOM_BAR
-- Use empty string "" for fields not needed by the action
-
-=== CINEMATIC PATTERNS ===
-
-PATTERN 1 — HOOK AND BUILD:
-  show FULL glow_reveal "Concept Title" 3s
-  move_to FULL to TOP_TITLE 0.7s
-  show CENTER_BOT bar_chart [data] 4s
-  add BOTTOM_BAR formula "key insight" 2s
-  transform CENTER_BOT bar_chart [updated data] 2.5s
-  wait 2s
-  clear 0.4s
-
-PATTERN 2 — 1+1=2 COMPARE:
-  show LEFT single_value "Before: 70" 2.5s
-  add RIGHT single_value "After: 75" 2.5s
-  add BOTTOM_BAR glow_reveal "5 point gap" 2s
-  transform LEFT single_value "Before: 60" 2s
-  wait 2s
-  clear 0.4s
-
-PATTERN 3 — DATA REVEAL:
-  show FULL counter 0 to 1000000 3s
-  move_to FULL to RIGHT 0.7s
-  show LEFT bar_chart [breakdown] 4s
-  add BOTTOM_BAR glow_reveal "context" 2s
-  wait 2s
-  clear 0.4s
-
-=== FUNCTION SIGNATURES (exact kwargs only, no position) ===
-fm_animate_bar_chart: values=[...], names=[...], colors=[...], title_text=""
-fm_animate_line_chart: y_values=[...], accent_color=COLOR, x_labels=[...], title_text=""
-fm_animate_scatter: points=[[x,y],...], accent_color=COLOR, show_regression=False
-fm_animate_bell_curve: accent_color=COLOR, mean_label="mu", std_label="sigma"
-fm_animate_icon_grid: total=N, filled=K, label_text="", accent_color=COLOR, cols=10
-fm_animate_counter: start_val=0, end_val=N, label_text="", accent_color=COLOR, prefix="", suffix=""
-fm_animate_single_value: value_str="42%", label_text="", accent_color=COLOR
-fm_animate_comparison_bars: items=[["Label",value,COLOR],...], title_text=""
-fm_animate_gauge: value=N, max_val=M, label_text="", accent_color=COLOR
-fm_animate_donut: percentage=0.68, label_text="", accent_color=COLOR
-fm_animate_probability_bar: outcomes=[["A",0.3,COLOR],...], label_text=""
-fm_animate_number_line: value=N, min_val=A, max_val=B, label_text="", tick_labels=[...]
-fm_animate_glow_reveal: text_str="Key Idea", accent_color=COLOR, font_size=72, subtitle=""
-fm_animate_text_reveal: lines=["line1","line2",...], colors=[COLOR,...], sizes=[72,44,...]
-fm_animate_timeline: events=["Step 1","Step 2",...], accent_color=COLOR
-fm_animate_data_table: headers=["Col1",...], rows=[["val",...],...], header_color=COLOR
-fm_animate_waterfall: steps=[["Label",value,COLOR],...]
-fm_animate_matrix: rows_data=[[...]], label_text="", accent_color=COLOR
-fm_formula: lines=["formula"], font_size=60, color=COLOR
-
-Colors: BRAND_GREEN="#38D996", BRAND_GOLD="#FFD166", BRAND_RED="#FF4D4D", BRAND_WHITE="#F5F7FA"
-NEVER use BRAND_GRAY as accent_color.
-
-=== OUTPUT FORMAT ===
-All fields required on every action. Use empty string for unused string fields, 0.0 for unused duration fields.
-args is always a JSON-encoded STRING: '{{"values": [30, 70], "names": ["A","B"]}}'"""
-    return _MANIFEST_SYSTEM_PROMPT
-
-
-
-
-def _resolve_color(s):
-    _COLOR_MAP = {
-        "BRAND_GREEN": "#38D996", "BRAND_GOLD": "#FFD166", "BRAND_RED": "#FF4D4D",
-        "BRAND_WHITE": "#F5F7FA", "BRAND_GRAY": "#8A94A6", "BRAND_PANEL": "#0D1B2A",
-        "BRAND_BG": "#060F1A", "BRAND_NAVY": "#0B1628",
-    }
-    if isinstance(s, str) and s.startswith("BRAND_"):
-        return _COLOR_MAP.get(s, s)
-    return s
-
-
-def _args_to_python(args: dict) -> str:
-    """Converts an args dict to a Python keyword-argument string safe for
-    embedding in generated Manim code. Color constants (BRAND_*) are
-    emitted as bare names; everything else is repr'd via json.dumps to
-    avoid any escaping issues with nested strings or special chars."""
-    if not args:
-        return ""
-    parts = []
-    for k, v in args.items():
-        parts.append(f"{k}={_value_to_python(v)}")
-    return ", ".join(parts)
-
-
-def _value_to_python(v) -> str:
-    if isinstance(v, str) and v.startswith("BRAND_"):
-        return v
-    if isinstance(v, list):
-        return "[" + ", ".join(_value_to_python(i) for i in v) + "]"
-    if isinstance(v, tuple):
-        return "(" + ", ".join(_value_to_python(i) for i in v) + ")"
-    if isinstance(v, dict):
-        pairs = ", ".join(f"{repr(k)}: {_value_to_python(val)}" for k, val in v.items())
-        return "{" + pairs + "}"
-    if v is None:
-        return "None"
-    if isinstance(v, bool):
-        return "True" if v else "False"
-    if isinstance(v, (int, float)):
-        return repr(v)
-    return repr(str(v))
-
-
-def _execute_manifest_to_manim_code(manifest: dict, class_name: str) -> str:
-    """Sequential action-based executor. One action at a time. No stacking possible."""
-
-    _FN_ALIASES = {
-        "fm_glow_reveal":     "fm_animate_glow_reveal",
-        "fm_text_reveal":     "fm_animate_text_reveal",
-        "fm_bar_chart":       "fm_animate_bar_chart",
-        "fm_line_chart":      "fm_animate_line_chart",
-        "fm_scatter":         "fm_animate_scatter",
-        "fm_bell_curve":      "fm_animate_bell_curve",
-        "fm_icon_grid":       "fm_animate_icon_grid",
-        "fm_counter":         "fm_animate_counter",
-        "fm_single_value":    "fm_animate_single_value",
-        "fm_timeline":        "fm_animate_timeline",
-        "fm_waterfall":       "fm_animate_waterfall",
-        "fm_gauge":           "fm_animate_gauge",
-        "fm_donut":           "fm_animate_donut",
-        "fm_matrix":          "fm_animate_matrix",
-        "fm_vector":          "fm_animate_vector",
-        "fm_number_line":     "fm_animate_number_line",
-        "fm_probability_bar": "fm_animate_probability_bar",
-        "fm_comparison_bars": "fm_animate_comparison_bars",
-        "fm_data_table":      "fm_animate_data_table",
-    }
-
-    fn_supports_position = {
-        "fm_animate_counter", "fm_animate_single_value", "fm_animate_gauge",
-        "fm_animate_donut", "fm_animate_bell_curve", "fm_animate_number_line",
-        "fm_animate_icon_grid", "fm_animate_scatter", "fm_animate_vector",
-        "fm_animate_matrix", "fm_formula", "fm_animate_probability_bar",
-        "fm_animate_bar_chart", "fm_animate_glow_reveal", "fm_animate_text_reveal",
-        "fm_animate_waterfall", "fm_animate_timeline", "fm_animate_comparison_bars",
-        "fm_animate_line_chart", "fm_animate_data_table", "fm_two_cards",
-    }
-
-    fn_is_constructor = {
-        "fm_icon", "fm_card", "fm_two_cards", "fm_card_row", "fm_concept_pills",
-    }
-
-    total_dur = float(manifest.get("total_duration", 4.5))
-    actions = manifest.get("actions", manifest.get("visuals", []))
-    if not actions:
-        return ""
-
-    for a in actions:
-        raw_fn = a.get("fn", "")
-        if raw_fn:
-            a["fn"] = _FN_ALIASES.get(raw_fn, raw_fn)
-        if isinstance(a.get("args"), dict):
-            a["args"].pop("position", None)
-            a["args"].pop("scene", None)
-            a["args"].pop("duration", None)
-        elif isinstance(a.get("args"), str) and a["args"]:
-            try:
-                import json as _j
-                parsed = _j.loads(a["args"])
-                parsed.pop("position", None)
-                parsed.pop("scene", None)
-                parsed.pop("duration", None)
-                a["args"] = parsed
-            except Exception:
-                a["args"] = {}
-        else:
-            a["args"] = {}
-
-    lines = [
-        "from manim import *",
-        "",
-        f"class {class_name}(MathScene):",
-        "    def construct(self):",
-        f"        _total_dur = {total_dur}",
-        "        _zones = {}",
-        "        _vc = [0]",
-        "        self.clear()",
-        "",
-    ]
-
-    def nv():
-        _vc_val = lines.count("_vc[0] +=") + 1
-        return f"_m{_vc_val}"
-
-    vid_idx = [0]
-    def next_vid():
-        vid_idx[0] += 1
-        return f"_m{vid_idx[0]}"
-
-    def zone_cx_cy(zone):
-        z = MANIFEST_ZONES.get(zone, MANIFEST_ZONES.get("FULL", {"cx": 0.0, "cy": 0.0}))
-        return z.get("cx", 0.0), z.get("cy", 0.0)
-
-    def zone_scale_for_move(to_zone):
-        z = MANIFEST_ZONES.get(to_zone, MANIFEST_ZONES.get("TOP_TITLE", {"w": 12.0, "h": 1.3}))
-        w, h = z.get("w", 12.0), z.get("h", 1.3)
-        return round(min(w / 12.5, h / 3.5, 0.5), 2)
-
-    elapsed = 0.0
-
-    for a in actions:
-        act = (a.get("action") or "wait").strip().lower()
-        dur = max(float(a.get("duration") or 2.0), 0.1)
-        zone = (a.get("zone") or "").strip() or "FULL"
-        from_zone = (a.get("from_zone") or "").strip()
-        to_zone = (a.get("to_zone") or "").strip()
-        fn = (a.get("fn") or "").strip()
-        args = a.get("args", {}) if isinstance(a.get("args"), dict) else {}
-
-        if act == "wait":
-            lines.append(f"        self.wait({dur})")
-            lines.append("")
-            elapsed += dur
-            continue
-
-        if act == "clear":
-            lines.append(f"        _fade_all = [_m for _m in _zones.values() if _m is not None]")
-            lines.append(f"        if _fade_all:")
-            lines.append(f"            try: self.play(*[FadeOut(_m) for _m in _fade_all], run_time={dur})")
-            lines.append(f"            except Exception: pass")
-            lines.append(f"        _zones.clear()")
-            lines.append("")
-            elapsed += dur
-            continue
-
-        if act == "clear_zone":
-            lines.append(f"        if _zones.get('{zone}') is not None:")
-            lines.append(f"            try: self.play(FadeOut(_zones['{zone}']), run_time={dur})")
-            lines.append(f"            except Exception: pass")
-            lines.append(f"            _zones['{zone}'] = None")
-            lines.append("")
-            elapsed += dur
-            continue
-
-        if act == "move_to":
-            fz = from_zone or zone
-            tz = to_zone or "TOP_TITLE"
-            to_cx, to_cy = zone_cx_cy(tz)
-            sc = zone_scale_for_move(tz)
-            lines.append(f"        if _zones.get('{fz}') is not None:")
-            lines.append(f"            try:")
-            lines.append(f"                self.play(_zones['{fz}'].animate.scale({sc}).move_to([{to_cx}, {to_cy}, 0]), run_time={dur})")
-            lines.append(f"                _zones['{tz}'] = _zones.pop('{fz}', None)")
-            lines.append(f"            except Exception: pass")
-            lines.append("")
-            elapsed += dur
-            continue
-
-        if not fn:
-            lines.append(f"        self.wait({dur})")
-            lines.append("")
-            elapsed += dur
-            continue
-
-        vid = next_vid()
-        cx, cy = zone_cx_cy(zone)
-        args_str = _args_to_python(args) if args else ""
-
-        if fn in fn_supports_position:
-            pos_str = f"position=[{cx}, {cy}, 0]"
-            call_args = f"{args_str}, {pos_str}" if args_str else pos_str
-        else:
-            call_args = args_str
-
-        if act == "show":
-            lines.append(f"        if _zones.get('{zone}') is not None:")
-            lines.append(f"            try: self.play(FadeOut(_zones['{zone}']), run_time=0.3)")
-            lines.append(f"            except Exception: pass")
-            lines.append(f"            _zones['{zone}'] = None")
-
-        if act == "transform":
-            lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
-            lines.append(f"        try:")
-            lines.append(f"            _new_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
-            lines.append(f"            _old_{vid} = _zones.get('{zone}')")
-            lines.append(f"            if _new_{vid} is not None and _old_{vid} is not None:")
-            lines.append(f"                self.play(Transform(_old_{vid}, _new_{vid}), run_time=0.7)")
-            lines.append(f"                _zones['{zone}'] = _old_{vid}")
-            lines.append(f"            elif _new_{vid} is not None:")
-            lines.append(f"                _zones['{zone}'] = _new_{vid}")
-            lines.append(f"        except Exception: pass")
-            lines.append("")
-        elif fn in fn_is_constructor:
-            lines.append(f"        _r_{vid} = {fn}({call_args})")
-            lines.append(f"        try:")
-            lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
-            lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
-            lines.append(f"            if _mob_{vid} is not None: self.play(FadeIn(_mob_{vid}), run_time=0.4)")
-            lines.append(f"            if _mob_{vid} is not None: _zones['{zone}'] = _mob_{vid}")
-            lines.append(f"        except Exception: pass")
-            lines.append("")
-        else:
-            lines.append(f"        _r_{vid} = {fn}(self, {call_args}, duration={dur})")
-            lines.append(f"        try:")
-            lines.append(f"            _mob_{vid} = _r_{vid}[0] if isinstance(_r_{vid}, tuple) else _r_{vid}")
-            if fn not in fn_supports_position:
-                lines.append(f"            if _mob_{vid} is not None: _mob_{vid}.move_to([{cx}, {cy}, 0])")
-            lines.append(f"            if _mob_{vid} is not None: _zones['{zone}'] = _mob_{vid}")
-            lines.append(f"        except Exception: pass")
-            lines.append("")
-
-        elapsed += dur
-
-    remaining = round(total_dur - elapsed, 3)
-    if remaining > 0.1:
-        lines.append(f"        self.wait({max(remaining, 0.1)})")
-
-    lines.append(f"        _fade_final = [_m for _m in _zones.values() if _m is not None]")
-    lines.append(f"        if _fade_final:")
-    lines.append(f"            try: self.play(*[FadeOut(_m) for _m in _fade_final], run_time=0.5)")
-    lines.append(f"            except Exception: pass")
-
-    return "\n".join(lines)
-
-
-def _sanitize_manifest(manifest: dict) -> dict:
-    """Post-process the GPT manifest to fix common hallucination patterns before execution.
-    This is a rule-based validator that runs after JSON parse, before code generation."""
-
-    KNOWN_ARGS = {
-        "fm_animate_bar_chart":       {"values", "names", "colors", "title_text"},
-        "fm_animate_line_chart":      {"y_values", "accent_color", "x_labels", "title_text", "end_value_label"},
-        "fm_animate_scatter":         {"points", "accent_color", "show_regression", "x_label", "y_label", "label_text", "title_text"},
-        "fm_animate_bell_curve":      {"label_text", "accent_color", "show_std_regions", "mean_label", "std_label", "skew", "skewed"},
-        "fm_animate_icon_grid":       {"total", "filled", "label_text", "accent_color", "cols"},
-        "fm_animate_matrix":          {"rows_data", "label_text", "accent_color"},
-        "fm_animate_vector":          {"direction", "label_text", "accent_color", "show_components"},
-        "fm_animate_counter":         {"start_val", "end_val", "label_text", "accent_color", "prefix", "suffix"},
-        "fm_animate_single_value":    {"value_str", "label_text", "accent_color"},
-        "fm_animate_comparison_bars": {"items", "title_text", "show_net"},
-        "fm_animate_gauge":           {"value", "max_val", "label_text", "accent_color"},
-        "fm_animate_donut":           {"percentage", "label_text", "accent_color"},
-        "fm_animate_probability_bar": {"outcomes", "label_text", "accent_color"},
-        "fm_animate_number_line":     {"value", "min_val", "max_val", "label_text", "accent_color", "tick_labels", "line_length"},
-        "fm_animate_glow_reveal":     {"text_str", "accent_color", "font_size", "subtitle"},
-        "fm_animate_text_reveal":     {"lines", "colors", "sizes"},
-        "fm_animate_timeline":        {"events", "accent_color", "show_index"},
-        "fm_animate_data_table":      {"headers", "rows", "header_color", "accent_row", "accent_color", "label_text", "title_text"},
-        "fm_animate_waterfall":       {"steps"},
-        "fm_formula":                 {"lines", "font_size", "color"},
-        "fm_two_cards":               {"left_label", "left_val", "left_color", "right_label", "right_val", "right_color"},
-        "fm_concept_pills":           {"labels", "colors"},
-    }
-
-    VALID_ZONES = {"FULL", "LEFT", "RIGHT", "CENTER_TOP", "CENTER_BOT", "TOP_TITLE", "BOTTOM_BAR"}
-    VALID_ROLES = {"main", "support", "label", "caption"}
-
-    visuals = manifest.get("visuals", [])
-
-    if len(visuals) > 12:
-        visuals = visuals[:12]
-
-    total_dur = float(manifest.get("total_duration", 10.0))
-
-    cleaned = []
-    for vis in visuals:
-        fn = vis.get("fn", "")
-        args = vis.get("args", {})
-        if not isinstance(args, dict):
-            args = {}
-
-        allowed = KNOWN_ARGS.get(fn, set())
-        if allowed:
-            stripped = {k: v for k, v in args.items() if k in allowed}
-            if len(stripped) < len(args):
-                removed = set(args) - set(stripped)
-                args = stripped
-
-        if "items" in args and isinstance(args["items"], list):
-            fixed = []
-            for item in args["items"]:
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    label = str(item[0])
-                    try:
-                        val = float(str(item[1]).strip().rstrip("%").replace(",",""))
-                    except Exception:
-                        val = 0.0
-                    color = item[2] if len(item) > 2 else "#38D996"
-                    fixed.append([label, val, color])
-            args["items"] = fixed
-
-        if "outcomes" in args and isinstance(args["outcomes"], list):
-            fixed = []
-            for item in args["outcomes"]:
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    name = str(item[0])
-                    try:
-                        prob = float(item[1])
-                    except Exception:
-                        prob = 0.0
-                    color = item[2] if len(item) > 2 else "#38D996"
-                    fixed.append([name, prob, color])
-            args["outcomes"] = fixed
-
-        if "points" in args and isinstance(args["points"], list):
-            fixed = []
-            for p in args["points"]:
-                if isinstance(p, (list, tuple)) and len(p) >= 2:
-                    try:
-                        fixed.append([float(p[0]), float(p[1])])
-                    except Exception:
-                        pass
-            args["points"] = fixed
-
-        zone = vis.get("zone", "FULL")
-        if zone not in VALID_ZONES:
-            zone = "FULL"
-
-        role = vis.get("role", "main")
-        if role not in VALID_ROLES:
-            role = "main"
-
-        show_at = max(0.0, float(vis.get("show_at", 0.0)))
-        hide_at = min(total_dur, float(vis.get("hide_at", total_dur)))
-        if hide_at <= show_at:
-            hide_at = min(show_at + float(vis.get("duration", 3.0)), total_dur)
-
-        transition = vis.get("transition", "replace")
-        if transition not in ("replace", "Transform", "ReplacementTransform", "FadeTransform"):
-            transition = "replace"
-
-        vis["args"] = args
-        vis["zone"] = zone
-        vis["role"] = role
-        vis["show_at"] = show_at
-        vis["hide_at"] = hide_at
-        vis["transition"] = transition
-        cleaned.append(vis)
-
-    manifest["visuals"] = cleaned
-    return manifest
-
-
-def _generate_concept_chunk_code(client, topic: str, chunk_idx: int, chunk: dict) -> str:
-    """Direct Manim code generation — Latest Architecture.
-    GPT writes construct() directly based on narration content.
-    No section detection. No manifest. GPT picks the right visual
-    from the full toolkit based on what the narration is actually saying."""
-    if not OPENAI_API_KEY:
-        return ""
-
-    concept_title = chunk.get("concept_title", f"Concept {chunk_idx}")
-    total_duration = round(chunk["end_time"] - chunk["start_time"], 2)
-    concept_start = chunk["start_time"]
-    class_name = f"Chunk{chunk_idx}"
-
-    beat_lines = []
-    for b in chunk.get("beats", []):
-        b_start = round(float(b.get("start_time", 0)) - concept_start, 2)
-        b_end   = round(float(b.get("end_time",   0)) - concept_start, 2)
-        b_text  = b.get("text", "").strip()
-        beat_lines.append(f"  +{b_start:.2f}s-{b_end:.2f}s: {b_text}")
-
-    system_prompt = f"""You are a visual mathematics educator writing Manim animation code for Math Unlocked — a YouTube channel teaching math from statistics to transformers.
-
-For each narration chunk you write ONE complete Manim Scene class. Your visual makes the math OBVIOUS. The audio says the words. You show what those words MEAN mathematically.
-
-=== READ THE NARRATION FIRST, THEN PICK THE VISUAL ===
-Don't categorize the video. Read what the narration is actually saying and pick the visual that makes that specific idea click. Examples:
-
-Narration says "the average income is $50k but most people earn less" → skewed distribution: fm_animate_bell_curve with tail pulled right, or fm_animate_bar_chart showing the skew
-Narration says "we sample 20 people from a population of 100" → fm_animate_icon_grid(total=100, filled=20)
-Narration says "correlation is not causation" → fm_animate_scatter with trend line, then show a second scatter with same correlation but opposite cause
-Narration says "the derivative is the slope of the tangent line" → fm_animate_scatter plotting a curve with a tangent line drawn at a point
-Narration says "gradient descent rolls downhill" → fm_animate_line_chart showing loss descending, or fm_animate_scatter showing a bowl shape with a dot moving
-Narration says "a matrix transforms space" → fm_animate_matrix showing the values, then fm_animate_vector showing input vs output vectors
-Narration says "attention weights tell each token how much to focus on others" → fm_animate_data_table as an attention heatmap matrix
-Narration says "ReLU just clips negatives to zero" → fm_animate_scatter plotting f(x)=max(0,x)
-Narration says "the loss went down from 2.3 to 0.4 over 100 epochs" → fm_animate_line_chart with descending curve
-Narration says "this is useful for neural networks" inside a calculus explanation → still show the calculus concept (derivative/gradient) but label it with the neural network application
-Narration says "softmax turns scores into probabilities" → fm_animate_probability_bar showing outputs summing to 1
-Narration says "eigenvectors don't rotate, they only scale" → fm_animate_vector showing same direction before and after transformation
-
-The pattern: WHAT IS THE MATH DOING? Show that action visually.
-
-=== VISUAL PRIMITIVES — FULL TOOLKIT ===
-Use whichever fits the narration. Don't limit yourself to "statistics" or "ML" functions.
-
-fm_animate_bell_curve(self, label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
-  → distributions, normal curves, skew, variance as width, confidence regions
-
-fm_animate_scatter(self, points=[[x,y],...], accent_color=BRAND_GOLD, show_regression=False, x_label="x", y_label="y", duration=D, position=[cx,cy,0])
-  → correlation, function curves (plot many points), decision boundaries, data clouds, ANY 2D curve
-
-fm_animate_bar_chart(self, values=[...], names=[...], colors=[...], title_text="", duration=D, position=[cx,cy,0])
-  → comparisons, distributions as histograms, frequency counts, layer sizes
-
-fm_animate_line_chart(self, y_values=[...], accent_color=BRAND_GREEN, x_labels=[...], title_text="", duration=D, position=[cx,cy,0])
-  → trends over time, loss curves, learning curves, any sequence of values
-
-fm_animate_icon_grid(self, total=100, filled=20, label_text="", accent_color=BRAND_GREEN, cols=10, duration=D, position=[cx,cy,0])
-  → populations, sampling, probability as proportion, dropout (random zeroed nodes), batch selection
-
-fm_animate_number_line(self, value=N, min_val=A, max_val=B, label_text="", tick_labels=[...], duration=D, position=[cx,cy,0])
-  → limits approaching, parameter values, z-scores, single variable ranges, positioning on a scale
-
-fm_animate_matrix(self, rows_data=[[...]], label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
-  → matrices, tensors, attention matrices, weight matrices, transformation matrices
-
-fm_animate_vector(self, direction=[dx,dy], label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
-  → vectors, gradients, eigenvectors, embeddings as directions, any directional quantity
-
-fm_animate_counter(self, start_val=0, end_val=N, label_text="", accent_color=BRAND_GOLD, prefix="", suffix="", duration=D, position=[cx,cy,0])
-  → counting up, epoch numbers, sample sizes, any growing integer
-
-fm_animate_single_value(self, value_str="42%", label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
-  → key metrics, loss values, accuracy, any single important number
-
-fm_animate_comparison_bars(self, items=[["Label",value,COLOR],...], title_text="", duration=D, position=[cx,cy,0])
-  → side-by-side comparison, before/after, attention heads, parameter comparisons
-
-fm_animate_probability_bar(self, outcomes=[["A",0.3,COLOR],...], label_text="", duration=D, position=[cx,cy,0])
-  → discrete probability distributions, softmax outputs, categorical distributions
-
-fm_animate_gauge(self, value=N, max_val=M, label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
-  → percentage full, accuracy percentage, single proportion
-
-fm_animate_donut(self, percentage=0.68, label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
-  → single proportion, accuracy, fill percentage
-
-fm_animate_data_table(self, headers=[...], rows=[[...]], header_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
-  → attention matrices, confusion matrices, lookup tables, any grid of values
-
-fm_animate_glow_reveal(self, text_str="Title", accent_color=BRAND_GOLD, font_size=72, subtitle="", duration=D, position=[cx,cy,0])
-  → concept hook titles ONLY (one per chunk, first beat only), key insight reveals
-
-fm_animate_text_reveal(self, lines=[...], colors=[...], sizes=[...], duration=D, position=[cx,cy,0])
-  → short lists of steps or contrasts (max 3 lines, math labels only, not sentences)
-
-fm_formula(self, lines=["formula"], font_size=60, color=BRAND_WHITE, duration=D, position=[cx,cy,0])
-  → any equation or formula. ALWAYS use this instead of Text() for math notation.
-  → Examples: ["P(A|B) = P(A∩B) / P(B)"], ["loss = -sum(y * log(y_hat))"], ["W = W - lr * dL/dW"]
-
-fm_animate_timeline(self, events=[...], accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
-  → sequences of steps, tokenization as word sequence, algorithm steps
-
-fm_animate_waterfall(self, steps=[["Label",value,COLOR],...], duration=D, position=[cx,cy,0])
-  → sequential additions/subtractions, cumulative effects, gradient accumulation
-
-fm_clamp_to_frame(*mobjects) — ALWAYS call before self.play(FadeIn(...)) when >1 group shares screen
-fm_glow_around(mobject, color=BRAND_GOLD) — returns VGroup, add the whole result to scene
-
-=== THE ANTI-CHAOS RULE — ONE THING AT A TIME ===
-Structure: ONE main visual → optional title above → optional formula/label below → Transform if data updates → FadeOut everything at end.
-
-NEVER show two main visuals simultaneously. The FadeOut at end of every construct() is mandatory.
-
-PATTERN 1 — CONCEPT HOOK THEN DATA:
-    r = fm_animate_glow_reveal(self, "Mean vs Median", duration=2.5, position=[0,0,0])
-    title = r[0]
-    self.play(title.animate.scale(0.4).move_to([0, 3.2, 0]), run_time=0.5)
-    chart, _ = fm_animate_bar_chart(self, values=[30,70,50,90,20], names=["A","B","C","D","E"], colors=[BRAND_GOLD]*5, duration=4.0, position=[0,-0.3,0])
-    self.wait(2.0)
-    self.play(FadeOut(title, chart), run_time=0.4)
-
-PATTERN 2 — FORMULA THEN VISUALIZATION:
-    form, _ = fm_formula(self, ["loss = -sum(y * log(y_hat))"], font_size=56, duration=2.5, position=[0, 2.0, 0])
-    self.wait(1.0)
-    chart, _ = fm_animate_line_chart(self, y_values=[2.3,1.8,1.2,0.8,0.5,0.3], accent_color=BRAND_GREEN, x_labels=["1","20","40","60","80","100"], title_text="Training Loss", duration=4.0, position=[0,-0.5,0])
-    self.wait(2.0)
-    self.play(FadeOut(form, chart), run_time=0.4)
-
-PATTERN 3 — LEFT/RIGHT COMPARISON:
-    val_a, _ = fm_animate_single_value(self, "70", label_text="Before", accent_color=BRAND_GRAY, duration=2.0, position=[-3.5, 0, 0])
-    val_b, _ = fm_animate_single_value(self, "75", label_text="After", accent_color=BRAND_GREEN, duration=2.0, position=[3.5, 0, 0])
-    fm_clamp_to_frame(val_a, val_b)
-    self.wait(2.5)
-    self.play(FadeOut(val_a, val_b), run_time=0.4)
-
-PATTERN 4 — TRANSFORM (same visual updating):
-    chart, _ = fm_animate_bar_chart(self, values=[20,80], names=["Sample","Rest"], colors=[BRAND_GOLD, BRAND_GRAY], duration=3.0, position=[0,0,0])
-    self.wait(1.5)
-    chart2, _ = fm_animate_bar_chart(self, values=[40,60], names=["Sample","Rest"], colors=[BRAND_GREEN, BRAND_GRAY], duration=0.1, position=[0,0,0])
-    self.play(Transform(chart, chart2), run_time=0.8)
-    self.wait(2.0)
-    self.play(FadeOut(chart), run_time=0.4)
-
-=== SCREEN POSITIONS ===
-Center: [0, 0, 0] — main visual, full screen
-Top title: [0, 3.2, 0] — after scaling down with .scale(0.4).move_to(...)
-Bottom label: [0, -3.2, 0] — formula or short label
-Left: [-3.5, 0, 0] — left comparison
-Right: [3.5, 0, 0] — right comparison
-Safe zone: x in [-6.5, 6.5], y in [-3.5, 3.5]
-
-NEVER opacity= in Line/Arc/Circle/Dot constructors → use .set_stroke(opacity=...) after
-NEVER MathTex, Tex, SingleStringMathTex → use fm_formula() always
-NEVER DecimalNumber → use always_redraw(lambda: Text(f"{{val:.1f}}", ...)) with ValueTracker
-NEVER BarChart, Axes, NumberLine, NumberPlane, SVGMobject, Rectangle, DashedLine, DashedVMobject, Ellipse, plot_line_graph
-NEVER call self.fm_*() — these are module-level: fm_*(self, ...)
-Triangle() takes NO vertex args → use Polygon([p1],[p2],[p3]) for custom shapes
-Polygon: each vertex is its OWN positional arg: Polygon([0,1,0],[1,0,0],[-1,0,0]) not Polygon([[...]])
-Star(n=5, outer_radius=0.5) — never pass coordinate as first arg
-RoundedRectangle uses corner_radius= NOT radius=
-GrowFromEdge(mob, DOWN) — GrowFromBottom doesn't exist
-Rate funcs: smooth, linear, ease_out_bounce — never bounce_out
-BRAND_* are hex strings → ManimColor(BRAND_GREEN) for interpolate_color()
-fm_clamp_to_frame(*groups) before FadeIn when >1 group shares screen
-ValueTracker must be top-level statement BEFORE any always_redraw lambda
-Never index fm_* returns: (card[0], result[1]) — keep as named variables
-Never self.add() AND animate submobjects of same fm_* result separately
-_ is NOT previous result — always assign: result, _ = fm_*(...)
-fm_animate_scatter returns tuple — first element is VGroup, second is axes or None
-fm_animate_bell_curve: mean_label and std_label must be strings, never None
-fm_animate_number_line: value must be a number, never None
-axes.get_graph() color: .set_stroke(color=...) after construction
-BRAND_* colors: BRAND_GREEN="#38D996" BRAND_GOLD="#FFD166" BRAND_RED="#FF4D4D" BRAND_WHITE="#F5F7FA" BRAND_GRAY="#8A94A6" BRAND_PANEL="#0D1B2A"
-NEVER BRAND_GRAY as main accent — invisible on dark background
-Always FadeOut ALL mobjects at the very end of construct()
-
-=== STRUCTURAL RULES ===
-Exactly ONE class subclassing MathScene. No top-level code outside the class.
-MathScene is already defined — do not redefine it, do not set camera.background_color.
-construct(self) goes straight to content.
-Only imports: manim, numpy, math, random. Nothing else.
-Never reference: open, exec, eval, __import__, os, sys, subprocess.
-Total self.play() + self.wait() durations must match {total_duration}s."""
-
-    user_prompt = (
-        f"Topic: {topic}\n"
-        f"Concept: {concept_title}\n"
-        f"Class name: {class_name}\n"
-        f"Total duration: {total_duration}s\n\n"
-        f"Beat timeline (seconds from chunk start):\n"
-        + "\n".join(beat_lines) +
-        f"\n\nWrite a single MathScene subclass named {class_name}. "
-        f"Read the narration carefully and pick the visual that makes this specific math concept click. "
-        f"One main visual at a time. Total duration {total_duration}s. FadeOut everything at the end."
-    )
-
-    codegen_schema = {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "manim_chunk",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "class_name": {"type": "string"},
-                    "code":       {"type": "string"},
-                },
-                "required": ["class_name", "code"],
-                "additionalProperties": False,
-            }
-        }
-    }
-
-    try:
-        def _do():
-            return gpt4o_call(
-                client,
-                model="gpt-4.1",
-                max_tokens=4000,
-                temperature=0.2,
-                response_format=codegen_schema,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": user_prompt},
-                ],
-            )
-        response = _call_with_retry(_do, label=f"codegen Chunk{chunk_idx}")
-        raw = response.choices[0].message.content
-        result = json.loads(raw)
-        code = result.get("code", "").strip()
-
-        if not code:
-            return ""
-
-        if not code.startswith("from manim import"):
-            code = "from manim import *\n\n" + code
-
-        import re as _re
-        code = _re.sub(
-            r'class\s+\w+\s*\(\s*\w+\s*\)',
-            f'class {class_name}(MathScene)',
-            code, count=1
-        )
-
-        try:
-            import ast as _ast
-            _ast.parse(code)
-        except SyntaxError as se:
-            print(f"    ⚠ Syntax error {class_name}: {se}")
-            return ""
-
-        print(f"    ✏  Generated {class_name}: {len(code)} chars, {total_duration}s")
-        return code
-
-    except Exception as e:
-        print(f"    ⚠ Codegen failed {class_name}: {e}")
-        return ""
-
-
 def generate_manim_chunk_code(chunks: list, topic: str) -> list:
     """Manim-based replacement for the old PIL/cv2 generate_visual_code.
     Produces one Manim Scene class per chunk (each chunk is roughly
@@ -5660,258 +4495,134 @@ def generate_manim_chunk_code(chunks: list, topic: str) -> list:
     print(f"  🎬 Manim Call: chunk code generation for {len(chunks)} chunks...")
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    system_prompt = """You are a generative motion graphics engineer using Manim (Manim Community edition) for a premium long-form math and machine learning education channel called Math Unlocked. For each chunk of narration (a few seconds, sometimes one beat, sometimes several consecutive beats grouped together) you write ONE complete Manim Scene class that animates that chunk's visual. This is a 3Blue1Brown-standard math explainer — the visual itself carries the idea, not a wall of words.
+    system_prompt = """You are a visual mathematics educator writing Manim animation code for Math Unlocked — a YouTube channel teaching math from statistics to neural networks to transformers.
 
-=== THINK IN MATHEMATICAL STRUCTURES — NOT TEXT LABELS ===
-Every mathematical concept has a geometric or structural visual that IS the concept. Your job is to find that visual and animate it. The audio already says the words. You show the REALITY of the mathematics.
+For each narration chunk (3-5 seconds of consecutive beats) you write ONE complete Manim Scene class. The visual makes the math OBVIOUS. Audio says the words. You show what those words MEAN mathematically.
 
-The pattern: audio names the concept → you animate the mathematical structure that concept represents → viewer understands without reading a single word.
+=== THINK IN MATH VISUALS, NOT TEXT ===
+Every math concept has a visual that IS the concept. Find it and animate it.
+Audio says "variance" → bell curve widening. Audio says "sample" → dots selected from grid.
+Audio says "gradient descent" → ball rolling down a curve. Audio says "attention" → heatmap matrix.
+Audio says "eigenvector" → arrow staying on same line under transformation.
+The viewer understands without reading a single word.
 
 === THE 3BLUE1BROWN STANDARD ===
-The visual language of this channel is axes, plotted curves, animated vectors, growing bars, transforming matrices, probability distributions, scatter plots, number lines, geometric diagrams, and actual mathematical structure made visible. Almost nothing in a 3blue1brown video is a literal pictogram — it is the STRUCTURE of the idea made visible: a curve bending, a bar growing, a vector rotating, a distribution spreading, a matrix transforming space. That is the standard here.
+Axes, plotted curves, bar charts, matrices, vectors, growing numbers, transforming shapes.
+NOT sentences. NOT paragraphs. NOT bullet points. The STRUCTURE of the idea made visible.
 
-Default to a chart, plot, matrix, vector, distribution, number line, formula, or geometric construction for every beat that has a mathematical concept, a number, a trend, a transformation, or a comparison.
+Default to a chart, graph, matrix, vector, number line, scatter plot, bell curve, formula, or counter for every beat that has a number, a trend, a proportion, a comparison, a transformation, or a formula — which is nearly every math beat.
 
-=== VISUAL METAPHOR MAPPING ===
-- Probability / frequency / proportion → fm_animate_probability_bar, fm_animate_donut, fm_animate_icon_grid
-- Distribution / bell curve / normal → fm_animate_bell_curve (MAX once per 8 chunks)
-- Uncertainty / spread → fm_animate_number_line, fm_animate_comparison_bars, fm_animate_scatter
-- Trend / growth / sequence → fm_animate_line_chart, fm_animate_line_chart_multi
-- Vector / direction / linear combination → fm_animate_vector
-- Matrix / transformation / system → fm_animate_matrix
-- Single statistic / key number → fm_animate_counter, fm_animate_single_value
-- Comparison between values → fm_animate_comparison_bars, fm_two_cards, fm_animate_bar_chart
-- Formula / equation / rate with denominator → fm_formula
-- Scatter data / correlation → fm_animate_scatter (show_regression=True for correlation)
-- Number line / range / interval / uncertainty → fm_animate_number_line
-- Concept names / taxonomy → fm_concept_pills
-- Chapter / hook / major reveal → fm_animate_glow_reveal
-- Step-by-step process → fm_animate_timeline
-- Experiment results / category table → fm_animate_data_table
-- Population vs sample → fm_animate_icon_grid
-- Sampling variability / noise → fm_animate_line_chart with jagged values
+MATCH THE VISUAL TO THE MATH:
+- Distribution / spread / variance → fm_animate_bell_curve (show width changing)
+- Population vs sample → fm_animate_icon_grid (total=100, filled=20)
+- Correlation → fm_animate_scatter with show_regression=True
+- Proportion / percentage → fm_animate_donut or fm_animate_gauge
+- Comparison of two values → fm_animate_comparison_bars
+- Sequence of values over time → fm_animate_line_chart
+- Formula or equation → fm_formula (NEVER raw Text for math notation)
+- Matrix / array → fm_animate_matrix
+- Vector / direction → fm_animate_vector
+- Counting up to a value → fm_animate_counter
+- Single key number → fm_animate_single_value
+- Probability outcomes → fm_animate_probability_bar
+- Steps in a process → fm_animate_timeline
+- Value on a scale → fm_animate_number_line
+- Concept title hook (first beat only) → fm_animate_glow_reveal
 
-=== AXES AND GEOMETRY ARE ALLOWED AND ENCOURAGED ===
-Unlike the previous pipeline, Axes, NumberLine, NumberPlane, and Rectangle ARE available and encouraged when the fm_* library does not cover the visual well. Use them correctly:
-- Axes: always pass x_length and y_length explicitly. Use axis_config with ONLY color, stroke_opacity, include_numbers keys. NEVER put include_tip inside axis_config -- it crashes. Correct: Axes(x_range=[0,10,1], y_range=[0,5,1], x_length=10, y_length=5, axis_config={"color": BRAND_GRAY, "stroke_opacity": 0.45, "include_numbers": False}). Place axes with .move_to(ORIGIN). Use axes.c2p(x, y) to convert coordinates to screen points.
-- NumberLine: NumberLine(x_range=[min, max, step], length=9.0). Use .n2p(value) to get a point.
-- Rectangle: Rectangle(width=w, height=h) is fine for bars, containers, grids. RoundedRectangle(corner_radius=0.1) preferred for cards and panels.
-- When hand-building a coordinate plot, always draw axes first, then content on top.
+WHEN NARRATION MENTIONS MACHINE LEARNING INSIDE A STATS/CALC EXPLANATION:
+Show the math concept FIRST (the derivative, the distribution, the matrix), then label it with the ML context.
+A "gradient" is still a slope on a curve. Show the curve. Show the tangent. Label it "gradient."
+A "weight matrix" is still a matrix. Show fm_animate_matrix with the values.
+Don't skip the math to show abstract ML diagrams.
 
-=== WHAT TEXT IS ALLOWED ===
-- Actual mathematical values: 0.68 | 95% | n=30 | p < 0.05
-- Ultra-short axis labels: "x" | "f(x)" | "n" | "P(x)" (1-3 chars)
-- Chapter title cards via fm_animate_glow_reveal ONLY (hook/concept beats)
-- Formula lines via fm_formula (never raw Text for formulas)
+=== NEAR-ZERO TEXT RULE ===
+Audio already says the words. Your visual shows the REALITY.
+ONLY text allowed: actual math values (μ=52.3, σ=8.1, n=100), ultra-short labels (1-3 words), formula lines via fm_formula.
+If construct() has more than 2 Text() objects that aren't numbers or 1-3 word labels — replace with a visual.
 
-WRONG: Text("Most people misunderstand variance because they confuse it with standard deviation")
-RIGHT: fm_animate_bell_curve(self, label_text="Variance = spread", accent_color=BRAND_GOLD, duration=D)
+=== AVAILABLE FUNCTIONS (Math Unlocked library — use ONLY these) ===
+fm_animate_glow_reveal(self, text_str, accent_color=BRAND_GOLD, font_size=72, subtitle="", duration=D, position=[cx,cy,0])
+fm_animate_text_reveal(self, lines=[], colors=[], sizes=[], duration=D, position=[cx,cy,0])
+fm_formula(self, lines=[], font_size=60, color=BRAND_WHITE, duration=D, position=[cx,cy,0])
+fm_animate_bar_chart(self, values=[], names=[], colors=[], title_text="", duration=D, position=[cx,cy,0])
+fm_animate_line_chart(self, y_values=[], accent_color=BRAND_GREEN, x_labels=[], title_text="", duration=D, position=[cx,cy,0])
+fm_animate_scatter(self, points=[[x,y],...], accent_color=BRAND_GOLD, show_regression=False, x_label="x", y_label="y", duration=D, position=[cx,cy,0])
+fm_animate_bell_curve(self, label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+fm_animate_icon_grid(self, total=100, filled=20, label_text="", accent_color=BRAND_GREEN, cols=10, duration=D, position=[cx,cy,0])
+fm_animate_counter(self, start_val=0, end_val=N, label_text="", accent_color=BRAND_GOLD, prefix="", suffix="", duration=D, position=[cx,cy,0])
+fm_animate_single_value(self, value_str="42%", label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+fm_animate_comparison_bars(self, items=[["Label",value,COLOR],...], title_text="", duration=D, position=[cx,cy,0])
+fm_animate_probability_bar(self, outcomes=[["A",0.3,COLOR],...], label_text="", duration=D, position=[cx,cy,0])
+fm_animate_gauge(self, value=N, max_val=M, label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+fm_animate_donut(self, percentage=0.68, label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+fm_animate_number_line(self, value=N, min_val=A, max_val=B, label_text="", tick_labels=[], duration=D, position=[cx,cy,0])
+fm_animate_matrix(self, rows_data=[[...]], label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+fm_animate_vector(self, direction=[dx,dy], label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+fm_animate_data_table(self, headers=[], rows=[[...]], header_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+fm_animate_timeline(self, events=[], accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+fm_animate_waterfall(self, steps=[["Label",value,COLOR],...], duration=D, position=[cx,cy,0])
+fm_clamp_to_frame(*mobjects) — call before FadeIn when >1 group shares screen
 
-WRONG: Text("The gradient points in the direction of steepest ascent")
-RIGHT: fm_animate_vector(self, [0.6, 0.8], "gradient", accent_color=BRAND_GREEN, duration=D)
+Every fm_* function returns (collected_vgroup, main_mob). Always unpack as: result, _ = fm_*(self, ...)
+The collected_vgroup contains EVERYTHING added. FadeOut(result) removes all of it cleanly.
 
-If your construct() has more than 2 Text() objects that are not numbers or 1-3 character labels, you are writing captions. STOP. Replace them with a chart, distribution, vector, matrix, or formula visual.
+=== COLORS ===
+BRAND_GREEN="#38D996" positive, growth, correct, gain
+BRAND_GOLD="#FFD166" neutral highlight, key values, caution
+BRAND_RED="#FF4D4D" negative, danger, error, loss, warning
+BRAND_WHITE="#F5F7FA" text, formulas
+BRAND_GRAY="#8A94A6" secondary labels only — NEVER as main accent (invisible on dark bg)
+BRAND_PANEL="#0D1B2A" panel backgrounds
 
-=== HARD STRUCTURAL RULES ===
-- Your response for EACH chunk must be exactly: `from manim import *` on its own line, then exactly ONE class definition subclassing either MathScene (the normal case) or MathScene3D (only for a deliberate 3D establishing-shot tilt), with a `construct(self)` method, and nothing else at the top level.
-- MathScene and MathScene3D are already defined for you before your code runs. Do not redefine them, do not set self.camera.background_color yourself, do not draw your own grid or background.
-- The ONLY imports allowed in your own code are `manim`, `numpy`, `math` -- nothing else, ever.
-- Never reference: open, exec, eval, compile, __import__, os, sys, subprocess, socket, requests, shutil, globals, locals, vars, input, breakpoint, exit, quit.
-- MathTex, Tex, and SingleStringMathTex are BANNED -- they crash on GPT-generated LaTeX strings. Use fm_formula() for any formula or equation.
-- DecimalNumber is BANNED -- use always_redraw with plain Text() instead.
-- SVGMobject is BANNED -- use fm_icon() for icons.
-- MarkupText, Integer, Variable, BulletedList, Title, Paragraph, BarChart, ComplexPlane, PolarPlane are BANNED.
-- Triangle() takes NO vertex arguments -- use Polygon(p1, p2, p3) for custom triangles.
-- RoundedRectangle uses corner_radius, NOT radius.
-- Star's first positional argument is n (number of points), not a center point.
-- NEVER write inline subtraction inside wait(): compute your timing as named variables first.
-- NEVER use a bare _ to reference the previous line's result -- assign every mobject to a named variable.
-- ONE full-screen animate primitive per chunk -- fm_animate_bell_curve, fm_animate_vector, fm_animate_matrix etc. fill the frame on their own. Never call two of them in the same construct().
-- rotate() does NOT accept run_time as a kwarg -- run_time belongs in self.play().
-- point_at_angle() does NOT exist on Arc -- use arc.point_from_proportion(t).
-- NEVER call fm_* functions as self.fm_* -- they are module-level functions, not Scene methods. Correct: fm_animate_number_line(self, ...). Wrong: self.fm_animate_number_line(...). This will be caught by the safety checker and rejected before rendering.
-- NEVER call fm_animate_* without passing self as the FIRST positional argument. Correct: fm_animate_bar_chart(self, values, names, colors, duration). Wrong: fm_animate_bar_chart(values=values, names=names, colors=colors). The scene parameter is required and must be self.
-- NEVER wrap fm_animate_* calls inside self.play() -- they handle their own animation internally. Correct: fm_animate_comparison_bars(self, ...). Wrong: self.play(fm_animate_comparison_bars(self, ...)).
-- NEVER pass opacity= as a constructor kwarg to Dot, Circle, Line, Arrow or any geometry -- use .set_opacity() AFTER construction. Real failure: Dot([0,0,0], opacity=0.35) crashes. Correct: d = Dot([0,0,0]); d.set_opacity(0.35).
-- plot_line_graph IS BANNED -- it crashes with color kwarg conflicts. Use fm_animate_line_chart or fm_animate_line_chart_multi instead for any trend or curve. Never call axes.plot_line_graph() under any circumstance.
-- axes.get_graph() returns a ParametricFunction -- NEVER call .color= or pass color as a kwarg directly to get_graph(). Set color after: curve = axes.get_graph(func, x_range=[a,b]); curve.set_stroke(BRAND_GREEN, width=4).
-- axes.get_graph() does NOT accept x_range as a kwarg -- use axes.plot(func, x_range=[a,b]) instead. axes.get_graph(func) with no x_range is also valid.
-- set_stroke() does NOT accept dash_length or any dashing kwargs -- dashing is impossible via set_stroke(). Remove dash_length entirely.
-- set_style() does NOT accept dash_length_ratio or dash_offset -- these kwargs do not exist on VMobject in Manim Community v0.20.1. Remove them entirely.
-- interpolate_color() is BANNED -- it crashes when passed hex strings. Use ManimColor directly or pick a fixed color constant instead.
-- axes.get_area() accepts x_range and bounded_graph but NOT dash_length or any stroke dash kwargs -- dashing is impossible on a filled region.
-- DashedLine, DashedVMobject, Ellipse, scipy are BANNED.
-- fm_animate_scatter returns (dots_group, regression_line) -- a plain tuple. NEVER access .axes on the return value. NEVER do scatter.axes.c2p(...). If you need coordinate mapping after calling fm_animate_scatter, build your own Axes separately first.
-- fm_animate_bell_curve returns (curve, fill_region, label_mob) -- a plain tuple. NEVER call .get_center() or .move_to() on the return value. Do not chain methods on it.
-- fm_animate_timeline returns (dots, labels) -- a plain tuple. NEVER call .move_to() on the return value.
-- ALL fm_animate_* functions return tuples or None -- NEVER call .move_to(), .get_center(), .shift(), .next_to() or any Mobject method on their return values directly.
-- fm_animate_bell_curve mean_label and std_label must be strings or omitted -- NEVER pass None. If you want no label just omit the argument entirely.
-- fm_animate_number_line value must be a number -- NEVER pass None. If you want to show a range without a moving dot, use fm_animate_line_chart instead.
-- fm_animate_line_chart end_value_label can be None or a string -- both are safe.
-- fm_animate_icon_grid label_text can be "" for no label -- NEVER pass None.
-- fm_card_row() does NOT accept a buff= keyword argument. Its spacing is controlled by the spacing= parameter.
-- fm_two_cards() accepts an optional buff= kwarg that is silently ignored. Use spacing= to control card gap.
-- fm_animate_line_chart_multi series must be a list of dicts: [{"y_values": [...], "color": BRAND_GREEN, "label": "Series A"}, ...]. NOT a list of plain lists.
-- When iterating over a list of floats/numbers: for i, val in enumerate(my_list) -- NOT for i, (a, b) in enumerate(my_list) which assumes tuples.
-- NEVER reference a variable on the right side of its own assignment: bar = Rectangle(...).move_to([i, bar.height/2, 0]) is an UnboundLocalError because bar doesn't exist yet. Compute bar_h first, then set bar, then move it.
-- Arrow() uses start= and end= parameters, NOT left= or right=. Correct: Arrow(start=LEFT*0.5, end=RIGHT*0.5). Wrong: Arrow(left=LEFT*0.5, right=RIGHT*0.5). This will crash.
-- self.camera.frame does NOT exist on MathScene (which uses Cairo renderer). NEVER write self.camera.frame.animate.scale() or any camera.frame access. MathScene has no movable camera frame. To zoom in on something, use scene.add() and .scale() on the mobjects themselves.
-- LaggedStartMap is BANNED. It crashes when the animation class requires more than one argument (e.g. GrowFromEdge needs an edge, Write has arg limits). Always use LaggedStart with a list comprehension instead: LaggedStart(*[GrowFromEdge(b, DOWN) for b in bars], lag_ratio=0.2) or LaggedStart(*[Write(t) for t in texts], lag_ratio=0.3).
-- Axes axis_config dict must NOT contain include_tip. Pass include_tip separately or omit it entirely: Axes(x_range=[...], axis_config={"color": BRAND_GRAY, "stroke_opacity": 0.45, "include_numbers": False}). include_tip inside axis_config crashes in Manim Community v0.20.1.
-- NEVER pass stroke_color= as a kwarg to Line(). It crashes. Correct: line = Line(p1, p2); line.set_stroke(BRAND_GREEN, width=3). Wrong: Line(p1, p2, stroke_color=BRAND_GREEN). This will crash with AttributeError.
-- NEVER build a VMobject by passing a list with * spread: VMobject(*[Line(...) for ...]) crashes. Instead build individual Lines and add them to a VGroup: VGroup(*[Line(...) for ...]).
-- SCENE ISOLATION: Each construct() starts with a completely empty scene. You cannot reference or build on objects from a previous concept's construct(). Every construct must be fully self-contained — create everything it needs, animate it, done. No holdovers.
-- CANVAS CLEARING BETWEEN BEATS: When transitioning between major visual ideas within one concept chunk, CLEAR the canvas first: self.play(FadeOut(*self.mobjects), run_time=0.4). Then build the next visual fresh. This prevents accumulation of overlapping visuals. If you show a bar chart for beats 1-3, then want to show a scatter plot for beats 4-6, FADE OUT the bar chart first.
-- NEVER accumulate objects on screen without FadeOut — if you add an object with self.add() or self.play(FadeIn(...)), it stays visible for the rest of the construct unless you explicitly FadeOut it. This causes objects from beat 1 to still be visible on beat 10, creating the overlap mess.
-- mob.animate.set_height(h, stretch=True) CRASHES — stretch= is not supported in the animate proxy. Instead use mob.stretch_to_fit_height(h) directly (not through .animate). Same for set_width.
-- mob.animate.stretch(...) CRASHES for the same reason. Never use .animate.stretch().
-- fm_two_cards() does NOT accept title= kwarg. Correct signature: fm_two_cards(left_label, left_val, left_color, right_label, right_val, right_color).
-- fm_animate_bar_chart() returns EXACTLY 3 values: (chart_group, bars, val_labels). Always: chart_group, bars, labels = fm_animate_bar_chart(self, ...). Never unpack as 2 values.
-- CurvedArrow IS a valid Manim class. FunctionGraph IS valid. Use them freely.
-- OpenGLText does NOT exist in Cairo renderer. Use Text() only.
-- fm_glow_around() returns a VGroup -- it is safe to FadeIn but must be stored in a variable first. NEVER pass it inline as part of a multi-arg FadeIn call alongside other mobs in the same self.play() if any of those other mobs might be None.
-- GrowFromEdge() takes edge as the SECOND POSITIONAL argument, not a keyword. Correct: GrowFromEdge(mob, DOWN). Wrong: GrowFromEdge(mob, direction=DOWN). This will crash.
-- fm_animate_number_line tick_labels must be a list of strings/numbers or None -- NEVER pass True or False.
-- fm_formula() lines must be PLAIN TEXT ONLY -- no backslashes, curly braces, \varepsilon, \frac, subscript notation like X_{obs}. Write it as plain readable text: "X_obs = X_process + epsilon". fm_formula renders with Text() not LaTeX.
-- VGroup() only accepts VMobject instances -- NEVER pass a plain Python list or tuple. If fm_animate_line_chart returns (axes, line, dot), unpack it: axes, line, dot = fm_animate_line_chart(self, ...).
-- import random is ALLOWED in chunk code. Use it freely.
-- 16:9 FRAME AWARENESS: The frame is 16 units wide × 9 units tall (frame_width=14.22, frame_height=8.0). Never position objects beyond x=±6.5 or y=±3.8. Use fm_clamp_to_frame() for complex layouts.
-- DURATION RULE: ONE self.play() call or ONE fm_animate_* call per chunk. If your chunk has more than one self.play() call AND one fm_animate_* call, you are over-filling the chunk duration and it WILL drift. Pick one visual action per chunk.
+=== CRASH PREVENTION RULES (all from real crashes) ===
+NEVER MathTex, Tex, SingleStringMathTex → fm_formula() always
+NEVER DecimalNumber → always_redraw(lambda: Text(f"{val:.1f}", ...)) with ValueTracker
+NEVER BarChart, Axes, NumberLine, NumberPlane, SVGMobject, Rectangle, DashedLine, DashedVMobject, Ellipse, plot_line_graph
+NEVER opacity= in Line/Arc/Circle/Dot constructor → .set_stroke(opacity=...) after
+Triangle() takes NO vertex args → Polygon([p1],[p2],[p3]) for custom shapes
+Polygon: Polygon([0,1,0],[1,0,0],[-1,0,0]) NOT Polygon([[0,1,0],[1,0,0]])
+Star(n=5, outer_radius=0.5) — never coordinate as first arg
+RoundedRectangle uses corner_radius= NOT radius=
+GrowFromEdge(mob, DOWN) — GrowFromBottom does not exist
+Rate funcs: smooth, linear, ease_out_bounce — never bounce_out
+BRAND_* are hex strings → ManimColor(BRAND_GREEN) for interpolate_color()
+ValueTracker must be top-level statement BEFORE any always_redraw lambda
+Never index fm_* return values as card[0], result[2] etc.
+Never self.add() AND animate submobjects of same fm_* result separately
+fm_clamp_to_frame(*all_groups) before FadeIn when >1 group shares screen
+Always FadeOut everything at end of construct()
 
-=== BRAND PALETTE ===
-White: "#F5F7FA". Green (positive/growth): "#38D996". Red (warning/error): "#FF4D4D". Gold (neutral highlight): "#FFD166". Gray (secondary/de-emphasized): "#8A94A6". Panel/card bg: "#0D1B2A". Background: "#060F1A".
-Brand constants in scope: BRAND_WHITE, BRAND_GREEN, BRAND_RED, BRAND_GOLD, BRAND_GRAY, BRAND_PANEL, BRAND_BG, BRAND_NAVY. No others exist.
+=== STRUCTURE ===
+Exactly ONE class subclassing MathScene per chunk. Nothing outside the class.
+MathScene already defined — do not redefine. Do not set camera.background_color.
+construct(self) goes straight to content.
+Imports allowed: manim, numpy, math, random only.
 
-=== LIBRARY REFERENCE ===
-fm_animate_vector(scene, direction, label_text, accent_color, duration, origin, scale, show_components)
-  direction=[dx,dy]. Draws an Arrow from origin in that direction, labeled. show_components draws dashed x/y lines.
-
-fm_animate_matrix(scene, rows_data, label_text, accent_color, duration, position, cell_size, font_size)
-  rows_data=list of lists of strings/numbers. Draws bracket notation with cells fading in row by row.
-
-fm_animate_bell_curve(scene, label_text, accent_color, duration, position, show_std_regions, mean_label, std_label)
-  Draws a normal distribution curve with shaded 1-sigma region. show_std_regions=True by default.
-
-fm_animate_scatter(scene, points, label_text, accent_color, duration, position, show_regression, x_label, y_label)
-  points=list of (x,y) tuples. show_regression=True draws best-fit line in BRAND_RED.
-
-fm_animate_probability_bar(scene, outcomes, label_text, accent_color, duration, position)
-  outcomes=list of (label_str, probability_float). Bar heights = probability values 0-1.
-
-fm_animate_number_line(scene, value, min_val, max_val, label_text, accent_color, duration, position, line_length, tick_labels)
-  Animated dot moving to target value on a number line. tick_labels must be a list or None -- never True/False.
-
-fm_formula(scene, lines, font_size, color, duration, position)
-  lines: single string or list of strings. PLAIN TEXT ONLY -- no backslashes, no curly braces, no LaTeX syntax.
-  Write readable text: "x^2 + y^2 = r^2" or "P(A|B) = P(B|A) x P(A) / P(B)".
-  NEVER write LaTeX like "\varepsilon_{noise}" -- those render as literal characters.
-
-fm_animate_counter(scene, start_val, end_val, label_text, accent_color, prefix, suffix, duration, position, value_size, label_size)
-  prefix and suffix default to empty string (not "$"). Pass prefix="$" only if showing currency.
-
-fm_animate_data_table(scene, headers, rows, duration, header_color, accent_row, accent_color)
-  headers: list of strings. rows: list of lists of strings. accent_row: index to highlight (0-based) or None.
-  Use for comparison tables, experiment results, category breakdowns. Auto-fits to frame.
-
-fm_animate_bar_chart(scene, values, names, colors, duration, title_text)
-  Returns EXACTLY 3 values: (chart_group, bars, val_labels). ALWAYS unpack as: chart_group, bars, val_labels = fm_animate_bar_chart(...). Never unpack as 2 values.
-fm_animate_line_chart(scene, y_values, end_value_label, accent_color, x_labels, duration, title_text)
-  end_value_label: string label shown at the end dot. Pass None or "" for no label.
-fm_animate_line_chart_multi(scene, series, duration, title_text)
-  series MUST be: [{"y_values": [1,2,3], "color": BRAND_GREEN, "label": "A"}, {"y_values": [2,3,4], "color": BRAND_GOLD, "label": "B"}]
-  NOT a list of plain lists. Each dict MUST have "y_values" key.
-fm_animate_gauge(scene, value, max_val, label_text, accent_color, duration, position, radius)
-fm_animate_donut(scene, percentage, label_text, accent_color, duration, position)
-fm_animate_comparison_bars(scene, items, duration, title_text, show_net)
-fm_animate_glow_reveal(scene, text_str, accent_color, duration, font_size, subtitle, subtitle_color)
-fm_animate_text_reveal(scene, lines, colors, duration, sizes)
-fm_animate_icon_grid(scene, total, filled, label_text, accent_color, duration, cols, position, icon_radius)
-  label_text: use "" for no label. NEVER pass None.
-fm_animate_timeline(scene, events, accent_color, duration, show_index)
-fm_animate_single_value(scene, value_str, label_text, accent_color, duration, value_size, label_size, sublabel, sublabel_color)
-fm_animate_waterfall(scene, steps, duration)
-fm_animate_bullet_chart(scene, actual, target, range_low, range_high, label_text, accent_color, duration, position, bar_length)
-fm_animate_stacked_cards(scene, items, duration)
-fm_card(label_text, value_text, accent_color, panel_color, text_color, label_size, value_size, buff)
-fm_two_cards(left_label, left_val, left_color, right_label, right_val, right_color, ...)
-fm_card_row(items, panel_color, text_color, label_size, value_size, spacing)
-  items=[(label, value, color), ...]. Uses spacing= NOT buff= to control card gaps.
-fm_stacked_cards(items, ...)
-fm_concept_pills(labels, colors, panel_color, text_color, font_size, direction, spacing)
-fm_glow_around(mobject, color, n_layers) -- returns VGroup(glow_layers, original)
-fm_clamp_to_frame(*mobjects, margin_x, margin_y) -- call LAST before self.play()
-fm_icon(name, size, color) -- names: sigma, integral, pi_sym, infinity, gradient, neuron, matrix_sym, derivative, dollar, coin, house, person, clock, arrow_up, arrow_down, warning, checkmark, fire
-
-=== VISUAL VARIETY — STRICTLY ENFORCED ===
-Bell curve (fm_animate_bell_curve) must appear AT MOST once every 8 chunks. It is not the default for "uncertainty" or "spread" — those ideas have better visuals:
-- "Uncertainty" → fm_animate_number_line with a range band, or fm_animate_comparison_bars showing sample vs population
-- "Spread/variance" → fm_animate_scatter showing clustered vs dispersed data, or fm_animate_bar_chart showing distribution shape
-- "Sampling" → fm_animate_icon_grid (population with filled subset), or fm_animate_probability_bar
-- "Average/mean" → fm_animate_counter showing the computed value, or fm_animate_single_value
-- "Distribution shape" → fm_animate_line_chart with Axes showing the histogram shape — NOT always a bell curve
-
-Lollipop chart (fm_animate_bar_chart style 2) and standard bar chart must alternate — never two lollipop charts in a row. Use fm_animate_comparison_bars, fm_animate_waterfall, fm_animate_scatter, or fm_animate_matrix as alternatives.
-
-Every 4 consecutive content chunks must use a DIFFERENT primary visual type. Bell curve → lollipop → bell curve → lollipop is prohibited. Rotate through: scatter, number_line, probability_bar, counter, matrix, vector, comparison_bars, waterfall, timeline, formula, glow_reveal, icon_grid.
-
-The word "uncertainty" → NOT fm_animate_bell_curve. Use fm_animate_number_line or fm_animate_comparison_bars.
-The word "sample" → fm_animate_icon_grid showing filled vs unfilled dots.
-The word "spread" → fm_animate_scatter or fm_animate_probability_bar.
-The word "correlation" → fm_animate_scatter with show_regression=True.
-The word "mean/average/median" → fm_animate_counter or fm_animate_single_value with the computed value.
-The word "compare" → fm_animate_comparison_bars or fm_two_cards.
-The word "rate/denominator/per" → fm_formula showing the rate equation, then fm_animate_bar_chart.
-
-=== QUALITY BAR ===
-- Use Create() for curves, lines, axes. Use FadeIn() for cards, text, dots. Use GrowFromEdge() for bars. Use GrowFromCenter() for dots/icons. Use Write() for end labels.
-- Fill not just outline: bars, arcs, cards must be solid fills in brand colors.
-- Glow/emphasis: use fm_glow_around() or layer 2-3 concentric copies at decreasing opacity.
-- Real proportionality: if a shape represents a quantity, its size must scale with that quantity.
-- NEVER use BRAND_GRAY as the accent_color for bars, dots, or stems — they become invisible on the dark background. Use BRAND_GREEN, BRAND_GOLD, BRAND_RED, or colors from the _ACCENT_POOL.
-- Axes must be wide enough to show data spread — if data goes from 70 to 80, set x_range=[65, 85] not [0, 100].
-
-=== ESTABLISHING SHOTS ===
-Occasionally for a chapter-opening beat subclass MathScene3D so a hero object tilts in from an angle and settles flat. Build the hero as a single VGroup, give it a starting rotation (hero.rotate(60 * DEGREES, axis=UP)), then settle it with self.play(Rotate(hero, angle=-60 * DEGREES, axis=UP, run_time=...)). Use sparingly.
-
-Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_name": "Chunk0", "code": "from manim import *\\n\\nclass Chunk0(MathScene):\\n    def construct(self):\\n        ..."}, ...]}. The "code" field must be the complete, final Python source for that chunk as a single string with real newlines escaped as \\n."""
+Return JSON: {"chunks": [{"chunk_index": N, "class_name": "ChunkN", "code": "from manim import *\n\nclass ChunkN(MathScene):\n    def construct(self):\n        ..."}, ...]}"""
 
     def _build_user_prompt(batch_items):
         lines = []
         for global_idx, chunk in batch_items:
+            beat_parts = []
+            chunk_start = chunk["start_time"]
+            for b in chunk.get("beats", []):
+                b_rel = round(float(b.get("start_time", 0)) - chunk_start, 2)
+                b_end = round(float(b.get("end_time", 0)) - chunk_start, 2)
+                beat_parts.append(f"+{b_rel:.2f}s-{b_end:.2f}s: {b.get('text','').strip()}")
             duration = round(chunk["end_time"] - chunk["start_time"], 2)
-            is_concept = chunk.get("is_concept", False)
+            concept = chunk.get("concept_title", "")
+            concept_str = f", concept={concept!r}" if concept else ""
+            lines.append(
+                f'Chunk {global_idx}: duration={duration}s, class_name="Chunk{global_idx}"{concept_str}\n'
+                + "\n".join(f"  {bp}" for bp in beat_parts)
+            )
+        return f"Topic: {topic}\n\n" + "\n\n".join(lines)
 
-            if is_concept and len(chunk["beats"]) > 2:
-                concept_title = chunk.get("concept_title", "")
-                concept_start = chunk["start_time"]
-                beat_lines = []
-                for b in chunk["beats"]:
-                    b_start = round(float(b.get("start_time", 0)) - concept_start, 2)
-                    b_end   = round(float(b.get("end_time", 0)) - concept_start, 2)
-                    b_text  = b.get("text", "").strip()
-                    beat_lines.append(f"  +{b_start:.2f}s-{b_end:.2f}s: {b_text}")
-                beats_block = "\n".join(beat_lines)
-                lines.append(
-                    f'Chunk {global_idx} [CONCEPT: "{concept_title}"]:\n'
-                    f'  total_duration={duration}s, class_name="Chunk{global_idx}"\n'
-                    f'  Beat timestamps (seconds from chunk start):\n{beats_block}\n'
-                    f'  IMPORTANT: Use self.wait() between animations to sync with these timestamps.\n'
-                    f'  Build geometry that PERSISTS and EVOLVES across the full {duration}s — do not reset to blank between beats.'
-                )
-            else:
-                chunk_text = " ".join(b.get("text", "") for b in chunk["beats"])
-                lines.append(
-                    f'Chunk {global_idx}: duration={duration}s, class_name="Chunk{global_idx}", '
-                    f'narration="{chunk_text}"'
-                )
-        return f"Topic: {topic}\n\n" + "\n".join(lines)
-
-    def _gpt_call_for_prompt(user_prompt, max_tokens=4000):
+    def _gpt_call_for_prompt(user_prompt):
         def _do():
             return gpt4o_call(
                 client,
                 model="gpt-4.1",
-                max_tokens=max_tokens,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
@@ -6014,12 +4725,7 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
     if gap_indices:
         print(f"  ⏸  {len(gap_indices)} silence gap chunk(s) skip codegen entirely")
 
-    has_concepts = any(c.get("is_concept") for c in codegen_chunks)
-    if has_concepts:
-        chunk_batch_size = 1
-        print(f"  🧩 Concept mode: direct Manim codegen (Latest Architecture)")
-    else:
-        chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=4)
+    chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=4)
     n_batches = max(1, math.ceil(len(codegen_chunks) / chunk_batch_size)) if codegen_chunks else 0
     print(f"  🎬 Manim chunks: {n_batches} batch(es) of ~{chunk_batch_size} chunks each...")
 
@@ -6034,41 +4740,20 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
         print(f"  🎬 Manim chunk batch {batch_idx + 1}/{n_batches}: {len(batch)} chunks...")
 
         try:
-            is_concept_batch = any(batch[j].get("is_concept") for j in range(len(batch)))
-            if is_concept_batch:
-                for idx, chunk in zip(batch_global_indices, batch):
+            response = _gpt_call_for_prompt(_build_user_prompt(list(zip(batch_global_indices, batch))))
+            returned = _parse_chunks_from_raw(response.choices[0].message.content)
+            _slot_items(returned, batch_global_indices)
+            missing = [idx for idx in batch_global_indices if idx not in all_results]
+            if missing:
+                print(f"  ⚠ Batch {batch_idx + 1}: parser recovered {len(returned)}/{len(batch)} chunks, retrying {len(missing)} individually...")
+                for idx in missing:
+                    local_i = batch_global_indices.index(idx)
                     try:
-                        code = _generate_concept_chunk_code(client, topic, idx, chunk)
-                        if code:
-                            all_results[idx] = {"chunk_index": idx, "class_name": f"Chunk{idx}", "code": code}
-                        else:
-                            r = _gpt_call_for_prompt(_build_user_prompt([(idx, chunk)]), max_tokens=6000)
-                            recovered = _parse_chunks_from_raw(r.choices[0].message.content)
-                            _slot_items(recovered, [idx])
+                        r2 = _gpt_call_for_prompt(_build_user_prompt([(idx, batch[local_i])]))
+                        recovered = _parse_chunks_from_raw(r2.choices[0].message.content)
+                        _slot_items(recovered, [idx])
                     except Exception as e2:
-                        print(f"    ⚠ Manifest gen for Chunk{idx} failed ({e2}), falling back to direct codegen")
-                        try:
-                            r = _gpt_call_for_prompt(_build_user_prompt([(idx, chunk)]), max_tokens=6000)
-                            recovered = _parse_chunks_from_raw(r.choices[0].message.content)
-                            _slot_items(recovered, [idx])
-                        except Exception as e3:
-                            print(f"    ⚠ Fallback also failed for Chunk{idx}: {e3}")
-            else:
-                tokens = 4000
-                response = _gpt_call_for_prompt(_build_user_prompt(list(zip(batch_global_indices, batch))), max_tokens=tokens)
-                returned = _parse_chunks_from_raw(response.choices[0].message.content)
-                _slot_items(returned, batch_global_indices)
-                missing = [idx for idx in batch_global_indices if idx not in all_results]
-                if missing:
-                    print(f"  ⚠ Batch {batch_idx + 1}: parser recovered {len(returned)}/{len(batch)} chunks, retrying {len(missing)} individually...")
-                    for idx in missing:
-                        local_i = batch_global_indices.index(idx)
-                        try:
-                            r2 = _gpt_call_for_prompt(_build_user_prompt([(idx, batch[local_i])]))
-                            recovered = _parse_chunks_from_raw(r2.choices[0].message.content)
-                            _slot_items(recovered, [idx])
-                        except Exception as e2:
-                            print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
+                        print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
             n_done = sum(1 for idx in batch_global_indices if idx in all_results)
             print(f"  ✅ Manim chunk batch {batch_idx + 1} done: {n_done}/{len(batch)} chunks")
         except Exception as e:
@@ -6125,186 +4810,6 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
     ordered = [all_results.get(i) for i in range(len(chunks))]
     print(f"  ✅ {sum(1 for r in ordered if r)} / {len(chunks)} total manim chunks generated")
     return ordered
-
-
-MATH_UNLOCKED_INTRO_QUOTES = [
-    ("All models are wrong, but some are useful.", "George Box"),
-    ("Statistics is the grammar of science.", "Karl Pearson"),
-    ("It is easy to lie with statistics, but easier to lie without them.", "Frederick Mosteller"),
-    ("Probability is the most important concept in modern science.", "Bertrand Russell"),
-    ("The introduction of numbers as coordinates is an act of violence.", "Hermann Weyl"),
-    ("Mathematics is the art of giving the same name to different things.", "Henri Poincare"),
-    ("Pure mathematics is, in its way, the poetry of logical ideas.", "Albert Einstein"),
-    ("Algebra is the offer made by the devil to the mathematician.", "Michael Atiyah"),
-    ("A year spent in artificial intelligence is enough to make one believe in God.", "Alan Perlis"),
-    ("The question of whether a computer can think is no more interesting than whether a submarine can swim.", "Edsger Dijkstra"),
-    ("The purpose of computing is insight, not numbers.", "Richard Hamming"),
-    ("An algorithm must be seen to be believed.", "Donald Knuth"),
-    ("The calculus is the greatest aid we have to the appreciation of physical truth.", "W.B. Smith"),
-    ("Geometry is knowledge of the eternally existent.", "Pythagoras"),
-    ("Geometry is the archetype of the beauty of the world.", "Johannes Kepler"),
-    ("The shortest path between two truths in the real domain passes through the complex domain.", "Jacques Hadamard"),
-    ("Probability is common sense reduced to calculation.", "Pierre-Simon Laplace"),
-    ("Statistical thinking will one day be as necessary for efficient citizenship as the ability to read and write.", "H.G. Wells"),
-    ("The goal of statistics is to gain understanding from data.", "David Freedman"),
-    ("Any sufficiently advanced technology is indistinguishable from magic.", "Arthur C. Clarke"),
-    ("Intelligence is the ability to adapt to change.", "Stephen Hawking"),
-    ("The measure of intelligence is the ability to change.", "Albert Einstein"),
-    ("Beware of bugs in the above code; I have only proved it correct, not tried it.", "Donald Knuth"),
-    ("Simplicity is the ultimate sophistication.", "Leonardo da Vinci"),
-    ("First, solve the problem. Then, write the code.", "John Johnson"),
-    ("We can only see a short distance ahead, but we can see plenty there that needs to be done.", "Alan Turing"),
-    ("A computer would deserve to be called intelligent if it could deceive a human into believing it was human.", "Alan Turing"),
-    ("Mathematics is not about numbers, equations, or algorithms. It is about understanding.", "William Paul Thurston"),
-    ("The essence of mathematics lies in its freedom.", "Georg Cantor"),
-    ("The only way to learn mathematics is to do mathematics.", "Paul Halmos"),
-    ("A mathematician is a device for turning coffee into theorems.", "Paul Erdos"),
-    ("The moving power of mathematical invention is not reasoning but imagination.", "Augustus De Morgan"),
-    ("Small differences in initial conditions produce very great ones in the final phenomena.", "Henri Poincare"),
-    ("Space is not simply the background to events, it is a physical entity.", "Roger Penrose"),
-    ("If your experiment needs statistics, you ought to have done a better experiment.", "Ernest Rutherford"),
-    ("Do not worry about your difficulties in mathematics. I can assure you mine are still greater.", "Albert Einstein"),
-    ("Mathematics reveals its secrets only to those who approach it with pure love.", "Archimedes"),
-    ("In mathematics the art of asking questions is more valuable than solving problems.", "Georg Cantor"),
-    ("The brain is wider than the sky.", "Emily Dickinson"),
-    ("It has become appallingly obvious that our technology has exceeded our humanity.", "Albert Einstein"),
-    ("The question is not whether machines can think, but whether men do.", "B.F. Skinner"),
-    ("Learning is not attained by chance. It must be sought for with ardor and attended to with diligence.", "Abigail Adams"),
-    ("Mathematics is the language in which God has written the universe.", "Galileo Galilei"),
-    ("To ask the right question is harder than to answer it.", "Georg Cantor"),
-    ("Nature does not hurry, yet everything is accomplished.", "Lao Tzu"),
-    ("The theory of probabilities is at bottom nothing but common sense reduced to calculus.", "Pierre-Simon Laplace"),
-    ("What we cannot compute, we cannot understand.", "Richard Hamming"),
-    ("The computer was born to solve problems that did not exist before.", "Bill Gates"),
-    ("Imagination is more important than knowledge.", "Albert Einstein"),
-    ("If people do not believe that mathematics is simple, it is only because they do not realize how complicated life is.", "John von Neumann"),
-]
-
-
-def render_intro_clip(w: int = 1920, h: int = 1080, fps: int = 30,
-                      duration: float = 5.0) -> str:
-    import random as _random
-    quote_text, quote_author = _random.choice(MATH_UNLOCKED_INTRO_QUOTES)
-
-    _t_draw  = 1.2
-    _t_glow  = 0.5
-    _t_quote = 0.8
-    _t_fade  = 0.5
-    _t_hold  = max(duration - _t_draw - _t_glow - _t_quote - _t_fade, 0.8)
-
-    intro_code = f'''from manim import *
-import math
-
-BRAND_WHITE = "#F5F7FA"
-BRAND_GOLD  = "#FFD166"
-BRAND_PANEL = "#111A24"
-BRAND_BG    = "#0B1628"
-
-class MathUnlockedIntro(Scene):
-    def construct(self):
-        self.camera.background_color = BRAND_BG
-
-        p1 = [-1.4, 1.4, 0]
-        p2 = [1.4, 1.4, 0]
-        p3 = [0.0, -1.4, 0]
-        left_line  = Line(p1, p3, stroke_width=9).set_stroke(color=BRAND_GOLD, opacity=1.0)
-        right_line = Line(p2, p3, stroke_width=9).set_stroke(color=BRAND_GOLD, opacity=1.0)
-        top_line   = Line(p1, p2, stroke_width=9).set_stroke(color=BRAND_GOLD, opacity=1.0)
-        logo = VGroup(top_line, left_line, right_line)
-
-        glow_layers = VGroup()
-        for i in range(4, 0, -1):
-            gl = logo.copy()
-            gl.set_stroke(color=BRAND_GOLD, width=9 + i * 6,
-                          opacity=max(0.06 - i * 0.012, 0.01))
-            glow_layers.add(gl)
-        logo_group = VGroup(glow_layers, logo)
-        logo_group.move_to(ORIGIN + UP * 0.6)
-
-        raw_quote = {repr(quote_text)}
-        raw_author = {repr(quote_author)}
-        max_w = config.frame_width * 0.78
-
-        quote_mob = Text(
-            raw_quote, font_size=36, color=BRAND_WHITE,
-            weight=NORMAL, line_spacing=1.4,
-        )
-        if quote_mob.width > max_w:
-            quote_mob.scale_to_fit_width(max_w)
-
-        author_mob = Text(
-            "— " + raw_author, font_size=30, color=BRAND_GOLD,
-        )
-        if author_mob.width > max_w:
-            author_mob.scale_to_fit_width(max_w)
-
-        text_group = VGroup(quote_mob, author_mob).arrange(DOWN, buff=0.32)
-        text_group.move_to(ORIGIN + DOWN * 2.2)
-
-        t_draw   = {_t_draw}
-        t_glow   = {_t_glow}
-        t_quote  = {_t_quote}
-        t_hold   = {_t_hold}
-        t_fade   = {_t_fade}
-
-        self.play(
-            LaggedStart(
-                Create(top_line),
-                Create(left_line),
-                Create(right_line),
-                lag_ratio=0.25,
-            ),
-            run_time=t_draw, rate_func=smooth,
-        )
-        self.play(FadeIn(glow_layers), run_time=t_glow, rate_func=smooth)
-        self.play(
-            LaggedStart(
-                FadeIn(quote_mob, shift=UP * 0.18),
-                FadeIn(author_mob, shift=UP * 0.12),
-                lag_ratio=0.35,
-            ),
-            run_time=t_quote, rate_func=smooth,
-        )
-        self.wait(t_hold)
-        self.play(
-            FadeOut(VGroup(logo_group, text_group)),
-            run_time=t_fade, rate_func=smooth,
-        )
-'''
-
-    os.makedirs(MANIM_CHUNK_CACHE_DIR, exist_ok=True)
-    intro_path = os.path.join(MANIM_CHUNK_CACHE_DIR, "intro_clip.mp4")
-    script_path = os.path.join(MANIM_CHUNK_CACHE_DIR, "intro_scene.py")
-
-    with open(script_path, "w") as f:
-        f.write(intro_code)
-
-    cmd = [
-        "manim", "render", script_path, "MathUnlockedIntro",
-        "--format=mp4",
-        f"--resolution={w},{h}",
-        f"--frame_rate={fps}",
-        "--media_dir", MANIM_CHUNK_CACHE_DIR,
-        "--output_file", "intro_clip",
-        "-q", "h",
-    ]
-    result = subprocess.run(cmd, capture_output=True, timeout=120)
-    if result.returncode != 0:
-        print(f"  ⚠ Intro clip render failed: {result.stderr.decode(errors='replace')[-300:]}")
-        return None
-
-    for root, dirs, files in os.walk(MANIM_CHUNK_CACHE_DIR):
-        for fname in files:
-            if fname == "intro_clip.mp4" and root != MANIM_CHUNK_CACHE_DIR:
-                found = os.path.join(root, fname)
-                shutil.copy(found, intro_path)
-                return intro_path
-
-    if os.path.exists(intro_path):
-        return intro_path
-
-    print("  ⚠ Intro clip file not found after render")
-    return None
 
 
 def concat_manim_clips(clip_paths: list, output_path: str) -> str:
@@ -6453,5 +4958,5 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Math Unlocked (Manim renderer) on :{port} | Key: {'set' if OPENAI_API_KEY else 'MISSING'}")
+    print(f"🚀 Finance Explainer v2 (Manim renderer) on :{port} | Key: {'set' if OPENAI_API_KEY else 'MISSING'}")
     uvicorn.run(app, host="0.0.0.0", port=port)
