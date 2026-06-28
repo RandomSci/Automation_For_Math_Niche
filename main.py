@@ -3563,7 +3563,7 @@ def process_video(niche: str = "finance"):
     global current_job
     try:
         current_job["progress"] = 5
-        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Love_Niche/main/Audio_Voice/vaults_narration.mp3"
+        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Math_Niche/main/Audio_Voice/vaults_narration.mp3"
         audio_file  = "Audio_Voice/vaults_narration.mp3"
         output_file = "vaults_output.mp4"
         trans_file  = f"{os.path.splitext(audio_file)[0]}_transcription.json"
@@ -3992,6 +3992,10 @@ class FinanceDashboardScene(Scene):
         except Exception:
             pass
         return super().play(*args, **kwargs)
+
+
+MathScene = FinanceDashboardScene
+MathScene3D = FinanceDashboard3DScene if "FinanceDashboard3DScene" in dir() else FinanceDashboardScene
 
 
 class FinanceDashboard3DScene(ThreeDScene):
@@ -4596,7 +4600,14 @@ Always FadeOut everything at end of construct()
 Exactly ONE class subclassing MathScene per chunk. Nothing outside the class.
 MathScene already defined — do not redefine. Do not set camera.background_color.
 construct(self) goes straight to content.
-Imports allowed: manim, numpy, math, random only.
+Imports allowed: manim, numpy, math only. Do NOT import random — use numpy.random instead.
+
+DURATION RULE — CRITICAL:
+Each chunk has a duration shown in the user prompt as duration=Xs. Your construct() must run for EXACTLY that duration.
+Use the chunk duration as the fm_* function duration argument. For a 3.2s chunk: fm_animate_bar_chart(self, ..., duration=3.2).
+For very short chunks under 2s: ONE fm_* call only. No glow_reveal title. No extra self.wait().
+For chunks 2s+: optional glow_reveal for 1.5s then main visual for remaining time.
+Over-running by more than 45% causes the chunk to be rejected as a blank filler.
 
 Return JSON: {"chunks": [{"chunk_index": N, "class_name": "ChunkN", "code": "from manim import *\n\nclass ChunkN(MathScene):\n    def construct(self):\n        ..."}, ...]}"""
 
