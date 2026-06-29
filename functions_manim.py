@@ -1139,7 +1139,7 @@ def fm_animate_bullet_chart(scene, actual, target, range_low, range_high,
     hold_t = max(duration - anim_t, 0.05)
     scene.play(tracker.animate.set_value(actual_w), run_time=anim_t, rate_func=smooth)
     scene.wait(hold_t)
-    return tracker, bar, actual_lbl
+    return _sc.collected(), actual_lbl
 
 
 def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
@@ -1560,7 +1560,7 @@ def fm_animate_data_table(scene, headers, rows, duration=4.0,
     for c_idx, hdr in enumerate(headers):
         x = -total_w / 2 + c_idx * col_w + col_w / 2
         y =  total_h / 2 - row_h / 2
-        bg = Rectangle(width=col_w, height=row_h)
+        bg = RoundedRectangle(width=col_w, height=row_h, corner_radius=0.06)
         bg.set_fill(BRAND_PANEL, opacity=0.95)
         bg.set_stroke(header_color, width=1.5, opacity=0.55)
         bg.move_to([x, y, 0])
@@ -1580,7 +1580,7 @@ def fm_animate_data_table(scene, headers, rows, duration=4.0,
         for c_idx, val in enumerate(row):
             x = -total_w / 2 + c_idx * col_w + col_w / 2
             y =  total_h / 2 - (r_idx + 1) * row_h - row_h / 2
-            bg = Rectangle(width=col_w, height=row_h)
+            bg = RoundedRectangle(width=col_w, height=row_h, corner_radius=0.04)
             bg.set_fill(fill_c, opacity=fill_op)
             bg.set_stroke(BRAND_GRAY, width=0.8, opacity=0.30)
             bg.move_to([x, y, 0])
@@ -1893,7 +1893,8 @@ def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
         lbl_mob.move_to([position[0], peak_y + 0.52, 0])
 
     draw_t = max(min(duration * 0.55, 2.0), 0.1)
-    hold_t = max(duration - draw_t - 0.25, 0.05)
+    fade_t = min(0.3, duration * 0.08)
+    hold_t = max(duration - draw_t - 0.25 - fade_t, 0.05)
 
     scene.add(baseline, fill_region)
     if show_std_regions and len(std_markers) > 0:
@@ -1904,11 +1905,15 @@ def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
         scene.play(FadeIn(lbl_mob, shift=UP * 0.1), run_time=0.2)
         hold_t = max(hold_t - 0.2, 0.05)
     scene.wait(hold_t)
+    collected = _sc.collected()
     try:
-        scene.play(FadeOut(_sc.collected()), run_time=0.25)
+        scene._s.play(FadeOut(collected), run_time=fade_t)
     except Exception:
-        pass
-    return _sc.collected(), curve
+        try:
+            scene._s.remove(*collected)
+        except Exception:
+            pass
+    return collected, curve
 
 
 def fm_animate_scatter(scene, points=None, label_text="", accent_color=BRAND_GOLD,
@@ -1933,7 +1938,7 @@ def fm_animate_scatter(scene, points=None, label_text="", accent_color=BRAND_GOL
     points = clean_points
     if not points:
         scene.wait(duration)
-        return _sc.collected(), scene.get_all_added()
+        return _sc.collected(), VGroup()
 
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]
@@ -2006,7 +2011,7 @@ def fm_animate_scatter(scene, points=None, label_text="", accent_color=BRAND_GOL
     if reg_line is not None:
         scene.play(Create(reg_line), run_time=0.35, rate_func=smooth)
     scene.wait(hold_t)
-    return dots, reg_line
+    return _sc.collected(), dots
 
 
 def fm_animate_probability_bar(scene, outcomes, label_text="",
@@ -2158,4 +2163,525 @@ def fm_animate_number_line(scene, value, min_val, max_val, label_text="",
     scene.play(tracker.animate.set_value(target_x), run_time=move_t, rate_func=smooth)
     scene.play(FadeIn(val_lbl, shift=DOWN * 0.1), run_time=0.3)
     scene.wait(hold_t)
-    return dot, line_mob, lbl_mob
+    return _sc.collected(), dot
+
+def fm_animate_histogram(scene, values, bin_count=8, label_text="",
+                          accent_color=BRAND_GOLD, duration=4.0, position=None,
+                          x_label="", show_curve=False):
+    """Frequency histogram with optional overlaid normal curve.
+    values: raw data list OR list of (bin_label, count) tuples.
+    Returns (_sc.collected(), bars)."""
+    _sc = _Tracker(scene)
+    scene = _sc
+    if position is None:
+        position = ORIGIN
+    pos = _fmnp.array(position, dtype=float)
+
+    if values and isinstance(values[0], (list, tuple)):
+        bin_labels = [str(v[0]) for v in values]
+        counts = [float(v[1]) for v in values]
+    else:
+        raw = [float(v) for v in values]
+        if not raw:
+            scene.wait(duration)
+            return _sc.collected(), VGroup()
+        lo, hi = min(raw), max(raw)
+        span = max(hi - lo, 1.0)
+        bin_w = span / bin_count
+        counts = [0] * bin_count
+        for v in raw:
+            idx = min(int((v - lo) / bin_w), bin_count - 1)
+            counts[idx] += 1
+        bin_labels = [f"{lo + i * bin_w:.1f}" for i in range(bin_count)]
+
+    n = len(counts)
+    max_c = max(counts) if counts else 1
+    chart_h = 4.0
+    bar_w = min(1.4, 9.5 / max(n, 1))
+    total_w = n * bar_w
+    base_y = pos[1] - chart_h * 0.5
+
+    baseline = Line(
+        [pos[0] - total_w / 2 - 0.1, base_y, 0],
+        [pos[0] + total_w / 2 + 0.1, base_y, 0],
+    )
+    baseline.set_stroke(BRAND_GRAY, width=2.0, opacity=0.5)
+
+    bars = VGroup()
+    val_labels = VGroup()
+    cat_labels = VGroup()
+
+    for i, (cnt, lbl) in enumerate(zip(counts, bin_labels)):
+        x = pos[0] - total_w / 2 + i * bar_w + bar_w / 2
+        bh = max(cnt / max_c * chart_h, 0.06)
+        alpha = 0.55 + 0.45 * (cnt / max_c)
+        bar = RoundedRectangle(width=bar_w * 0.92, height=bh, corner_radius=0.04)
+        bar.set_fill(accent_color, opacity=alpha)
+        bar.set_stroke(accent_color, width=1.2, opacity=0.5)
+        bar.move_to([x, base_y + bh / 2, 0])
+        bars.add(bar)
+        if cnt > 0:
+            vl = Text(str(int(cnt)), font_size=20, color=accent_color, weight=BOLD)
+            vl.next_to(bar, UP, buff=0.08)
+            val_labels.add(vl)
+        cl = Text(lbl, font_size=16, color=BRAND_GRAY)
+        cl.next_to([x, base_y, 0], DOWN, buff=0.12)
+        cat_labels.add(cl)
+
+    overlay_curve = None
+    if show_curve:
+        n_pts = 80
+        xs_norm = [(-3.5 + i * 7.0 / (n_pts - 1)) for i in range(n_pts)]
+        ys_norm = [math.exp(-0.5 * x * x) for x in xs_norm]
+        peak_bar = max(cnt / max_c * chart_h for cnt in counts)
+        curve_pts = [
+            [pos[0] - total_w / 2 + (xn + 3.5) / 7.0 * total_w,
+             base_y + yn * peak_bar,
+             0]
+            for xn, yn in zip(xs_norm, ys_norm)
+        ]
+        overlay_curve = VMobject()
+        _fm_set_line_smooth(overlay_curve, curve_pts)
+        overlay_curve.set_stroke(BRAND_WHITE, width=3.0, opacity=0.7)
+
+    if label_text:
+        ttl = Text(label_text, font_size=30, color=accent_color, weight=BOLD)
+        ttl.move_to([pos[0], base_y + chart_h + 0.55, 0])
+        scene.add(ttl)
+
+    scene.add(baseline, cat_labels)
+    grow_t = max(min(duration * 0.65, duration - 0.4), 0.1)
+    hold_t = max(duration - grow_t - 0.3, 0.05)
+    scene.play(
+        LaggedStart(*[GrowFromEdge(b, DOWN) for b in bars], lag_ratio=0.08),
+        run_time=grow_t, rate_func=smooth,
+    )
+    if val_labels:
+        scene.play(LaggedStart(*[FadeIn(l) for l in val_labels], lag_ratio=0.06),
+                   run_time=0.3, rate_func=smooth)
+    if overlay_curve:
+        scene.play(Create(overlay_curve), run_time=0.4, rate_func=smooth)
+        hold_t = max(hold_t - 0.4, 0.05)
+    scene.wait(hold_t)
+    return _sc.collected(), bars
+
+
+def fm_animate_transform(scene, matrix_2x2, duration=5.0, position=None,
+                          label_text="", accent_color=BRAND_GREEN,
+                          show_det=True):
+    """2x2 linear transformation: animates a grid of dots and basis vectors
+    transforming under the given matrix. Shows determinant if show_det=True.
+    matrix_2x2: [[a,b],[c,d]]. Returns (_sc.collected(), arrows)."""
+    _sc = _Tracker(scene)
+    scene = _sc
+    if position is None:
+        position = ORIGIN
+    pos = _fmnp.array(position, dtype=float)
+
+    a, b, c, d = (float(matrix_2x2[0][0]), float(matrix_2x2[0][1]),
+                  float(matrix_2x2[1][0]), float(matrix_2x2[1][1]))
+    det = a * d - b * c
+
+    scale = 1.1
+    grid_range = 3
+    grid_dots = VGroup()
+    for gx in range(-grid_range, grid_range + 1):
+        for gy in range(-grid_range, grid_range + 1):
+            dot = Dot([pos[0] + gx * scale, pos[1] + gy * scale, 0],
+                      radius=0.05, color=BRAND_GRAY)
+            dot.set_fill(BRAND_GRAY, opacity=0.35)
+            grid_dots.add(dot)
+
+    e1_arrow = Arrow(
+        start=[pos[0], pos[1], 0],
+        end=[pos[0] + scale, pos[1], 0],
+        buff=0, stroke_width=5,
+        max_tip_length_to_length_ratio=0.2,
+        color=BRAND_GREEN,
+    )
+    e2_arrow = Arrow(
+        start=[pos[0], pos[1], 0],
+        end=[pos[0], pos[1] + scale, 0],
+        buff=0, stroke_width=5,
+        max_tip_length_to_length_ratio=0.2,
+        color=BRAND_RED,
+    )
+    e1_lbl = Text("î", font_size=28, color=BRAND_GREEN, weight=BOLD)
+    e2_lbl = Text("ĵ", font_size=28, color=BRAND_RED, weight=BOLD)
+    e1_lbl.next_to(e1_arrow, DOWN, buff=0.12)
+    e2_lbl.next_to(e2_arrow, LEFT, buff=0.12)
+
+    e1_arrow_t = Arrow(
+        start=[pos[0], pos[1], 0],
+        end=[pos[0] + a * scale, pos[1] + c * scale, 0],
+        buff=0, stroke_width=5,
+        max_tip_length_to_length_ratio=0.2,
+        color=BRAND_GREEN,
+    )
+    e2_arrow_t = Arrow(
+        start=[pos[0], pos[1], 0],
+        end=[pos[0] + b * scale, pos[1] + d * scale, 0],
+        buff=0, stroke_width=5,
+        max_tip_length_to_length_ratio=0.2,
+        color=BRAND_RED,
+    )
+
+    def _transform_dot(dot):
+        ox = (dot.get_center()[0] - pos[0]) / scale
+        oy = (dot.get_center()[1] - pos[1]) / scale
+        nx = a * ox + b * oy
+        ny = c * ox + d * oy
+        return [pos[0] + nx * scale, pos[1] + ny * scale, 0]
+
+    mat_lbl = Text(
+        f"[{a:.0f}  {b:.0f}]\n[{c:.0f}  {d:.0f}]",
+        font_size=32, color=BRAND_WHITE,
+    )
+    mat_lbl.move_to([pos[0] + config.frame_width * 0.32, pos[1] + 1.5, 0])
+
+    det_lbl = None
+    if show_det:
+        det_str = f"det = {det:.2f}" if det != int(det) else f"det = {int(det)}"
+        det_lbl = Text(det_str, font_size=28,
+                       color=BRAND_GREEN if abs(det) > 0.01 else BRAND_RED)
+        det_lbl.next_to(mat_lbl, DOWN, buff=0.3)
+
+    arrows = VGroup(e1_arrow, e2_arrow)
+    scene.add(grid_dots, arrows, e1_lbl, e2_lbl)
+    if label_text:
+        ttl = Text(label_text, font_size=30, color=accent_color, weight=BOLD)
+        ttl.move_to([pos[0], pos[1] + config.frame_height * 0.38, 0])
+        scene.add(ttl)
+    scene.add(mat_lbl)
+    if det_lbl:
+        scene.add(det_lbl)
+
+    setup_t = max(min(duration * 0.25, 1.0), 0.2)
+    transform_t = max(min(duration * 0.50, 2.5), 0.3)
+    hold_t = max(duration - setup_t - transform_t, 0.1)
+
+    scene.play(
+        FadeIn(grid_dots), FadeIn(arrows), FadeIn(e1_lbl), FadeIn(e2_lbl),
+        run_time=setup_t, rate_func=smooth,
+    )
+    anims = []
+    for dot in grid_dots:
+        anims.append(dot.animate.move_to(_transform_dot(dot)))
+    anims.append(Transform(e1_arrow, e1_arrow_t))
+    anims.append(Transform(e2_arrow, e2_arrow_t))
+    scene.play(*anims, run_time=transform_t, rate_func=smooth)
+    scene.wait(hold_t)
+    return _sc.collected(), arrows
+
+
+def fm_animate_derivative(scene, func=None, x_val=1.0, duration=5.0,
+                            position=None, label_text="", accent_color=BRAND_GREEN,
+                            x_range=(-3.0, 3.0), y_range=None):
+    """Plots a curve and animates a tangent line sweeping to x_val,
+    showing the derivative as the slope. func: Python callable f(x).
+    Defaults to x^2. Returns (_sc.collected(), tangent_line)."""
+    _sc = _Tracker(scene)
+    scene = _sc
+    if position is None:
+        position = ORIGIN
+    pos = _fmnp.array(position, dtype=float)
+
+    if func is None:
+        func = lambda x: x * x
+
+    x_lo, x_hi = x_range
+    n_pts = 80
+    xs = [x_lo + i * (x_hi - x_lo) / (n_pts - 1) for i in range(n_pts)]
+    try:
+        ys = [float(func(x)) for x in xs]
+    except Exception:
+        ys = [x * x for x in xs]
+
+    y_lo_data = min(ys)
+    y_hi_data = max(ys)
+    if y_range:
+        y_lo_data, y_hi_data = y_range
+    y_span = max(y_hi_data - y_lo_data, 1.0)
+
+    plot_w = 9.0
+    plot_h = 4.5
+
+    def _to_screen(x, y):
+        sx = pos[0] + (x - x_lo) / (x_hi - x_lo) * plot_w - plot_w / 2
+        sy = pos[1] + (y - y_lo_data) / y_span * plot_h - plot_h / 2
+        return [sx, sy, 0]
+
+    x_ax = Line(
+        [pos[0] - plot_w / 2, pos[1] - plot_h / 2, 0],
+        [pos[0] + plot_w / 2, pos[1] - plot_h / 2, 0],
+    )
+    x_ax.set_stroke(BRAND_GRAY, width=2.0, opacity=0.5)
+    y_ax = Line(
+        [pos[0] - plot_w / 2, pos[1] - plot_h / 2, 0],
+        [pos[0] - plot_w / 2, pos[1] + plot_h / 2, 0],
+    )
+    y_ax.set_stroke(BRAND_GRAY, width=2.0, opacity=0.5)
+
+    screen_pts = [_to_screen(x, y) for x, y in zip(xs, ys)]
+    curve = VMobject()
+    _fm_set_line_smooth(curve, screen_pts)
+    curve.set_stroke(accent_color, width=4.0, opacity=0.95)
+
+    dx = (x_hi - x_lo) / (n_pts - 1) * 0.5
+    try:
+        slope = (func(x_val + dx) - func(x_val - dx)) / (2 * dx)
+        y_at_x = func(x_val)
+    except Exception:
+        slope = 2 * x_val
+        y_at_x = x_val * x_val
+
+    contact_pt = _to_screen(x_val, y_at_x)
+    tang_len = plot_w * 0.35
+    norm = math.sqrt(1 + slope * slope * (plot_h / plot_w * (x_hi - x_lo) / y_span) ** 2)
+    sx_scale = tang_len / max(norm, 0.01)
+
+    screen_slope = slope * (plot_h / y_span) / (plot_w / (x_hi - x_lo))
+    tang_dx = tang_len * 0.5
+    tang_dy = screen_slope * tang_dx
+
+    tangent = Line(
+        [contact_pt[0] - tang_dx, contact_pt[1] - tang_dy, 0],
+        [contact_pt[0] + tang_dx, contact_pt[1] + tang_dy, 0],
+    )
+    tangent.set_stroke(BRAND_RED, width=3.5, opacity=0.95)
+
+    contact_dot = Dot(contact_pt, radius=0.14, color=BRAND_RED)
+    contact_dot.set_fill(BRAND_RED, opacity=1.0)
+
+    slope_str = f"slope = {slope:.2f}" if slope != int(slope) else f"slope = {int(slope)}"
+    slope_lbl = Text(slope_str, font_size=30, color=BRAND_RED, weight=BOLD)
+    slope_lbl.move_to([contact_pt[0] + 1.8, contact_pt[1] + 0.55, 0])
+    if slope_lbl.get_right()[0] > config.frame_width / 2 - 0.3:
+        slope_lbl.shift(LEFT * (slope_lbl.get_right()[0] - (config.frame_width / 2 - 0.3)))
+
+    if label_text:
+        ttl = Text(label_text, font_size=28, color=accent_color, weight=BOLD)
+        ttl.next_to([pos[0], pos[1] + plot_h / 2, 0], UP, buff=0.18)
+        scene.add(ttl)
+
+    scene.add(x_ax, y_ax)
+    draw_t = max(min(duration * 0.45, 1.8), 0.2)
+    tang_t = max(min(duration * 0.25, 1.0), 0.2)
+    hold_t = max(duration - draw_t - tang_t - 0.25, 0.05)
+
+    scene.play(Create(curve), run_time=draw_t, rate_func=smooth)
+    scene.play(
+        GrowFromCenter(contact_dot),
+        Create(tangent),
+        run_time=tang_t, rate_func=smooth,
+    )
+    scene.play(FadeIn(slope_lbl, shift=UP * 0.12), run_time=0.25)
+    scene.wait(hold_t)
+    return _sc.collected(), tangent
+
+
+def fm_animate_neural_network(scene, layer_sizes=None, duration=5.0,
+                                position=None, label_text="",
+                                accent_color=BRAND_GREEN,
+                                highlight_path=True):
+    """Draws a fully-connected neural network diagram and animates
+    a forward-pass highlight through it.
+    layer_sizes: list of ints e.g. [3,4,4,2]. Returns (_sc.collected(), nodes)."""
+    _sc = _Tracker(scene)
+    scene = _sc
+    if position is None:
+        position = ORIGIN
+    pos = _fmnp.array(position, dtype=float)
+    if layer_sizes is None:
+        layer_sizes = [3, 4, 3, 2]
+
+    layer_sizes = [max(1, min(int(s), 8)) for s in layer_sizes[:6]]
+    n_layers = len(layer_sizes)
+
+    h_gap = min(2.8, 10.0 / max(n_layers, 1))
+    v_gap = min(1.1, 5.5 / max(max(layer_sizes), 1))
+    node_r = min(0.22, v_gap * 0.38)
+
+    layer_xs = [pos[0] - (n_layers - 1) * h_gap / 2 + i * h_gap
+                for i in range(n_layers)]
+
+    all_nodes = []
+    for li, (lx, n_nodes) in enumerate(zip(layer_xs, layer_sizes)):
+        nodes_in_layer = []
+        for ni in range(n_nodes):
+            ny = pos[1] + (ni - (n_nodes - 1) / 2) * v_gap
+            node = Circle(radius=node_r)
+            if li == 0:
+                node.set_fill(BRAND_GOLD, opacity=0.85)
+                node.set_stroke(BRAND_GOLD, width=2.0)
+            elif li == n_layers - 1:
+                node.set_fill(BRAND_GREEN, opacity=0.85)
+                node.set_stroke(BRAND_GREEN, width=2.0)
+            else:
+                node.set_fill(BRAND_PANEL, opacity=0.95)
+                node.set_stroke(accent_color, width=2.0, opacity=0.7)
+            node.move_to([lx, ny, 0])
+            nodes_in_layer.append(node)
+        all_nodes.append(nodes_in_layer)
+
+    edges = VGroup()
+    for li in range(n_layers - 1):
+        for src in all_nodes[li]:
+            for dst in all_nodes[li + 1]:
+                e = Line(src.get_center(), dst.get_center())
+                e.set_stroke(BRAND_GRAY, width=0.8, opacity=0.22)
+                edges.add(e)
+
+    node_group = VGroup(*[n for layer in all_nodes for n in layer])
+
+    layer_names = ["Input"] + ["Hidden"] * (n_layers - 2) + ["Output"]
+    lbl_group = VGroup()
+    for lx, name in zip(layer_xs, layer_names):
+        bottom_y = pos[1] - max(layer_sizes) * v_gap / 2 - 0.38
+        lbl = Text(name, font_size=20, color=BRAND_GRAY)
+        lbl.move_to([lx, bottom_y, 0])
+        lbl_group.add(lbl)
+
+    if label_text:
+        ttl = Text(label_text, font_size=30, color=accent_color, weight=BOLD)
+        ttl.move_to([pos[0], pos[1] + max(layer_sizes) * v_gap / 2 + 0.55, 0])
+        scene.add(ttl)
+
+    scene.add(edges, node_group, lbl_group)
+
+    setup_t = max(min(duration * 0.35, 1.5), 0.2)
+    scene.play(
+        FadeIn(edges),
+        LaggedStart(*[GrowFromCenter(n) for n in node_group], lag_ratio=0.04),
+        FadeIn(lbl_group),
+        run_time=setup_t, rate_func=smooth,
+    )
+
+    if highlight_path and n_layers > 1:
+        path_t = max(min(duration * 0.50, 2.5), 0.3)
+        hold_t = max(duration - setup_t - path_t, 0.1)
+        chosen = [_fm_random.choice(layer) for layer in all_nodes]
+        pulses = []
+        for node in chosen:
+            glow = Circle(radius=node_r * 1.6)
+            glow.set_stroke(accent_color, width=3.0, opacity=0.8)
+            glow.set_fill(accent_color, opacity=0.18)
+            glow.move_to(node.get_center())
+            pulses.append(glow)
+        edge_highlights = []
+        for i in range(len(chosen) - 1):
+            he = Line(chosen[i].get_center(), chosen[i + 1].get_center())
+            he.set_stroke(accent_color, width=3.0, opacity=0.9)
+            edge_highlights.append(he)
+        scene.play(
+            LaggedStart(
+                *[FadeIn(p) for p in pulses],
+                *[Create(e) for e in edge_highlights],
+                lag_ratio=0.18,
+            ),
+            run_time=path_t, rate_func=smooth,
+        )
+        scene.wait(hold_t)
+    else:
+        scene.wait(max(duration - setup_t, 0.1))
+
+    return _sc.collected(), node_group
+
+
+def fm_animate_attention_heatmap(scene, matrix=None, row_labels=None,
+                                  col_labels=None, duration=4.5,
+                                  position=None, label_text="",
+                                  accent_color=BRAND_GREEN):
+    """Animated attention/correlation heatmap. matrix: 2D list of floats 0-1.
+    Cells animate in with color intensity proportional to value.
+    Returns (_sc.collected(), cell_group)."""
+    _sc = _Tracker(scene)
+    scene = _sc
+    if position is None:
+        position = ORIGIN
+    pos = _fmnp.array(position, dtype=float)
+
+    if matrix is None:
+        matrix = [
+            [0.9, 0.1, 0.05, 0.1],
+            [0.2, 0.7, 0.15, 0.2],
+            [0.1, 0.2, 0.85, 0.1],
+            [0.05, 0.1, 0.1, 0.9],
+        ]
+
+    n_rows = len(matrix)
+    n_cols = max(len(r) for r in matrix)
+
+    safe_w = config.frame_width * 0.72
+    safe_h = config.frame_height * 0.68
+    cell_w = min(safe_w / max(n_cols, 1), safe_h / max(n_rows, 1), 1.6)
+    cell_h = cell_w
+    total_w = cell_w * n_cols
+    total_h = cell_h * n_rows
+
+    if row_labels is None:
+        row_labels = [f"Q{i+1}" for i in range(n_rows)]
+    if col_labels is None:
+        col_labels = [f"K{j+1}" for j in range(n_cols)]
+
+    cells = VGroup()
+    val_texts = VGroup()
+    for ri, row in enumerate(matrix):
+        for ci, val in enumerate(row):
+            v = max(0.0, min(1.0, float(val)))
+            x = pos[0] - total_w / 2 + ci * cell_w + cell_w / 2
+            y = pos[1] + total_h / 2 - ri * cell_h - cell_h / 2
+
+            r_int = int(int(accent_color[1:3], 16) * v + 13 * (1 - v))
+            g_int = int(int(accent_color[3:5], 16) * v + 27 * (1 - v))
+            b_int = int(int(accent_color[5:7], 16) * v + 42 * (1 - v))
+            cell_color = f"#{r_int:02x}{g_int:02x}{b_int:02x}"
+
+            cell = RoundedRectangle(width=cell_w * 0.92, height=cell_h * 0.92,
+                                    corner_radius=0.06)
+            cell.set_fill(cell_color, opacity=min(0.3 + v * 0.7, 1.0))
+            cell.set_stroke(BRAND_GRAY, width=0.6, opacity=0.3)
+            cell.move_to([x, y, 0])
+            cells.add(cell)
+
+            if cell_w > 0.8:
+                vt = Text(f"{v:.2f}", font_size=max(int(cell_w * 14), 14),
+                          color=BRAND_WHITE if v > 0.4 else BRAND_GRAY)
+                vt.move_to([x, y, 0])
+                val_texts.add(vt)
+
+    row_lbl_grp = VGroup()
+    for ri, rl in enumerate(row_labels):
+        y = pos[1] + total_h / 2 - ri * cell_h - cell_h / 2
+        lbl = Text(str(rl), font_size=max(int(cell_w * 13), 14), color=BRAND_GRAY)
+        lbl.move_to([pos[0] - total_w / 2 - 0.4, y, 0])
+        row_lbl_grp.add(lbl)
+
+    col_lbl_grp = VGroup()
+    for ci, cl in enumerate(col_labels):
+        x = pos[0] - total_w / 2 + ci * cell_w + cell_w / 2
+        lbl = Text(str(cl), font_size=max(int(cell_w * 13), 14), color=BRAND_GRAY)
+        lbl.move_to([x, pos[1] + total_h / 2 + 0.35, 0])
+        col_lbl_grp.add(lbl)
+
+    if label_text:
+        ttl = Text(label_text, font_size=30, color=accent_color, weight=BOLD)
+        ttl.move_to([pos[0], pos[1] + total_h / 2 + 0.8, 0])
+        scene.add(ttl)
+
+    scene.add(row_lbl_grp, col_lbl_grp)
+
+    intro_t = max(min(duration * 0.15, 0.6), 0.1)
+    cell_t = max(min(duration * 0.60, 2.5), 0.3)
+    hold_t = max(duration - intro_t - cell_t - 0.25, 0.05)
+
+    scene.play(FadeIn(row_lbl_grp), FadeIn(col_lbl_grp), run_time=intro_t)
+    scene.play(
+        LaggedStart(*[FadeIn(c, scale=0.7) for c in cells], lag_ratio=0.04),
+        run_time=cell_t, rate_func=smooth,
+    )
+    if val_texts:
+        scene.play(LaggedStart(*[FadeIn(t) for t in val_texts], lag_ratio=0.03),
+                   run_time=0.25)
+    scene.wait(hold_t)
+    return _sc.collected(), cells

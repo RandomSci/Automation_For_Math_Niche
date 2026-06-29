@@ -3958,10 +3958,10 @@ def _finance_dashboard_background_group():
 
     ticker = VGroup()
     rng = _fdb_random.Random(7)
-    samples = ["+0.4%", "-0.2%", "1.07x", "+1.1%", "-0.6%", "0.98x", "+2.3%", "-1.4%"]
+    samples = ["∇", "∑", "∫", "π", "σ", "μ", "λ", "∞", "∂", "√", "∈", "∀", "∃", "⊂"]
     for i in range(14):
         val = rng.choice(samples)
-        label = Text(val, font_size=14, color="#8A94A6")
+        label = Text(val, font_size=18, color="#8A94A6")
         label.set_opacity(0.10)
         label.move_to([-fw / 2 + (i + 0.5) * (fw / 14), fh / 2 - 0.34, 0])
         ticker.add(label)
@@ -3974,7 +3974,7 @@ _FDB_MIN_WAIT = 0.04
 
 class FinanceDashboardScene(Scene):
     def setup(self):
-        self.camera.background_color = "#0B111A"
+        self.camera.background_color = "#060F1A"
         self.add(_finance_dashboard_background_group())
 
     def wait(self, duration=1.0, stop_condition=None, frozen_frame=None):
@@ -3995,11 +3995,10 @@ class FinanceDashboardScene(Scene):
 
 
 MathScene = FinanceDashboardScene
-MathScene3D = FinanceDashboard3DScene if "FinanceDashboard3DScene" in dir() else FinanceDashboardScene
 
 class FinanceDashboard3DScene(ThreeDScene):
     def setup(self):
-        self.camera.background_color = "#0B111A"
+        self.camera.background_color = "#060F1A"
         self.set_camera_orientation(phi=0 * DEGREES, theta=-90 * DEGREES)
         self.add_fixed_in_frame_mobjects(_finance_dashboard_background_group())
 
@@ -4019,6 +4018,8 @@ class FinanceDashboard3DScene(ThreeDScene):
             pass
         return super().play(*args, **kwargs)
 
+
+MathScene3D = FinanceDashboard3DScene
 
 ''' + _FUNCTIONS_MANIM_CODE + '\n\n'
 
@@ -4550,18 +4551,34 @@ Read the narration. Find the FIRST matching trigger. Use ONLY that visual. Do no
 11. Narration mentions SCATTER, CORRELATION, or RELATIONSHIP BETWEEN TWO VARIABLES?
     → fm_animate_scatter(self, points=[[x,y],...], show_regression=True)
 
-12. Narration mentions a DISTRIBUTION, BELL CURVE, NORMAL, or VARIANCE (ONLY these words)?
-    → fm_animate_bell_curve(self, label_text="label")
+12. Narration mentions a HISTOGRAM, FREQUENCY, or DATA SHAPE (how data is distributed across bins)?
+    → fm_animate_histogram(self, values=[(label,count),...], label_text="", show_curve=False)
 
-13. Narration mentions a RANGE, INTERVAL, or SINGLE VALUE ON A SCALE?
+13. Narration mentions a NEURAL NETWORK, PERCEPTRON, LAYERS, NODES, or FORWARD PASS?
+    → fm_animate_neural_network(self, layer_sizes=[3,4,4,2], label_text="", highlight_path=True)
+
+14. Narration mentions ATTENTION, HEATMAP, TOKEN-TO-TOKEN, or SELF-ATTENTION?
+    → fm_animate_attention_heatmap(self, matrix=[[...]], row_labels=["Q1",...], col_labels=["K1",...])
+
+15. Narration mentions a MATRIX TRANSFORMATION, DETERMINANT, EIGENVECTOR, or LINEAR MAP?
+    → fm_animate_transform(self, matrix_2x2=[[a,b],[c,d]], label_text="", show_det=True)
+
+16. Narration mentions DERIVATIVE, TANGENT LINE, SLOPE, or RATE OF CHANGE?
+    → fm_animate_derivative(self, func=lambda x: x**2, x_val=1.0, label_text="")
+
+17. Narration mentions a RANGE, INTERVAL, or SINGLE VALUE ON A SCALE?
     → fm_animate_number_line(self, value=N, min_val=A, max_val=B, label_text="")
 
-14. None of the above — first beat of a concept chunk?
+18. Narration ONLY mentions a DISTRIBUTION, BELL CURVE, NORMAL DISTRIBUTION, or VARIANCE as the SOLE topic (no other trigger matched)?
+    → fm_animate_bell_curve(self, label_text="label")
+
+19. None of the above — first beat of a concept chunk?
     → fm_animate_glow_reveal(self, text_str="Concept Name", font_size=72)
 
-CRITICAL: fm_animate_bell_curve is trigger 12 — use it ONLY when narration explicitly says distribution/normal/bell/variance/spread. NOT for general statistics concepts. NOT as a default.
-CRITICAL: fm_animate_number_line is trigger 13 — use it ONLY for a single value on a scale. NOT for anything else.
-DO NOT default to these two. Follow the decision tree from trigger 1.
+CRITICAL: fm_animate_bell_curve is trigger 18 — the LAST resort before glow_reveal. Use it ONLY when the narration is EXCLUSIVELY about a normal distribution shape. A video mentioning "statistics" does NOT trigger bell curve. "Average" does NOT trigger bell curve. "Data" does NOT trigger bell curve. Only the words: normal distribution, bell curve, Gaussian, or explicitly "the shape of this distribution."
+CRITICAL: fm_animate_histogram is NOT fm_animate_bell_curve. A histogram shows binned counts. Use it for "frequency", "how data is spread", "bins", "histogram."
+CRITICAL: fm_animate_number_line is trigger 17 — use it ONLY for a single value on a scale. NOT for anything else.
+DO NOT default to bell curve. Follow the decision tree from trigger 1 every time.
 
 === NEAR-ZERO TEXT RULE ===
 Audio already says the words. Your visual shows the REALITY.
@@ -4576,6 +4593,11 @@ fm_animate_bar_chart(self, values=[], names=[], colors=[], title_text="", durati
 fm_animate_line_chart(self, y_values=[], accent_color=BRAND_GREEN, x_labels=[], title_text="", duration=D, position=[cx,cy,0])
 fm_animate_scatter(self, points=[[x,y],...], accent_color=BRAND_GOLD, show_regression=False, x_label="x", y_label="y", duration=D, position=[cx,cy,0])
 fm_animate_bell_curve(self, label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
+fm_animate_histogram(self, values=[(label,count),...], bin_count=8, label_text="", accent_color=BRAND_GOLD, show_curve=False, duration=D, position=[cx,cy,0])
+fm_animate_transform(self, matrix_2x2=[[a,b],[c,d]], label_text="", accent_color=BRAND_GREEN, show_det=True, duration=D, position=[cx,cy,0])
+fm_animate_derivative(self, func=lambda x: x**2, x_val=1.0, label_text="", accent_color=BRAND_GREEN, x_range=(-3,3), duration=D, position=[cx,cy,0])
+fm_animate_neural_network(self, layer_sizes=[3,4,4,2], label_text="", accent_color=BRAND_GREEN, highlight_path=True, duration=D, position=[cx,cy,0])
+fm_animate_attention_heatmap(self, matrix=[[...]], row_labels=["Q1",...], col_labels=["K1",...], label_text="", accent_color=BRAND_GREEN, duration=D, position=[cx,cy,0])
 fm_animate_icon_grid(self, total=100, filled=20, label_text="", accent_color=BRAND_GREEN, cols=10, duration=D, position=[cx,cy,0])
 fm_animate_counter(self, start_val=0, end_val=N, label_text="", accent_color=BRAND_GOLD, prefix="", suffix="", duration=D, position=[cx,cy,0])
 fm_animate_single_value(self, value_str="42%", label_text="", accent_color=BRAND_GOLD, duration=D, position=[cx,cy,0])
@@ -4631,9 +4653,14 @@ Never self.add() AND animate submobjects of same fm_* result separately
 fm_clamp_to_frame(*all_groups) before FadeIn when >1 group shares screen
 Always FadeOut everything at end of construct().
 BETWEEN fm_* calls: always FadeOut the previous result before calling the next fm_* function.
+fm_animate_bell_curve already FadeOuts itself internally — do NOT call FadeOut on its result again.
+fm_animate_transform, fm_animate_derivative, fm_animate_neural_network, fm_animate_attention_heatmap: each takes self as first arg.
+fm_animate_histogram values can be raw data list OR [(label,count),...] tuples.
+fm_animate_derivative func= is a Python lambda — e.g. func=lambda x: x**2. Default is x^2 if omitted.
+fm_animate_neural_network layer_sizes max 6 layers, max 8 nodes per layer.
+fm_animate_attention_heatmap matrix values must be floats 0.0-1.0.
 WRONG: call fm_animate_bell_curve, then call fm_animate_bar_chart without FadeOut between them.
-RIGHT: call fm_animate_bell_curve, then self.play(FadeOut(result)), then call fm_animate_bar_chart.
-ONE fm_* call per construct() in most cases. Two is the maximum. Never three simultaneously.
+RIGHT: call fm_animate_bell_curve (it self-cleans), then call fm_animate_bar_chart directly.
 
 === STRUCTURE ===
 Exactly ONE class subclassing MathScene per chunk. Nothing outside the class.
