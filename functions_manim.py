@@ -329,7 +329,7 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
 
     scene.play(tracker.animate.set_value(end_f), run_time=anim_t, rate_func=smooth)
     scene.wait(hold_t)
-    return tracker, counter, lbl
+    return _sc.collected(), counter
 
 
 def fm_animate_bar_chart(scene, values, names, colors=None,
@@ -562,7 +562,7 @@ def fm_animate_gauge(scene, value, max_val, label_text,
     hold_t = max(duration - anim_t, 0.05)
     scene.play(tracker.animate.set_value(fill_ratio), run_time=anim_t, rate_func=smooth)
     scene.wait(hold_t)
-    return tracker, val_lbl, cat_lbl
+    return _sc.collected(), val_lbl
 
 
 def fm_animate_donut(scene, percentage, label_text,
@@ -1491,7 +1491,7 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
         run_time=grow_t * 0.35, rate_func=smooth,
     )
     scene.wait(hold_t)
-    return bars, val_labels
+    return _sc.collected(), bars
 
 
 def fm_animate_data_table(scene, headers, rows, duration=4.0,
