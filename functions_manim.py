@@ -608,7 +608,7 @@ def fm_animate_donut(scene, percentage, label_text,
     hold_t = max(duration - anim_t, 0.05)
     scene.play(tracker.animate.set_value(fill_angle), run_time=anim_t, rate_func=smooth)
     scene.wait(hold_t)
-    return tracker, pct_lbl, cat_lbl
+    return _sc.collected(), pct_lbl
 
 
 def fm_animate_line_chart(scene, y_values, end_value_label=None,
@@ -1798,7 +1798,7 @@ def fm_animate_matrix(scene, rows_data, label_text="", accent_color=BRAND_GOLD,
 
 def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
                            duration=4.0, position=None, show_std_regions=False,
-                           mean_label="μ", std_label="σ", skew=None, skewed=None):
+                           skew=None, skewed=None):
     _sc = _Tracker(scene)
     scene = _sc
     if position is None:
