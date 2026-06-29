@@ -1078,11 +1078,41 @@ VISUAL_SUBJECT (icon drawing system): if this beat CLEARLY evokes one of these
 concepts, set visual_subject to it -- the renderer draws it as line-art.
 Options: "none"|"uptrend"|"downtrend"|"coin_stack"|"clock"|"percent"|"scale".
 Be CONSERVATIVE -- most beats should be "none". Only set when the beat is
-genuinely about that concept (e.g. "uptrend" for beats about growth/gains,
-"downtrend" for losses/declines, "coin_stack" for savings/wealth/money itself,
-"clock" for time-value-of-money/waiting/compounding over time, "percent" for
-beats centrally about a rate/percentage, "scale" for risk/reward tradeoffs or
-weighing two options). Never force a match.
+genuinely about that concept. Never force a match.
+
+VISUAL_HINT (critical -- this drives the entire animation quality):
+You are the visual director. For EVERY beat you must choose the best animation and describe it concretely. This is the most important field.
+
+visual_hint options:
+- "counter" — a number counting up or a single key statistic hero number
+- "bar_chart" — comparing 3+ values by category  
+- "comparison" — exactly 2 values side by side
+- "icon_grid" — N of M items filled (populations, samples, percentages as dots)
+- "formula" — an equation or mathematical relationship
+- "timeline" — a sequence of steps or events in order
+- "scatter" — correlation between two variables, dots on a plane
+- "histogram" — frequency distribution, binned counts
+- "neural_network" — nodes and layers diagram
+- "attention_heatmap" — grid of values, token-to-token attention
+- "vector" — an arrow showing direction or transformation
+- "matrix" — a grid of numbers, transformation
+- "glow_reveal" — concept word/phrase reveal, use when audio carries the meaning
+- "custom" — something none of the above captures; describe it in visual_note
+
+DEDUPLICATION LAW — you see ALL beats at once, so enforce this:
+- Never use the same visual_hint more than 2 times in any 8-beat window
+- "glow_reveal" max 3 times per full video
+- "counter" max 4 times per full video  
+- Never use "custom" for something an existing hint covers
+- Vary aggressively — if you just used "bar_chart", reach for "comparison" or "icon_grid" next
+
+visual_note: ONE concrete sentence describing exactly what to animate.
+- BAD: "show the concept visually"
+- BAD: "animate a chart"  
+- GOOD: "bar chart with 5 income brackets <20k/20-40k/40-60k/60-80k/>80k, bar heights 13/22/18/24/23, gold color"
+- GOOD: "icon grid 20 of 100 dots filled green on navy, label 'Sample' below"
+- GOOD: "custom: two RoundedRectangles side by side labeled 'Before' and 'After', numbers animating from 0 to 847 and 0 to 1203"
+- For "custom": describe primitives (RoundedRectangle, Circle, Line, VGroup, Text), colors (BRAND_GOLD, BRAND_GREEN, BRAND_RED), and motion (FadeIn, Create, animate.set_value)
 
 Return ONLY valid JSON:
 {{
@@ -1101,7 +1131,9 @@ Return ONLY valid JSON:
       "data_label": "RETIREMENT SAVINGS",
       "data_direction": "up",
       "compare_value": null,
-      "visual_subject": "none|uptrend|downtrend|coin_stack|clock|percent|scale"
+      "visual_subject": "none|uptrend|downtrend|coin_stack|clock|percent|scale",
+      "visual_hint": "counter|bar_chart|comparison|icon_grid|formula|timeline|scatter|histogram|neural_network|attention_heatmap|vector|matrix|glow_reveal|custom",
+      "visual_note": "one sentence describing exactly what to show — be specific and visual, e.g. 'bar chart with 5 income brackets, tallest bar highlighted gold' or 'icon grid 20 of 100 dots filled showing sample size' or 'custom: 3x3 grid of RoundedRectangles fading in numbers to show a matrix'"
     }}
   ]
 }}"""
@@ -4548,45 +4580,37 @@ If bars are gray in your output, you have failed the emotional impact requiremen
 The actual readable content of a beat -- its main text, its card's fill, its box's stroke -- must ALWAYS render at full or near-full opacity (fill_opacity 1.0, stroke_opacity 1.0, panel fill_opacity 0.85-1.0) in its settled hold state. A real, observed failure: beats came out as a hollow, washed-out haze instead of crisp readable content -- this happens when low-opacity values meant for a glow/depth ACCENT get applied to the core content itself instead of to separate extra copies layered behind it. Glow rings (fm_animate_glow_reveal), depth layers (fm_glow_around), and any "duplicate the shape at decreasing alpha" technique are ADDITIONAL elements that sit behind or around an already fully-opaque core -- never a substitute for one, never applied to the core's own fill/stroke. If you are tempted to lower a Text() or card's own opacity for a "softer" look, do not -- add a separate glow/ring layer behind it instead and leave the primary content itself at full opacity.
 
 
-=== LAW: ONE fm_animate_* CALL PER CHUNK, ZERO EXCEPTIONS ===
+=== VISUAL DIRECTIVE — READ THIS FIRST ===
 
-Every fm_animate_* function (fm_animate_counter, fm_animate_gauge, fm_animate_donut, fm_animate_bar_chart, fm_animate_comparison_bars, fm_animate_line_chart, fm_animate_waterfall, fm_animate_icon_grid, fm_animate_single_value, fm_animate_glow_reveal, fm_animate_timeline, fm_animate_scatter, fm_animate_bell_curve, fm_animate_text_reveal, fm_animate_probability_bar, fm_animate_matrix, fm_animate_vector, fm_animate_neural_network, fm_animate_attention_heatmap, fm_animate_histogram, fm_animate_transform, fm_animate_derivative) takes the ENTIRE chunk duration. You CANNOT call two of them in one construct(). The second call has no time budget left — it will overlap the first visually and the timing will be wrong.
+Each chunk includes a visual_hint and visual_note chosen by the video producer who has seen the full script. These are your PRIMARY instructions for what to animate.
 
-CONFIRMED REAL FAILURES:
-- fm_animate_icon_grid(...) followed by fm_animate_single_value(...) → both at ORIGIN, unreadable stack
-- fm_animate_donut(...) followed by fm_animate_bar_chart(...) → donut spinning over bars
-- fm_animate_counter(...) followed by fm_two_cards(...) → counter number floating over cards
+visual_hint → visual_note → build that. Do not re-derive a visual from the narration text if visual_hint and visual_note are provided.
 
-If two values need to appear together: use fm_animate_comparison_bars or fm_two_cards in ONE call.
-If two concepts need to appear together: use fm_concept_pills in ONE call.
-ONE call. Always. No exceptions.
+visual_hint values and what they mean:
+- "counter" → fm_animate_counter or fm_animate_single_value. visual_note tells you the number and label.
+- "bar_chart" → fm_animate_bar_chart. visual_note gives you values, names, colors.
+- "comparison" → fm_animate_comparison_bars or fm_two_cards. visual_note gives you the two items.
+- "icon_grid" → fm_animate_icon_grid. visual_note gives you total, filled count, label.
+- "formula" → fm_formula. visual_note gives you the equation lines as ASCII text.
+- "timeline" → fm_animate_timeline. visual_note gives you the steps.
+- "scatter" → fm_animate_scatter. visual_note describes the data shape.
+- "histogram" → fm_animate_histogram. visual_note gives you bin labels and counts.
+- "neural_network" → fm_animate_neural_network. visual_note gives you layer sizes.
+- "attention_heatmap" → fm_animate_attention_heatmap. visual_note gives you matrix and labels.
+- "vector" → fm_animate_vector. visual_note gives you direction and label.
+- "matrix" → fm_animate_matrix. visual_note gives you the rows.
+- "glow_reveal" → fm_animate_glow_reveal. visual_note gives you the text.
+- "custom" → Write raw Manim code from scratch. visual_note describes the exact primitives, layout, colors, and motion. This is your creative space — build something specific and beautiful that no template could produce.
 
-=== MANDATORY VISUAL DECISION TREE — follow in order, stop at first match ===
+ONE fm_animate_* CALL PER CHUNK: every fm_animate_* function consumes the full chunk duration internally. Calling two stacks them at ORIGIN and produces an unreadable overlap. If two values belong together, use fm_animate_comparison_bars or fm_two_cards in a SINGLE call. One visual per chunk, always.
 
-Read the narration. Find the FIRST matching trigger. Use ONLY that visual.
+CONFIRMED OVERLAP FAILURES:
+- fm_animate_icon_grid + fm_animate_single_value → both at ORIGIN, unreadable
+- fm_animate_donut + fm_animate_bar_chart → donut spinning over bars
+- fm_animate_counter + fm_two_cards → counter floating over cards
 
-1. Narration compares TWO OR MORE values? → fm_animate_comparison_bars(self, items=[["Label1",val1,COLOR],...])
-2. Narration mentions PERCENTAGE, PROPORTION, or "X out of Y"? → fm_animate_donut OR fm_animate_gauge
-3. Narration mentions COUNT of PEOPLE, ITEMS, POPULATION being SAMPLED? → fm_animate_icon_grid(self, total=100, filled=20, label_text="")
-4. Narration mentions FORMULA, EQUATION, or CALCULATION? → fm_formula(self, lines=["formula"], font_size=60)
-5. Narration mentions TREND, GROWTH, DECLINE, or values CHANGING OVER TIME? → fm_animate_line_chart
-6. Narration mentions a NUMBER COUNTING UP or single KEY STATISTIC? → fm_animate_counter OR fm_animate_single_value
-7. Narration mentions PROBABILITY, LIKELIHOOD, or OUTCOMES with probabilities? → fm_animate_probability_bar
-8. Narration mentions MATRIX, TABLE, or GRID OF VALUES? → fm_animate_matrix OR fm_animate_data_table
-9. Narration mentions VECTOR, DIRECTION, or ARROW? → fm_animate_vector
-10. Narration mentions STEPS IN A PROCESS or SEQUENCE? → fm_animate_timeline
-11. Narration mentions SCATTER, CORRELATION, or RELATIONSHIP between two variables? → fm_animate_scatter(self, points=[[x,y],...], show_regression=True)
-12. Narration mentions HISTOGRAM, FREQUENCY, or DATA SHAPE across bins? → fm_animate_histogram
-13. Narration mentions NEURAL NETWORK, PERCEPTRON, LAYERS, NODES, FORWARD PASS? → fm_animate_neural_network
-14. Narration mentions ATTENTION, HEATMAP, TOKEN-TO-TOKEN, SELF-ATTENTION? → fm_animate_attention_heatmap
-15. Narration mentions MATRIX TRANSFORMATION, DETERMINANT, EIGENVECTOR, LINEAR MAP? → fm_animate_transform
-16. Narration mentions DERIVATIVE, TANGENT LINE, SLOPE, RATE OF CHANGE? → fm_animate_derivative
-17. Narration mentions RANGE, INTERVAL, or SINGLE VALUE ON A SCALE? → fm_animate_number_line
-18. NOTHING ABOVE MATCHES → fm_animate_glow_reveal(self, text_str="Key Concept", font_size=72)
-
-BELL CURVE IS BANNED. fm_animate_bell_curve is REMOVED from the decision tree. Do NOT use it under any circumstances. It causes visual confusion and crashes. If the narration mentions "normal distribution" or "bell curve", use fm_animate_histogram or fm_animate_glow_reveal instead. There is no trigger that activates fm_animate_bell_curve — it does not exist as an option.
-CRITICAL: fm_animate_histogram ≠ fm_animate_bell_curve. Histogram = binned counts. Use for "frequency", "bins", "how data is spread".
-CRITICAL: fm_formula lines must use ONLY standard ASCII characters that Text() can render. Do NOT use Unicode symbols like Σ, σ, μ, ∑, π, ∂, ∇ in fm_formula — they render as black boxes. Write them out: "sum" not "Σ", "sigma" not "σ", "mu" not "μ".
+BELL CURVE (fm_animate_bell_curve) IS BANNED — do not use it under any circumstance.
+fm_formula lines must use ONLY ASCII — no Unicode Σ σ μ ∑ π ∂ ∇. Write "sum", "sigma", "mu" instead.
 
 === NEAR-ZERO TEXT RULE — THE MOST IMPORTANT INSTRUCTION ===
 The audio narration speaks ALL the words. Your visual's ONLY job is to show what those words MEAN — never to repeat them.
@@ -4870,8 +4894,26 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
             duration = round(chunk["end_time"] - chunk["start_time"], 2)
             concept = chunk.get("concept_title", "")
             concept_str = f", concept={concept!r}" if concept else ""
+
+            # Pull visual_hint and visual_note from beats (use first non-empty one)
+            visual_hint = ""
+            visual_note = ""
+            for b in chunk.get("beats", []):
+                vh = b.get("visual_hint", "")
+                vn = b.get("visual_note", "")
+                if vh and vh not in ("", "none"):
+                    visual_hint = vh
+                    visual_note = vn
+                    break
+
+            visual_str = ""
+            if visual_hint:
+                visual_str = f"\n  VISUAL: {visual_hint}"
+                if visual_note:
+                    visual_str += f"\n  NOTE: {visual_note}"
+
             lines.append(
-                f'Chunk {global_idx}: duration={duration}s, class_name="Chunk{global_idx}"{concept_str}\n'
+                f'Chunk {global_idx}: duration={duration}s, class_name="Chunk{global_idx}"{concept_str}{visual_str}\n'
                 + "\n".join(f"  {bp}" for bp in beat_parts)
             )
         return f"Topic: {topic}\n\n" + "\n\n".join(lines)
@@ -4880,7 +4922,7 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
         def _do():
             return gpt4o_call(
                 client,
-                model="gpt-4.1",
+                model="gpt-5.5",
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
