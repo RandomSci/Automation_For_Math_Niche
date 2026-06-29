@@ -114,9 +114,12 @@ def fm_glow_around(mobject, color=None, n_layers=3):
 
 
 def fm_concept_pills(labels, colors=None, panel_color=BRAND_PANEL, text_color=None,
-                      font_size=44, direction=None, spacing=0.4):
+                      font_size=44, direction=None, spacing=0.4, accent_color=None):
     if colors is None:
-        colors = [BRAND_GOLD, BRAND_GREEN, BRAND_RED, BRAND_WHITE]
+        if accent_color is not None:
+            colors = [accent_color] * 4
+        else:
+            colors = [BRAND_GOLD, BRAND_GREEN, BRAND_RED, BRAND_WHITE]
     if text_color is None:
         text_color = BRAND_WHITE
     if direction is None:
@@ -284,7 +287,6 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
     if position is None:
         position = ORIGIN
     style = _style if _style is not None else _fm_style(scene, 3)
-    lbl = None
 
     tracker = ValueTracker(float(start_val))
     end_f   = float(end_val)
@@ -327,7 +329,7 @@ def fm_animate_counter(scene, start_val, end_val, label_text,
 
     scene.play(tracker.animate.set_value(end_f), run_time=anim_t, rate_func=smooth)
     scene.wait(hold_t)
-    return _sc.collected(), counter
+    return tracker, counter, lbl
 
 
 def fm_animate_bar_chart(scene, values, names, colors=None,
@@ -560,7 +562,7 @@ def fm_animate_gauge(scene, value, max_val, label_text,
     hold_t = max(duration - anim_t, 0.05)
     scene.play(tracker.animate.set_value(fill_ratio), run_time=anim_t, rate_func=smooth)
     scene.wait(hold_t)
-    return _sc.collected(), val_lbl
+    return tracker, val_lbl, cat_lbl
 
 
 def fm_animate_donut(scene, percentage, label_text,
@@ -606,7 +608,7 @@ def fm_animate_donut(scene, percentage, label_text,
     hold_t = max(duration - anim_t, 0.05)
     scene.play(tracker.animate.set_value(fill_angle), run_time=anim_t, rate_func=smooth)
     scene.wait(hold_t)
-    return _sc.collected(), pct_lbl
+    return tracker, pct_lbl, cat_lbl
 
 
 def fm_animate_line_chart(scene, y_values, end_value_label=None,
@@ -1153,7 +1155,6 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
     if position is None:
         position = ORIGIN
     pos = np.array(position) if not isinstance(position, np.ndarray) else position
-    style = _style if _style is not None else _fm_style(scene, 3)
 
     safe_w = config.frame_width * 0.84
     text = Text(text_str, font_size=font_size, color=BRAND_WHITE, weight=BOLD)
@@ -1170,61 +1171,22 @@ def fm_animate_glow_reveal(scene, text_str, accent_color=BRAND_WHITE,
     intro_t = max(min(duration * 0.38, 1.3), 0.15)
     hold_t  = max(duration - intro_t - (0.28 if subtitle else 0), 0.05)
 
-    if style == 0:
-        rings = VGroup()
-        for i in range(5):
-            r = Circle(radius=0.5 + i * 0.55)
-            r.set_stroke(accent_color, width=max(2.5 - i * 0.4, 0.4),
-                         opacity=max(0.32 - i * 0.055, 0.03))
-            r.move_to(text.get_center())
-            rings.add(r)
-        scene.play(
-            FadeIn(text, scale=0.88),
-            LaggedStart(*[Create(r) for r in rings], lag_ratio=0.12),
-            run_time=intro_t, rate_func=smooth,
-        )
-        if subtitle:
-            scene.play(FadeIn(sub, shift=UP * 0.12), run_time=0.28, rate_func=smooth)
-        scene.wait(hold_t)
-        return _sc.collected(), text
-
-    elif style == 1:
-        underline = Line(
-            text.get_left() + DOWN * 0.08,
-            text.get_right() + DOWN * 0.08,
-        )
-        underline.set_stroke(accent_color, width=3.5, opacity=0.85)
-        scene.play(
-            FadeIn(text, shift=UP * 0.35),
-            run_time=intro_t, rate_func=smooth,
-        )
-        scene.play(Create(underline), run_time=0.35, rate_func=smooth)
-        if subtitle:
-            scene.play(FadeIn(sub, shift=UP * 0.12), run_time=0.28, rate_func=smooth)
-        scene.wait(max(hold_t - 0.35, 0.05))
-        return _sc.collected(), text
-
-    else:
-        corner_marks = VGroup()
-        cx, cy, _ = text.get_center()
-        hw = text.width / 2 + 0.3
-        hh = text.height / 2 + 0.25
-        for sx, sy in [(-1, 1), (1, 1), (-1, -1), (1, -1)]:
-            bx, by = cx + sx * hw, cy + sy * hh
-            h = Line([bx, by, 0], [bx - sx * 0.55, by, 0])
-            v = Line([bx, by, 0], [bx, by - sy * 0.38, 0])
-            h.set_stroke(accent_color, width=3.0, opacity=0.8)
-            v.set_stroke(accent_color, width=3.0, opacity=0.8)
-            corner_marks.add(h, v)
-        scene.play(
-            FadeIn(text, scale=0.92),
-            LaggedStart(*[Create(m) for m in corner_marks], lag_ratio=0.08),
-            run_time=intro_t, rate_func=smooth,
-        )
-        if subtitle:
-            scene.play(FadeIn(sub, shift=UP * 0.12), run_time=0.28, rate_func=smooth)
-        scene.wait(hold_t)
-        return _sc.collected(), text
+    rings = VGroup()
+    for i in range(5):
+        r = Circle(radius=0.5 + i * 0.55)
+        r.set_stroke(accent_color, width=max(2.5 - i * 0.4, 0.4),
+                     opacity=max(0.32 - i * 0.055, 0.03))
+        r.move_to(text.get_center())
+        rings.add(r)
+    scene.play(
+        FadeIn(text, scale=0.88),
+        LaggedStart(*[Create(r) for r in rings], lag_ratio=0.12),
+        run_time=intro_t, rate_func=smooth,
+    )
+    if subtitle:
+        scene.play(FadeIn(sub, shift=UP * 0.12), run_time=0.28, rate_func=smooth)
+    scene.wait(hold_t)
+    return _sc.collected(), text
 
 
 def fm_animate_timeline(scene, events, accent_color=BRAND_GOLD, duration=4.0,
@@ -1529,7 +1491,7 @@ def fm_animate_comparison_bars(scene, items, duration=4.0, title_text="",
         run_time=grow_t * 0.35, rate_func=smooth,
     )
     scene.wait(hold_t)
-    return _sc.collected(), bars
+    return bars, val_labels
 
 
 def fm_animate_data_table(scene, headers, rows, duration=4.0,
@@ -1878,40 +1840,22 @@ def fm_animate_bell_curve(scene, label_text="", accent_color=BRAND_GOLD,
     baseline = Line([pts[0][0], base_y, 0], [pts[-1][0], base_y, 0])
     baseline.set_stroke(BRAND_GRAY, width=1.5, opacity=0.35)
 
-    mean_tick = Line([position[0], base_y - 0.12, 0], [position[0], base_y + 0.22, 0])
-    mean_tick.set_stroke(BRAND_WHITE, width=2.5, opacity=0.7)
-    _mean_label_str = mean_label if isinstance(mean_label, str) and mean_label else "μ"
-    mean_lbl = Text(_mean_label_str, font_size=26, color=BRAND_WHITE)
-    mean_lbl.next_to(mean_tick, DOWN, buff=0.16)
-
-    lbl_mob = None
-    if label_text:
-        safe_w = config.frame_width * 0.80
-        lbl_mob = Text(label_text, font_size=34, color=accent_color, weight=BOLD)
-        if lbl_mob.width > safe_w:
-            lbl_mob.scale(safe_w / lbl_mob.width)
-        peak_y = base_y + curve_h
-        lbl_mob.move_to([position[0], peak_y + 0.52, 0])
-
     draw_t = max(min(duration * 0.55, 2.0), 0.1)
     fade_t = min(0.3, duration * 0.08)
-    hold_t = max(duration - draw_t - 0.25 - fade_t, 0.05)
+    hold_t = max(duration - draw_t - fade_t, 0.05)
 
     scene.add(baseline, fill_region)
     if show_std_regions and len(std_markers) > 0:
         scene.add(std_markers)
     scene.play(Create(curve), run_time=draw_t, rate_func=smooth)
-    scene.play(FadeIn(mean_tick), FadeIn(mean_lbl), run_time=0.25)
-    if lbl_mob:
-        scene.play(FadeIn(lbl_mob, shift=UP * 0.1), run_time=0.2)
-        hold_t = max(hold_t - 0.2, 0.05)
     scene.wait(hold_t)
     collected = _sc.collected()
     try:
         scene._s.play(FadeOut(collected), run_time=fade_t)
+        scene._s.remove(collected)
     except Exception:
         try:
-            scene._s.remove(*collected)
+            scene._s.remove(collected)
         except Exception:
             pass
     return collected, curve
