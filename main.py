@@ -75,6 +75,7 @@ _GPT4O_LAST_CALL_TS = [0.0]
 _GPT4O_TPM_LIMIT = 30000
 _GPT4O_REMAINING_TOKENS = [_GPT4O_TPM_LIMIT]
 _GPT4O_FALLBACK_GAP_SECONDS = 1.5
+_GPT4O_CACHE_STATS = [0, 0]  # [cached_tokens_total, prompt_tokens_total]
 
 def _adaptive_gap_seconds():
     """Scale the minimum gap between call starts based on the most
@@ -91,7 +92,8 @@ def gpt4o_call(client, **kwargs):
     """Wrapper around client.chat.completions.create for gpt-4o that
     throttles across ALL callers (Call 1/2/3 batches alike) so they
     can't collectively exceed the shared TPM budget. Reads the real
-    remaining-tokens header off each response to adapt the pacing."""
+    remaining-tokens header off each response to adapt the pacing.
+    Also tracks prompt cache hit rate so cost can be verified."""
     with _GPT4O_CONCURRENCY:
         with _GPT4O_LOCK:
             gap = _adaptive_gap_seconds()
@@ -108,7 +110,21 @@ def gpt4o_call(client, **kwargs):
                     _GPT4O_REMAINING_TOKENS[0] = int(remaining_hdr)
         except (TypeError, ValueError):
             pass
-        return raw.parse()
+        parsed = raw.parse()
+        try:
+            usage = getattr(parsed, "usage", None)
+            if usage is not None:
+                cached = 0
+                details = getattr(usage, "prompt_tokens_details", None)
+                if details is not None:
+                    cached = getattr(details, "cached_tokens", 0) or 0
+                total_prompt = getattr(usage, "prompt_tokens", 0) or 0
+                with _GPT4O_LOCK:
+                    _GPT4O_CACHE_STATS[0] += cached
+                    _GPT4O_CACHE_STATS[1] += total_prompt
+        except Exception:
+            pass
+        return parsed
 
 
 def _call_with_retry(fn, label="gpt-4o call", max_retries=3):
@@ -3545,6 +3561,10 @@ class FinanceGenerator:
             print(f"📁 {self.output_path}")
             print(f"💾 {file_size:.2f} MB | ⏱ {duration:.1f}s | ⚡ {total_time:.0f}s")
             print(f"🎭 {len(beats)} beats | 🎬 {len(chunks)} Manim chunks")
+            _cached, _total_prompt = _GPT4O_CACHE_STATS
+            if _total_prompt > 0:
+                _hit_rate = _cached / _total_prompt * 100
+                print(f"💰 Prompt cache: {_cached:,}/{_total_prompt:,} tokens cached ({_hit_rate:.0f}% hit rate)")
             print(f"{'='*70}\n")
             return True
 
