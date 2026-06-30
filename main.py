@@ -77,6 +77,61 @@ _GPT4O_REMAINING_TOKENS = [_GPT4O_TPM_LIMIT]
 _GPT4O_FALLBACK_GAP_SECONDS = 1.5
 _GPT4O_CACHE_STATS = [0, 0]  # [cached_tokens_total, prompt_tokens_total]
 
+# Per-1M-token USD pricing, keyed by model string. Update if OpenAI changes rates.
+_MODEL_PRICING = {
+    "gpt-5.5":      {"input": 5.00, "cached_input": 0.50, "output": 30.00},
+    "gpt-4.1":      {"input": 2.00, "cached_input": 0.50, "output": 8.00},
+    "gpt-4o":       {"input": 2.50, "cached_input": 1.25, "output": 10.00},
+}
+_DEFAULT_PRICING = {"input": 5.00, "cached_input": 0.50, "output": 30.00}
+
+# Tracks cost per model used this run: {model: {"input":, "cached":, "output":, "calls":}}
+_RUN_COST_TRACKER = {}
+_RUN_COST_LOCK = threading.Lock()
+
+def _record_call_cost(model, usage):
+    """Record token usage for a completed API call so total run cost can
+    be summarized at the end. Safe to call from any thread."""
+    if usage is None:
+        return
+    cached = 0
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is not None:
+        cached = getattr(details, "cached_tokens", 0) or 0
+    total_prompt = getattr(usage, "prompt_tokens", 0) or 0
+    uncached = max(0, total_prompt - cached)
+    completion = getattr(usage, "completion_tokens", 0) or 0
+    with _RUN_COST_LOCK:
+        rec = _RUN_COST_TRACKER.setdefault(model, {"input": 0, "cached": 0, "output": 0, "calls": 0})
+        rec["input"]  += uncached
+        rec["cached"] += cached
+        rec["output"] += completion
+        rec["calls"]  += 1
+
+def _run_cost_summary():
+    """Build a human-readable cost breakdown for everything tracked so far
+    this run, plus a grand total in USD."""
+    lines = []
+    grand_total = 0.0
+    with _RUN_COST_LOCK:
+        items = sorted(_RUN_COST_TRACKER.items())
+    for model, rec in items:
+        pricing = _MODEL_PRICING.get(model, _DEFAULT_PRICING)
+        cost = (
+            rec["input"]  / 1_000_000 * pricing["input"]
+            + rec["cached"] / 1_000_000 * pricing["cached_input"]
+            + rec["output"] / 1_000_000 * pricing["output"]
+        )
+        grand_total += cost
+        total_in = rec["input"] + rec["cached"]
+        hit_rate = (rec["cached"] / total_in * 100) if total_in > 0 else 0.0
+        lines.append(
+            f"  {model}: {rec['calls']} calls | "
+            f"{total_in:,} input ({hit_rate:.0f}% cached) | "
+            f"{rec['output']:,} output | ${cost:.4f}"
+        )
+    return lines, grand_total
+
 def _adaptive_gap_seconds():
     """Scale the minimum gap between call starts based on the most
     recently observed remaining-token headroom. Plenty of headroom ->
@@ -122,6 +177,7 @@ def gpt4o_call(client, **kwargs):
                 with _GPT4O_LOCK:
                     _GPT4O_CACHE_STATS[0] += cached
                     _GPT4O_CACHE_STATS[1] += total_prompt
+                _record_call_cost(kwargs.get("model", "unknown"), usage)
         except Exception:
             pass
         return parsed
@@ -3407,6 +3463,10 @@ class FinanceGenerator:
     def create_finance_video(self, bg_volume: float = 0.12, fps: int = 30) -> bool:
         import time
         t0 = time.time()
+        with _RUN_COST_LOCK:
+            _RUN_COST_TRACKER.clear()
+        _GPT4O_CACHE_STATS[0] = 0
+        _GPT4O_CACHE_STATS[1] = 0
 
         print(f"\n{'='*70}")
         print(f"📊  FINANCE EXPLAINER v2 -- full Manim renderer")
@@ -3567,10 +3627,12 @@ class FinanceGenerator:
             print(f"📁 {self.output_path}")
             print(f"💾 {file_size:.2f} MB | ⏱ {duration:.1f}s | ⚡ {total_time:.0f}s")
             print(f"🎭 {len(beats)} beats | 🎬 {len(chunks)} Manim chunks")
-            _cached, _total_prompt = _GPT4O_CACHE_STATS
-            if _total_prompt > 0:
-                _hit_rate = _cached / _total_prompt * 100
-                print(f"💰 Prompt cache: {_cached:,}/{_total_prompt:,} tokens cached ({_hit_rate:.0f}% hit rate)")
+            _cost_lines, _grand_total = _run_cost_summary()
+            if _cost_lines:
+                print(f"💰 API cost this run:")
+                for _line in _cost_lines:
+                    print(_line)
+                print(f"  TOTAL: ${_grand_total:.2f}")
             print(f"{'='*70}\n")
             return True
 
