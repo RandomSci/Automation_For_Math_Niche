@@ -2085,6 +2085,12 @@ Exit transitions deserve the same variety as entrances -- a shape can shrink awa
 - Smooth animation: compute continuous functions of t (easing, sine waves, interpolation), not instant jumps, unless an instant snap is specifically the right feeling.
 - Every element should fade in and fade out, not just appear/disappear instantly -- compute an alpha from t (ramping 0 to 255 over the first ~15-20% of the beat, holding, ramping back down over the last ~15-20%) and apply it to every shape/text/figure you draw. This applies broadly, not just to the figure.
 - Reach for real effect techniques, not just static shapes: a soft glow (draw the same shape 2-3 times at increasing size with decreasing alpha, behind the main shape), a pulse (modulate a size or alpha with a sine wave over t), a subtle drop shadow (draw a duplicate shape offset by a few pixels in dark low-alpha color, behind the main shape), a trail (draw the last few positions of a moving element at decreasing alpha). These add real production value over a flat unadorned shape.
+
+HARD CAPS ON EFFECT LAYERS — exceeding these produces a blurry, smeared, unreadable mess (a real observed failure):
+- Drop shadow offset: maximum 3-4 pixels in any direction, ONE shadow copy only, alpha 0.25-0.4. NEVER an outline/shadow radius larger than ~4px — a larger radius makes text look like a chromatic-aberration smear instead of a crisp shadow.
+- Glow layers: maximum 2 extra copies behind the main shape, each LARGER (not same-size) than the main shape by 10-20%, alpha 0.10-0.20 each. The main shape itself is always drawn ONCE, fully opaque, on top, last.
+- Never combine outline + drop shadow + glow on the same text/shape in the same beat — pick ONE accent technique per element, not a stack of all of them.
+- After all effect layers are drawn, the LAST draw call for any given piece of content must be the crisp, full-alpha, undisplaced version. If the final visible state of a beat looks soft, hazy, doubled, or like a ghost/photocopy, that beat has failed — readability is the priority, atmosphere is secondary.
 - Legible at video scale: numbers need font size proportional to h (e.g. h*0.08 for a prominent number), shapes need enough size/contrast to read instantly.
 - Use this exact brand color palette, consistently, across every beat -- do not invent other colors: white (245,247,250) for primary text/numbers, market green (56,217,150) for growth/gains/positive, warning red (255,77,77) for risk/loss/danger, gold (255,209,102) for highlights/attention/key numbers, muted gray (138,148,166) for secondary/de-emphasized elements, dark panel (17,26,36) for card/panel backgrounds. These are RGB values for draw.text/draw.rectangle/etc fill colors.
 - Use t=0 as the entrance state and design toward a settled state by the end of the beat's duration.
@@ -2330,7 +2336,7 @@ def validate_decisions(scenes: list, beats: list) -> list:
                 el.setdefault("size", 180)
                 el.setdefault("color", "#FFFFFF")
                 el.setdefault("weight", "black")
-                el.setdefault("outline", 5)
+                el.setdefault("outline", 4)
                 el.setdefault("count_from", 0)
                 el.setdefault("count_duration", 0.8)
                 el.setdefault("start_offset", 0.0)
@@ -2656,7 +2662,7 @@ def render_text_overlay_opencv(video_path: str, scenes: list, beats: list,
         size = max(20, min(raw_size, size_cap))
         color = hex_to_rgb(el.get("color", "#FFFFFF"))
         weight = el.get("weight", "black")
-        outline = max(0, min(safe_int(el, "outline", 4), 12))
+        outline = max(0, min(safe_int(el, "outline", 4), 4))
         anim = el.get("anim", "fade_in")
         anchor = el.get("anchor", "center")
         effect = el.get("effect", "none")
@@ -4598,6 +4604,13 @@ If bars are gray in your output, you have failed the emotional impact requiremen
 
 === FULL OPACITY FOR CORE CONTENT — HARD RULE ===
 The actual readable content of a beat -- its main text, its card's fill, its box's stroke -- must ALWAYS render at full or near-full opacity (fill_opacity 1.0, stroke_opacity 1.0, panel fill_opacity 0.85-1.0) in its settled hold state. A real, observed failure: beats came out as a hollow, washed-out haze instead of crisp readable content -- this happens when low-opacity values meant for a glow/depth ACCENT get applied to the core content itself instead of to separate extra copies layered behind it. Glow rings (fm_animate_glow_reveal), depth layers (fm_glow_around), and any "duplicate the shape at decreasing alpha" technique are ADDITIONAL elements that sit behind or around an already fully-opaque core -- never a substitute for one, never applied to the core's own fill/stroke. If you are tempted to lower a Text() or card's own opacity for a "softer" look, do not -- add a separate glow/ring layer behind it instead and leave the primary content itself at full opacity.
+
+CONFIRMED REAL FAILURES — these exact patterns produced blurry, smeared, unreadable output:
+- `Text("bad contracts", fill_opacity=0.3)` stacked 3-4 times at slightly different positions to fake a "glow" or "motion blur" effect → the text NEVER resolves to crisp, it stays a hazy smear the entire chunk. WRONG.
+- A card's background Rectangle/RoundedRectangle drawn at `fill_opacity=0.15` with text on top → text looks like it's floating on fog, illegible. WRONG.
+- An icon (percent sign, scale, arrow) built from multiple overlapping copies at different opacities that never converge into one solid shape → looks like a JPEG artifact or motion-blurred photo. WRONG.
+- The CORRECT way to add visual depth: ONE crisp full-opacity copy of the text/shape is the actual content. If you want a glow, add ONE additional layer BEHIND it (lower z-index, added first) at low opacity that is LARGER than the main shape (a halo), never the same size stacked on top. `glow = Text(...).scale(1.15).set_opacity(0.15); main = Text(...).set_opacity(1.0); self.add(glow, main)` — main always on top, always opacity 1.0, glow always behind and always a separate, larger, blurred-looking shape.
+- If a chunk's visual ever looks "soft", "hazy", "ghosted", or like it has motion blur in your own mental preview of the code, you have violated this rule. Crisp and readable is correct; soft and dreamy is wrong for this channel.
 
 
 === VISUAL DIRECTIVE — READ THIS FIRST ===
