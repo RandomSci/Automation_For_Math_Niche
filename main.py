@@ -5161,14 +5161,14 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
     if gap_indices:
         print(f"  ⏸  {len(gap_indices)} silence gap chunk(s) skip codegen entirely")
 
-    chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=4)
+    chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=8)
     n_batches = max(1, math.ceil(len(codegen_chunks) / chunk_batch_size)) if codegen_chunks else 0
     print(f"  🎬 Manim chunks: {n_batches} batch(es) of ~{chunk_batch_size} chunks each...")
 
-    for batch_idx in range(n_batches):
+    def _run_one_batch(batch_idx):
         local_batch = codegen_chunks[batch_idx * chunk_batch_size: (batch_idx + 1) * chunk_batch_size]
         if not local_batch:
-            continue
+            return
         local_indices = list(range(batch_idx * chunk_batch_size, batch_idx * chunk_batch_size + len(local_batch)))
         batch = local_batch
         batch_global_indices = [codegen_to_global[i] for i in local_indices]
@@ -5201,6 +5201,12 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
                     _slot_items(recovered, [idx])
                 except Exception as e2:
                     print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
+
+    CODEGEN_BATCH_CONCURRENCY = 6
+    with ThreadPoolExecutor(max_workers=CODEGEN_BATCH_CONCURRENCY) as _codegen_pool:
+        _codegen_futures = [_codegen_pool.submit(_run_one_batch, batch_idx) for batch_idx in range(n_batches)]
+        for _f in as_completed(_codegen_futures):
+            _f.result()
 
     repair_targets = []
     for idx in codegen_to_global:
