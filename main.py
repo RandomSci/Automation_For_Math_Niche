@@ -3926,6 +3926,18 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
             bare = pattern.replace(r'\b', '')
             return False, f"regex pre-scan: forbidden name '{bare}' found in code"
 
+    SAFE_CARD_PRIMITIVES = (
+        "fm_card(", "fm_two_cards(", "fm_card_row(", "fm_stacked_cards(",
+        "fm_concept_pills(", "fm_animate_before_after(",
+    )
+    if code.count("RoundedRectangle(") >= 2 and not any(p in code for p in SAFE_CARD_PRIMITIVES):
+        return False, ("hand-built label+value boxes detected (2+ RoundedRectangle calls "
+                        "with no fm_card/fm_two_cards/fm_card_row/fm_animate_before_after call) -- "
+                        "this exact pattern has caused confirmed box-overflow crashes where value "
+                        "text spilled past the box border; use fm_two_cards for a side-by-side "
+                        "comparison or fm_animate_before_after for an old-value-to-new-value "
+                        "transition instead of hand-building boxes")
+
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -3997,6 +4009,27 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
                                 "fm_animate_stacked_cards", "fm_animate_bullet_chart",
                                 "fm_animate_timeline", "fm_animate_text_reveal"}:
                     return False, f"indexing the return value of {fn_name2}() is unsafe -- these functions return None or a fixed-arity tuple; store the return in a named variable and index that, checking the documented arity first"
+
+    icon_var_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            fn = node.value.func
+            fn_name3 = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
+            if fn_name3 == "fm_icon":
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        icon_var_names.add(target.id)
+
+    if icon_var_names:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "move_to":
+                obj = node.func.value
+                if isinstance(obj, ast.Name) and obj.id in icon_var_names:
+                    return False, (f"fm_icon result '{obj.id}' positioned with .move_to() -- a real, confirmed "
+                                    "failure placed an icon directly on top of a card's own text, cutting "
+                                    "through every letter; icons must be positioned with .next_to(target, "
+                                    "DIRECTION, buff=0.3) so they land outside the target's bounding box, never "
+                                    "centered on top of or behind it with .move_to()")
 
     class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
     if len(class_defs) != 1:
@@ -4653,6 +4686,7 @@ Before picking a primitive, identify what kind of value this beat is about, then
 - A CONCEPT NAMED BEFORE ANY NUMBER EXISTS YET ("side hustle," "emergency fund" as an idea, not yet a value) -> fm_animate_glow_reveal or fm_animate_single_value with "?" -- see CONCEPT BEAT RULE below.
 - THREE OR MORE RELATED CONCEPT NAMES shown together as a set or sequence, no values attached (e.g. "Savings, Investing, Debt, Fun" as four categories, or "Track, Calculate, Improve" as steps) -> fm_concept_pills ONLY. NEVER hand-build a row or stack of labels with individual RoundedRectangle/Text mobjects positioned via move_to or manual coordinates -- that is exactly how labels end up drawn on top of each other. fm_concept_pills is the only primitive that guarantees non-overlapping spacing for this pattern.
 - THREE OR MORE CARDS THAT EACH PAIR A LABEL WITH A VALUE, shown side by side (e.g. a cost timeline "Leak $400, Water Damage $1,500, Mold $4,800, Big Bill $8,200, Recovery $8,200") -> fm_card_row ONLY, never fm_concept_pills (that's for label-only, no values) and never a hand-built row. A real failure: five cards built with individual fm_card calls and manual x-offsets rendered with each card overlapping the next, the value text of one bleeding into the border of the next -- fm_card_row's arrange() guarantees the same non-overlapping spacing fm_concept_pills guarantees for label-only pills, just for label+value cards. For exactly 2 cards, use fm_two_cards instead (larger default sizing, better for a hero comparison).
+- AN OLD VALUE TRANSITIONING TO A NEW VALUE (e.g. "Old Rate $0.12/kWh -> New Rate $0.18/kWh", "before $0 -> after $15,000", any beat where one number changes into another) -> fm_animate_before_after(scene, old_label, old_value, new_label, new_value, ...) ONLY, never two hand-built RoundedRectangle boxes with a manual Arrow between them. A real, confirmed failure: two boxes built by hand for exactly this pattern rendered with the value text spilling past the box border on both sides because nothing measured the text width before sizing the box. fm_animate_before_after builds both cards via fm_card internally, which always measures its own text first, so the box can never be smaller than its content.
 
 === COLOR IS NOT OPTIONAL — HARD RULE ===
 NEVER use BRAND_GRAY (#8A94A6) as the fill color for bars, gauges, or any hero visual element. Gray communicates nothing emotionally and is invisible against the dark background.
@@ -4873,6 +4907,7 @@ FACTORY functions (return a VGroup, you add/animate yourself with self.play(Fade
   fm_concept_pills(labels, ...) → VGroup
   fm_icon(name, size, color) → VGroup  [NO self arg]
   fm_glow_around(mobject, color, n_layers) → VGroup
+  fm_animate_before_after(scene, old_label, old_value, new_label, new_value, old_color, new_color, duration, label_size, value_size) → (mobjects, arrow)
   fm_clamp_to_frame(*mobjects) → combined VGroup
 
 ONE FULL-SCREEN ANIMATE PRIMITIVE PER CHUNK, NEVER TWO STACKED TOGETHER: fm_animate_gauge, fm_animate_donut, fm_animate_single_value, fm_animate_glow_reveal, fm_animate_icon_grid, fm_animate_comparison_bars, fm_animate_bar_chart, fm_animate_line_chart, and fm_animate_waterfall are each already a COMPLETE, self-contained visual that defaults to centering itself at ORIGIN. A real, confirmed failure: a single chunk called fm_animate_icon_grid(...) AND fm_animate_single_value(...) (or fm_animate_glow_reveal with a subtitle) back to back -- both defaulted to the same central position, and the result was three separate text blocks and a full icon grid all stacked directly on top of each other, completely unreadable. These functions were not designed to be layered -- each one already fills the available frame space on its own. Pick exactly ONE of these per chunk that best matches what the beat needs. If you genuinely believe two numbers need to appear in the same chunk (e.g. two values being compared), that is almost always a sign you should be calling fm_animate_comparison_bars or fm_two_cards with BOTH values passed in as part of ONE call -- not two separate primitive calls placed in the same construct(). Likewise, never call fm_animate_gauge or fm_animate_donut twice in the same chunk to show two side-by-side proportions -- if you have two values to compare against each other (not each against its own separate max), that is a comparison, not two proportions, and fm_animate_comparison_bars is correct, not two gauges.
@@ -5303,6 +5338,7 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
             return ""
 
     done = 0
+    fallback_count = 0
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(_render_or_fill_one_chunk, i, chunks[i],
@@ -5323,10 +5359,16 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
             done += 1
             elapsed = _render_time.time() - _render_start
             if err:
+                fallback_count += 1
                 vts = _chunk_video_ts(idx)
                 print(f"  ⚠ Chunk {idx} ({vts}): {err[:160]} -- filler [{done}/{len(content_indices)}] | elapsed {_fmt_ts(elapsed)}")
             if done % 10 == 0 or done == len(content_indices):
                 print(f"  ⚙️  Manim chunk progress: {done}/{len(content_indices)} | elapsed {_fmt_ts(elapsed)}")
+
+    if fallback_count:
+        print(f"  🟡 {fallback_count}/{len(content_indices)} content chunk(s) fell back to a static card -- these will look visually different from Manim-rendered chunks, review the chunk indices logged above")
+    else:
+        print(f"  ✅ 0 fallback cards -- all {len(content_indices)} content chunks rendered as real Manim animations")
 
     if gap_indices:
         print(f"  ⏸  Filling {len(gap_indices)} silence gap(s) by holding the previous frame...")

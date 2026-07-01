@@ -192,6 +192,48 @@ def fm_two_cards(left_label, left_val, left_color,
     return group
 
 
+def fm_animate_before_after(scene, old_label, old_value, new_label, new_value,
+                              old_color=BRAND_GRAY, new_color=BRAND_RED,
+                              duration=3.5, label_size=30, value_size=54):
+    """Draws two labeled cards connected by an arrow, transitioning from
+    an old value to a new value (e.g. Old Rate -> New Rate, Before -> After).
+    Box sizing is guaranteed to fit its own text because both cards are
+    built via fm_card internally -- a real, confirmed failure hand-built
+    this exact pattern with raw RoundedRectangle + Text and the value
+    text spilled past the box border on both sides. Never hand-build
+    this pattern; always call this function instead.
+    Returns (_sc.collected(), arrow)."""
+    _sc = _Tracker(scene)
+    scene = _sc
+
+    left = fm_card(old_label, old_value, old_color, label_size=label_size, value_size=value_size)
+    right = fm_card(new_label, new_value, new_color, label_size=label_size, value_size=value_size)
+
+    group = VGroup(left, right).arrange(RIGHT, buff=1.6)
+    safe_w = config.frame_width * 0.88
+    if group.width > safe_w:
+        group.scale(safe_w / group.width)
+
+    left_card, right_card = group[0], group[1]
+
+    arrow = Arrow(
+        left_card.get_right() + RIGHT * 0.12,
+        right_card.get_left() + LEFT * 0.12,
+        color=BRAND_WHITE, buff=0, stroke_width=6,
+    )
+
+    intro_t = max(min(duration * 0.35, 1.2), 0.2)
+    arrow_t = max(min(duration * 0.30, 1.0), 0.2)
+    hold_t = max(duration - intro_t - arrow_t - intro_t, 0.1)
+
+    scene.play(FadeIn(left_card, shift=RIGHT * 0.1), run_time=intro_t)
+    scene.play(GrowArrow(arrow), run_time=arrow_t)
+    scene.play(FadeIn(right_card, shift=LEFT * 0.1), run_time=intro_t)
+    scene.wait(hold_t)
+
+    return _sc.collected(), arrow
+
+
 def fm_card_row(items, panel_color=BRAND_PANEL, text_color=BRAND_WHITE,
                  label_size=26, value_size=44, spacing=0.45, buff=None):
     cards = VGroup()
