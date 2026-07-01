@@ -69,7 +69,7 @@ def safe_set_default(d, key, default):
 import threading
 import time as _time
 
-_GPT4O_CONCURRENCY = threading.Semaphore(3)
+_GPT4O_CONCURRENCY = threading.Semaphore(4)
 _GPT4O_LOCK = threading.Lock()
 _GPT4O_LAST_CALL_TS = [0.0]
 _GPT4O_TPM_LIMIT = 30000
@@ -5217,47 +5217,58 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
         if not ok:
             repair_targets.append((idx, reason))
 
+    def _short_reason(reason):
+        cutoff = reason.find(" -- ")
+        head = reason[:cutoff] if cutoff != -1 else reason
+        return head[:90]
+
+    def _run_one_repair(idx, reason):
+        print(f"    🔧 Chunk{idx}: {_short_reason(reason)}")
+        local_i = codegen_to_global.index(idx)
+        chunk = codegen_chunks[local_i]
+        current_reason = reason
+        repaired = False
+        for attempt in range(1, MAX_REPAIR_ATTEMPTS + 1):
+            hint = safety_correction_hint(current_reason)
+            corrected_prompt = _build_user_prompt([(idx, chunk)]) + "\n\n" + hint
+            try:
+                r = _gpt_call_for_prompt(corrected_prompt)
+                recovered = _parse_chunks_from_raw(r.choices[0].message.content)
+                if not recovered:
+                    print(f"    ⚠ Chunk{idx} repair attempt {attempt} returned no parseable code")
+                    break
+                candidate = recovered[0]
+                candidate_code = candidate.get("code", "") or ""
+                renamed_code, _ = re.subn(
+                    r'^class\s+\w+\(', f'class Chunk{idx}(',
+                    candidate_code, count=1, flags=re.MULTILINE,
+                )
+                ok2, reason2 = manim_static_safety_check(renamed_code)
+                if ok2:
+                    candidate["code"] = renamed_code
+                    candidate["class_name"] = f"Chunk{idx}"
+                    candidate["chunk_index"] = idx
+                    all_results[idx] = candidate
+                    print(f"    ✅ Chunk{idx} repaired on attempt {attempt}")
+                    repaired = True
+                    break
+                else:
+                    print(f"    🔧 Chunk{idx} attempt {attempt} fixed one issue, hit another: {_short_reason(reason2)}")
+                    current_reason = reason2
+            except Exception as e:
+                print(f"    ⚠ Chunk{idx} repair attempt {attempt} errored: {e}")
+                break
+        if not repaired:
+            print(f"    ⚠ Chunk{idx} exhausted {MAX_REPAIR_ATTEMPTS} repair attempt(s) (last: {_short_reason(current_reason)}), keeping original code for the renderer to reject the same way")
+
     if repair_targets:
         MAX_REPAIR_ATTEMPTS = 2
-        print(f"  🔧 {len(repair_targets)} chunk(s) failed the safety check, attempting up to {MAX_REPAIR_ATTEMPTS} targeted repair(s) each...")
-        for idx, reason in repair_targets:
-            print(f"    🔧 Chunk{idx} original failure: {reason}")
-            local_i = codegen_to_global.index(idx)
-            chunk = codegen_chunks[local_i]
-            current_reason = reason
-            repaired = False
-            for attempt in range(1, MAX_REPAIR_ATTEMPTS + 1):
-                hint = safety_correction_hint(current_reason)
-                corrected_prompt = _build_user_prompt([(idx, chunk)]) + "\n\n" + hint
-                try:
-                    r = _gpt_call_for_prompt(corrected_prompt)
-                    recovered = _parse_chunks_from_raw(r.choices[0].message.content)
-                    if not recovered:
-                        print(f"    ⚠ Chunk{idx} repair attempt {attempt} returned no parseable code")
-                        break
-                    candidate = recovered[0]
-                    candidate_code = candidate.get("code", "") or ""
-                    renamed_code, _ = re.subn(
-                        r'^class\s+\w+\(', f'class Chunk{idx}(',
-                        candidate_code, count=1, flags=re.MULTILINE,
-                    )
-                    ok2, reason2 = manim_static_safety_check(renamed_code)
-                    if ok2:
-                        candidate["code"] = renamed_code
-                        candidate["class_name"] = f"Chunk{idx}"
-                        candidate["chunk_index"] = idx
-                        all_results[idx] = candidate
-                        print(f"    ✅ Chunk{idx} repaired on attempt {attempt}")
-                        repaired = True
-                        break
-                    else:
-                        print(f"    🔧 Chunk{idx} repair attempt {attempt} fixed '{current_reason[:60]}...' but surfaced a new violation: {reason2}")
-                        current_reason = reason2
-                except Exception as e:
-                    print(f"    ⚠ Chunk{idx} repair attempt {attempt} errored: {e}")
-                    break
-            if not repaired:
-                print(f"    ⚠ Chunk{idx} exhausted {MAX_REPAIR_ATTEMPTS} repair attempt(s) (last failure: {current_reason}), keeping original code for the renderer to reject the same way")
+        print(f"  🔧 {len(repair_targets)} chunk(s) failed the safety check, attempting up to {MAX_REPAIR_ATTEMPTS} targeted repair(s) each (running concurrently)...")
+        REPAIR_CONCURRENCY = 6
+        with ThreadPoolExecutor(max_workers=REPAIR_CONCURRENCY) as _repair_pool:
+            _repair_futures = [_repair_pool.submit(_run_one_repair, idx, reason) for idx, reason in repair_targets]
+            for _f in as_completed(_repair_futures):
+                _f.result()
 
     ordered = [all_results.get(i) for i in range(len(chunks))]
     print(f"  ✅ {sum(1 for r in ordered if r)} / {len(chunks)} total manim chunks generated")
