@@ -3670,27 +3670,30 @@ def root():
             "openai_key": bool(OPENAI_API_KEY)}
 
 @app.post("/generate")
-async def generate_video_api(background_tasks: BackgroundTasks, niche: str = "finance"):
+async def generate_video_api(background_tasks: BackgroundTasks, niche: str = "finance", audio_url: str = None):
     global current_job
     if current_job["status"] == "processing":
         return {"message": "Already processing", "status": "processing"}
     current_job = {"status": "processing", "progress": 0, "output": None,
-                   "error": None, "started_at": datetime.now().isoformat(), "niche": niche}
-    background_tasks.add_task(process_video, niche)
-    return {"message": f"Started niche={niche}", "status": "processing"}
+                   "error": None, "started_at": datetime.now().isoformat(), "niche": niche,
+                   "audio_url": audio_url}
+    background_tasks.add_task(process_video, niche, audio_url)
+    return {"message": f"Started niche={niche}", "status": "processing", "audio_url": audio_url}
 
-def process_video(niche: str = "finance"):
+def process_video(niche: str = "finance", audio_url: str = None):
     global current_job
     try:
         current_job["progress"] = 5
-        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Math_Niche/main/Audio_Voice/vaults_narration.mp3"
+        DEFAULT_AUDIO_URL = "https://raw.githubusercontent.com/RandomSci/Automation_For_Math_Niche/main/Audio_Voice/vaults_narration.mp3"
+        resolved_audio_url = audio_url if audio_url else DEFAULT_AUDIO_URL
         audio_file  = "Audio_Voice/vaults_narration.mp3"
         output_file = "vaults_output.mp4"
         trans_file  = f"{os.path.splitext(audio_file)[0]}_transcription.json"
 
-        print(f"\n📥 Downloading audio...")
+        print(f"\n📥 Downloading audio from: {resolved_audio_url}")
         os.makedirs("Audio_Voice", exist_ok=True)
-        resp = requests.get(audio_url, timeout=30)
+        cache_bust_url = resolved_audio_url + (("&" if "?" in resolved_audio_url else "?") + f"_cb={int(_time.time())}")
+        resp = requests.get(cache_bust_url, timeout=30, headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
         if resp.status_code != 200:
             raise Exception(f"HTTP {resp.status_code}")
         with open(audio_file, "wb") as f:
@@ -3930,62 +3933,23 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
         "fm_card(", "fm_two_cards(", "fm_card_row(", "fm_stacked_cards(",
         "fm_concept_pills(", "fm_animate_before_after(",
     )
+    if (code.count("RoundedRectangle(") >= 2 and code.count("Text(") >= 2
+            and not any(p in code for p in SAFE_CARD_PRIMITIVES)):
+        return False, ("hand-built label+value boxes detected (2+ RoundedRectangle calls "
+                        "paired with 2+ Text calls, with no fm_card/fm_two_cards/fm_card_row/"
+                        "fm_animate_before_after call) -- this exact pattern has caused confirmed "
+                        "box-overflow crashes where value text spilled past the box border; use "
+                        "fm_two_cards for a side-by-side comparison or fm_animate_before_after for "
+                        "an old-value-to-new-value transition instead of hand-building boxes. If "
+                        "this chunk's RoundedRectangle calls are NOT building label+value boxes "
+                        "(e.g. a background frame, a gauge outline, a decorative container with no "
+                        "paired value text), this check does not apply -- do not add fm_card/"
+                        "fm_two_cards where none belongs.")
 
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
         return False, f"syntax error: {e}"
-
-    box_vars = set()
-    text_vars = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-            fn = node.value.func
-            fn_name4 = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
-            if fn_name4 == "RoundedRectangle":
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        box_vars.add(target.id)
-            elif fn_name4 == "Text":
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        text_vars.add(target.id)
-
-    def _names_in(node):
-        return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
-
-    paired = False
-    if box_vars and text_vars:
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                fn = node.func
-                fn_name5 = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
-                if fn_name5 == "VGroup":
-                    arg_names = set()
-                    for a in node.args:
-                        arg_names |= _names_in(a)
-                    if arg_names & box_vars and arg_names & text_vars:
-                        paired = True
-                        break
-                elif fn_name5 in ("next_to", "move_to") and isinstance(fn, ast.Attribute):
-                    obj_names = _names_in(fn.value)
-                    arg_names = set()
-                    for a in node.args:
-                        arg_names |= _names_in(a)
-                    if (obj_names & box_vars and arg_names & text_vars) or (obj_names & text_vars and arg_names & box_vars):
-                        paired = True
-                        break
-
-    if paired and not any(p in code for p in SAFE_CARD_PRIMITIVES):
-        return False, ("hand-built label/value box detected (a RoundedRectangle grouped or "
-                        "positioned together with Text, with no fm_card/fm_two_cards/"
-                        "fm_card_row/fm_animate_before_after call) -- this pattern has caused "
-                        "confirmed box-overflow crashes on both single boxes and multi-box "
-                        "comparisons, where text spilled past the box border because nothing "
-                        "measured the text width before sizing the box; use fm_card for a "
-                        "single labeled value, fm_two_cards for a side-by-side comparison, or "
-                        "fm_animate_before_after for an old-value-to-new-value transition "
-                        "instead of hand-building any box.")
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
