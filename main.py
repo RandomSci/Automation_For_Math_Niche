@@ -69,7 +69,7 @@ def safe_set_default(d, key, default):
 import threading
 import time as _time
 
-_GPT4O_CONCURRENCY = threading.Semaphore(4)
+_GPT4O_CONCURRENCY = threading.Semaphore(3)
 _GPT4O_LOCK = threading.Lock()
 _GPT4O_LAST_CALL_TS = [0.0]
 _GPT4O_TPM_LIMIT = 30000
@@ -3670,30 +3670,27 @@ def root():
             "openai_key": bool(OPENAI_API_KEY)}
 
 @app.post("/generate")
-async def generate_video_api(background_tasks: BackgroundTasks, niche: str = "finance", audio_url: str = None):
+async def generate_video_api(background_tasks: BackgroundTasks, niche: str = "finance"):
     global current_job
     if current_job["status"] == "processing":
         return {"message": "Already processing", "status": "processing"}
     current_job = {"status": "processing", "progress": 0, "output": None,
-                   "error": None, "started_at": datetime.now().isoformat(), "niche": niche,
-                   "audio_url": audio_url}
-    background_tasks.add_task(process_video, niche, audio_url)
-    return {"message": f"Started niche={niche}", "status": "processing", "audio_url": audio_url}
+                   "error": None, "started_at": datetime.now().isoformat(), "niche": niche}
+    background_tasks.add_task(process_video, niche)
+    return {"message": f"Started niche={niche}", "status": "processing"}
 
-def process_video(niche: str = "finance", audio_url: str = None):
+def process_video(niche: str = "finance"):
     global current_job
     try:
         current_job["progress"] = 5
-        DEFAULT_AUDIO_URL = "https://raw.githubusercontent.com/RandomSci/Automation_For_Math_Niche/main/Audio_Voice/vaults_narration.mp3"
-        resolved_audio_url = audio_url if audio_url else DEFAULT_AUDIO_URL
+        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Math_Niche/main/Audio_Voice/vaults_narration.mp3"
         audio_file  = "Audio_Voice/vaults_narration.mp3"
         output_file = "vaults_output.mp4"
         trans_file  = f"{os.path.splitext(audio_file)[0]}_transcription.json"
 
-        print(f"\n📥 Downloading audio from: {resolved_audio_url}")
+        print(f"\n📥 Downloading audio...")
         os.makedirs("Audio_Voice", exist_ok=True)
-        cache_bust_url = resolved_audio_url + (("&" if "?" in resolved_audio_url else "?") + f"_cb={int(_time.time())}")
-        resp = requests.get(cache_bust_url, timeout=30, headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
+        resp = requests.get(audio_url, timeout=30)
         if resp.status_code != 200:
             raise Exception(f"HTTP {resp.status_code}")
         with open(audio_file, "wb") as f:
@@ -3929,23 +3926,6 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
             bare = pattern.replace(r'\b', '')
             return False, f"regex pre-scan: forbidden name '{bare}' found in code"
 
-    SAFE_CARD_PRIMITIVES = (
-        "fm_card(", "fm_two_cards(", "fm_card_row(", "fm_stacked_cards(",
-        "fm_concept_pills(", "fm_animate_before_after(",
-    )
-    if (code.count("RoundedRectangle(") >= 2 and code.count("Text(") >= 2
-            and not any(p in code for p in SAFE_CARD_PRIMITIVES)):
-        return False, ("hand-built label+value boxes detected (2+ RoundedRectangle calls "
-                        "paired with 2+ Text calls, with no fm_card/fm_two_cards/fm_card_row/"
-                        "fm_animate_before_after call) -- this exact pattern has caused confirmed "
-                        "box-overflow crashes where value text spilled past the box border; use "
-                        "fm_two_cards for a side-by-side comparison or fm_animate_before_after for "
-                        "an old-value-to-new-value transition instead of hand-building boxes. If "
-                        "this chunk's RoundedRectangle calls are NOT building label+value boxes "
-                        "(e.g. a background frame, a gauge outline, a decorative container with no "
-                        "paired value text), this check does not apply -- do not add fm_card/"
-                        "fm_two_cards where none belongs.")
-
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -4017,27 +3997,6 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
                                 "fm_animate_stacked_cards", "fm_animate_bullet_chart",
                                 "fm_animate_timeline", "fm_animate_text_reveal"}:
                     return False, f"indexing the return value of {fn_name2}() is unsafe -- these functions return None or a fixed-arity tuple; store the return in a named variable and index that, checking the documented arity first"
-
-    icon_var_names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-            fn = node.value.func
-            fn_name3 = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
-            if fn_name3 == "fm_icon":
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        icon_var_names.add(target.id)
-
-    if icon_var_names:
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "move_to":
-                obj = node.func.value
-                if isinstance(obj, ast.Name) and obj.id in icon_var_names:
-                    return False, (f"fm_icon result '{obj.id}' positioned with .move_to() -- a real, confirmed "
-                                    "failure placed an icon directly on top of a card's own text, cutting "
-                                    "through every letter; icons must be positioned with .next_to(target, "
-                                    "DIRECTION, buff=0.3) so they land outside the target's bounding box, never "
-                                    "centered on top of or behind it with .move_to()")
 
     class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
     if len(class_defs) != 1:
@@ -4694,7 +4653,6 @@ Before picking a primitive, identify what kind of value this beat is about, then
 - A CONCEPT NAMED BEFORE ANY NUMBER EXISTS YET ("side hustle," "emergency fund" as an idea, not yet a value) -> fm_animate_glow_reveal or fm_animate_single_value with "?" -- see CONCEPT BEAT RULE below.
 - THREE OR MORE RELATED CONCEPT NAMES shown together as a set or sequence, no values attached (e.g. "Savings, Investing, Debt, Fun" as four categories, or "Track, Calculate, Improve" as steps) -> fm_concept_pills ONLY. NEVER hand-build a row or stack of labels with individual RoundedRectangle/Text mobjects positioned via move_to or manual coordinates -- that is exactly how labels end up drawn on top of each other. fm_concept_pills is the only primitive that guarantees non-overlapping spacing for this pattern.
 - THREE OR MORE CARDS THAT EACH PAIR A LABEL WITH A VALUE, shown side by side (e.g. a cost timeline "Leak $400, Water Damage $1,500, Mold $4,800, Big Bill $8,200, Recovery $8,200") -> fm_card_row ONLY, never fm_concept_pills (that's for label-only, no values) and never a hand-built row. A real failure: five cards built with individual fm_card calls and manual x-offsets rendered with each card overlapping the next, the value text of one bleeding into the border of the next -- fm_card_row's arrange() guarantees the same non-overlapping spacing fm_concept_pills guarantees for label-only pills, just for label+value cards. For exactly 2 cards, use fm_two_cards instead (larger default sizing, better for a hero comparison).
-- AN OLD VALUE TRANSITIONING TO A NEW VALUE (e.g. "Old Rate $0.12/kWh -> New Rate $0.18/kWh", "before $0 -> after $15,000", any beat where one number changes into another) -> fm_animate_before_after(scene, old_label, old_value, new_label, new_value, ...) ONLY, never two hand-built RoundedRectangle boxes with a manual Arrow between them. A real, confirmed failure: two boxes built by hand for exactly this pattern rendered with the value text spilling past the box border on both sides because nothing measured the text width before sizing the box. fm_animate_before_after builds both cards via fm_card internally, which always measures its own text first, so the box can never be smaller than its content.
 
 === COLOR IS NOT OPTIONAL — HARD RULE ===
 NEVER use BRAND_GRAY (#8A94A6) as the fill color for bars, gauges, or any hero visual element. Gray communicates nothing emotionally and is invisible against the dark background.
@@ -4915,7 +4873,6 @@ FACTORY functions (return a VGroup, you add/animate yourself with self.play(Fade
   fm_concept_pills(labels, ...) → VGroup
   fm_icon(name, size, color) → VGroup  [NO self arg]
   fm_glow_around(mobject, color, n_layers) → VGroup
-  fm_animate_before_after(scene, old_label, old_value, new_label, new_value, old_color, new_color, duration, label_size, value_size) → (mobjects, arrow)
   fm_clamp_to_frame(*mobjects) → combined VGroup
 
 ONE FULL-SCREEN ANIMATE PRIMITIVE PER CHUNK, NEVER TWO STACKED TOGETHER: fm_animate_gauge, fm_animate_donut, fm_animate_single_value, fm_animate_glow_reveal, fm_animate_icon_grid, fm_animate_comparison_bars, fm_animate_bar_chart, fm_animate_line_chart, and fm_animate_waterfall are each already a COMPLETE, self-contained visual that defaults to centering itself at ORIGIN. A real, confirmed failure: a single chunk called fm_animate_icon_grid(...) AND fm_animate_single_value(...) (or fm_animate_glow_reveal with a subtitle) back to back -- both defaulted to the same central position, and the result was three separate text blocks and a full icon grid all stacked directly on top of each other, completely unreadable. These functions were not designed to be layered -- each one already fills the available frame space on its own. Pick exactly ONE of these per chunk that best matches what the beat needs. If you genuinely believe two numbers need to appear in the same chunk (e.g. two values being compared), that is almost always a sign you should be calling fm_animate_comparison_bars or fm_two_cards with BOTH values passed in as part of ONE call -- not two separate primitive calls placed in the same construct(). Likewise, never call fm_animate_gauge or fm_animate_donut twice in the same chunk to show two side-by-side proportions -- if you have two values to compare against each other (not each against its own separate max), that is a comparison, not two proportions, and fm_animate_comparison_bars is correct, not two gauges.
@@ -5164,14 +5121,14 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
     if gap_indices:
         print(f"  ⏸  {len(gap_indices)} silence gap chunk(s) skip codegen entirely")
 
-    chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=8)
+    chunk_batch_size = dynamic_batch_size(len(codegen_chunks), min_size=2, max_size=4)
     n_batches = max(1, math.ceil(len(codegen_chunks) / chunk_batch_size)) if codegen_chunks else 0
     print(f"  🎬 Manim chunks: {n_batches} batch(es) of ~{chunk_batch_size} chunks each...")
 
-    def _run_one_batch(batch_idx):
+    for batch_idx in range(n_batches):
         local_batch = codegen_chunks[batch_idx * chunk_batch_size: (batch_idx + 1) * chunk_batch_size]
         if not local_batch:
-            return
+            continue
         local_indices = list(range(batch_idx * chunk_batch_size, batch_idx * chunk_batch_size + len(local_batch)))
         batch = local_batch
         batch_global_indices = [codegen_to_global[i] for i in local_indices]
@@ -5205,12 +5162,6 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
                 except Exception as e2:
                     print(f"    ⚠ Single-chunk retry for Chunk{idx} failed: {e2}")
 
-    CODEGEN_BATCH_CONCURRENCY = 6
-    with ThreadPoolExecutor(max_workers=CODEGEN_BATCH_CONCURRENCY) as _codegen_pool:
-        _codegen_futures = [_codegen_pool.submit(_run_one_batch, batch_idx) for batch_idx in range(n_batches)]
-        for _f in as_completed(_codegen_futures):
-            _f.result()
-
     repair_targets = []
     for idx in codegen_to_global:
         item = all_results.get(idx)
@@ -5220,58 +5171,37 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
         if not ok:
             repair_targets.append((idx, reason))
 
-    def _short_reason(reason):
-        cutoff = reason.find(" -- ")
-        head = reason[:cutoff] if cutoff != -1 else reason
-        return head[:90]
-
-    def _run_one_repair(idx, reason):
-        print(f"    🔧 Chunk{idx}: {_short_reason(reason)}")
-        local_i = codegen_to_global.index(idx)
-        chunk = codegen_chunks[local_i]
-        current_reason = reason
-        repaired = False
-        for attempt in range(1, MAX_REPAIR_ATTEMPTS + 1):
-            hint = safety_correction_hint(current_reason)
+    if repair_targets:
+        print(f"  🔧 {len(repair_targets)} chunk(s) failed the safety check, attempting one targeted repair each...")
+        for idx, reason in repair_targets:
+            print(f"    🔧 Chunk{idx} original failure: {reason}")
+            local_i = codegen_to_global.index(idx)
+            chunk = codegen_chunks[local_i]
+            hint = safety_correction_hint(reason)
             corrected_prompt = _build_user_prompt([(idx, chunk)]) + "\n\n" + hint
             try:
                 r = _gpt_call_for_prompt(corrected_prompt)
                 recovered = _parse_chunks_from_raw(r.choices[0].message.content)
-                if not recovered:
-                    print(f"    ⚠ Chunk{idx} repair attempt {attempt} returned no parseable code")
-                    break
-                candidate = recovered[0]
-                candidate_code = candidate.get("code", "") or ""
-                renamed_code, _ = re.subn(
-                    r'^class\s+\w+\(', f'class Chunk{idx}(',
-                    candidate_code, count=1, flags=re.MULTILINE,
-                )
-                ok2, reason2 = manim_static_safety_check(renamed_code)
-                if ok2:
-                    candidate["code"] = renamed_code
-                    candidate["class_name"] = f"Chunk{idx}"
-                    candidate["chunk_index"] = idx
-                    all_results[idx] = candidate
-                    print(f"    ✅ Chunk{idx} repaired on attempt {attempt}")
-                    repaired = True
-                    break
+                if recovered:
+                    candidate = recovered[0]
+                    candidate_code = candidate.get("code", "") or ""
+                    renamed_code, _ = re.subn(
+                        r'^class\s+\w+\(', f'class Chunk{idx}(',
+                        candidate_code, count=1, flags=re.MULTILINE,
+                    )
+                    ok2, reason2 = manim_static_safety_check(renamed_code)
+                    if ok2:
+                        candidate["code"] = renamed_code
+                        candidate["class_name"] = f"Chunk{idx}"
+                        candidate["chunk_index"] = idx
+                        all_results[idx] = candidate
+                        print(f"    ✅ Chunk{idx} repaired")
+                    else:
+                        print(f"    ⚠ Chunk{idx} repair attempt still failed (original: {reason} -- retry: {reason2}), keeping original code for the renderer to reject the same way")
                 else:
-                    print(f"    🔧 Chunk{idx} attempt {attempt} fixed one issue, hit another: {_short_reason(reason2)}")
-                    current_reason = reason2
+                    print(f"    ⚠ Chunk{idx} repair attempt returned no parseable code, keeping original")
             except Exception as e:
-                print(f"    ⚠ Chunk{idx} repair attempt {attempt} errored: {e}")
-                break
-        if not repaired:
-            print(f"    ⚠ Chunk{idx} exhausted {MAX_REPAIR_ATTEMPTS} repair attempt(s) (last: {_short_reason(current_reason)}), keeping original code for the renderer to reject the same way")
-
-    if repair_targets:
-        MAX_REPAIR_ATTEMPTS = 2
-        print(f"  🔧 {len(repair_targets)} chunk(s) failed the safety check, attempting up to {MAX_REPAIR_ATTEMPTS} targeted repair(s) each (running concurrently)...")
-        REPAIR_CONCURRENCY = 6
-        with ThreadPoolExecutor(max_workers=REPAIR_CONCURRENCY) as _repair_pool:
-            _repair_futures = [_repair_pool.submit(_run_one_repair, idx, reason) for idx, reason in repair_targets]
-            for _f in as_completed(_repair_futures):
-                _f.result()
+                print(f"    ⚠ Chunk{idx} repair attempt errored: {e}, keeping original")
 
     ordered = [all_results.get(i) for i in range(len(chunks))]
     print(f"  ✅ {sum(1 for r in ordered if r)} / {len(chunks)} total manim chunks generated")
@@ -5373,7 +5303,6 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
             return ""
 
     done = 0
-    fallback_count = 0
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(_render_or_fill_one_chunk, i, chunks[i],
@@ -5394,16 +5323,10 @@ def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
             done += 1
             elapsed = _render_time.time() - _render_start
             if err:
-                fallback_count += 1
                 vts = _chunk_video_ts(idx)
                 print(f"  ⚠ Chunk {idx} ({vts}): {err[:160]} -- filler [{done}/{len(content_indices)}] | elapsed {_fmt_ts(elapsed)}")
             if done % 10 == 0 or done == len(content_indices):
                 print(f"  ⚙️  Manim chunk progress: {done}/{len(content_indices)} | elapsed {_fmt_ts(elapsed)}")
-
-    if fallback_count:
-        print(f"  🟡 {fallback_count}/{len(content_indices)} content chunk(s) fell back to a static card -- these will look visually different from Manim-rendered chunks, review the chunk indices logged above")
-    else:
-        print(f"  ✅ 0 fallback cards -- all {len(content_indices)} content chunks rendered as real Manim animations")
 
     if gap_indices:
         print(f"  ⏸  Filling {len(gap_indices)} silence gap(s) by holding the previous frame...")
