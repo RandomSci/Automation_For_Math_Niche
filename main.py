@@ -3930,13 +3930,18 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
         "fm_card(", "fm_two_cards(", "fm_card_row(", "fm_stacked_cards(",
         "fm_concept_pills(", "fm_animate_before_after(",
     )
-    if code.count("RoundedRectangle(") >= 2 and not any(p in code for p in SAFE_CARD_PRIMITIVES):
+    if (code.count("RoundedRectangle(") >= 2 and code.count("Text(") >= 2
+            and not any(p in code for p in SAFE_CARD_PRIMITIVES)):
         return False, ("hand-built label+value boxes detected (2+ RoundedRectangle calls "
-                        "with no fm_card/fm_two_cards/fm_card_row/fm_animate_before_after call) -- "
-                        "this exact pattern has caused confirmed box-overflow crashes where value "
-                        "text spilled past the box border; use fm_two_cards for a side-by-side "
-                        "comparison or fm_animate_before_after for an old-value-to-new-value "
-                        "transition instead of hand-building boxes")
+                        "paired with 2+ Text calls, with no fm_card/fm_two_cards/fm_card_row/"
+                        "fm_animate_before_after call) -- this exact pattern has caused confirmed "
+                        "box-overflow crashes where value text spilled past the box border; use "
+                        "fm_two_cards for a side-by-side comparison or fm_animate_before_after for "
+                        "an old-value-to-new-value transition instead of hand-building boxes. If "
+                        "this chunk's RoundedRectangle calls are NOT building label+value boxes "
+                        "(e.g. a background frame, a gauge outline, a decorative container with no "
+                        "paired value text), this check does not apply -- do not add fm_card/"
+                        "fm_two_cards where none belongs.")
 
     try:
         tree = ast.parse(code)
@@ -5207,17 +5212,23 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
             repair_targets.append((idx, reason))
 
     if repair_targets:
-        print(f"  🔧 {len(repair_targets)} chunk(s) failed the safety check, attempting one targeted repair each...")
+        MAX_REPAIR_ATTEMPTS = 2
+        print(f"  🔧 {len(repair_targets)} chunk(s) failed the safety check, attempting up to {MAX_REPAIR_ATTEMPTS} targeted repair(s) each...")
         for idx, reason in repair_targets:
             print(f"    🔧 Chunk{idx} original failure: {reason}")
             local_i = codegen_to_global.index(idx)
             chunk = codegen_chunks[local_i]
-            hint = safety_correction_hint(reason)
-            corrected_prompt = _build_user_prompt([(idx, chunk)]) + "\n\n" + hint
-            try:
-                r = _gpt_call_for_prompt(corrected_prompt)
-                recovered = _parse_chunks_from_raw(r.choices[0].message.content)
-                if recovered:
+            current_reason = reason
+            repaired = False
+            for attempt in range(1, MAX_REPAIR_ATTEMPTS + 1):
+                hint = safety_correction_hint(current_reason)
+                corrected_prompt = _build_user_prompt([(idx, chunk)]) + "\n\n" + hint
+                try:
+                    r = _gpt_call_for_prompt(corrected_prompt)
+                    recovered = _parse_chunks_from_raw(r.choices[0].message.content)
+                    if not recovered:
+                        print(f"    ⚠ Chunk{idx} repair attempt {attempt} returned no parseable code")
+                        break
                     candidate = recovered[0]
                     candidate_code = candidate.get("code", "") or ""
                     renamed_code, _ = re.subn(
@@ -5230,13 +5241,17 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
                         candidate["class_name"] = f"Chunk{idx}"
                         candidate["chunk_index"] = idx
                         all_results[idx] = candidate
-                        print(f"    ✅ Chunk{idx} repaired")
+                        print(f"    ✅ Chunk{idx} repaired on attempt {attempt}")
+                        repaired = True
+                        break
                     else:
-                        print(f"    ⚠ Chunk{idx} repair attempt still failed (original: {reason} -- retry: {reason2}), keeping original code for the renderer to reject the same way")
-                else:
-                    print(f"    ⚠ Chunk{idx} repair attempt returned no parseable code, keeping original")
-            except Exception as e:
-                print(f"    ⚠ Chunk{idx} repair attempt errored: {e}, keeping original")
+                        print(f"    🔧 Chunk{idx} repair attempt {attempt} fixed '{current_reason[:60]}...' but surfaced a new violation: {reason2}")
+                        current_reason = reason2
+                except Exception as e:
+                    print(f"    ⚠ Chunk{idx} repair attempt {attempt} errored: {e}")
+                    break
+            if not repaired:
+                print(f"    ⚠ Chunk{idx} exhausted {MAX_REPAIR_ATTEMPTS} repair attempt(s) (last failure: {current_reason}), keeping original code for the renderer to reject the same way")
 
     ordered = [all_results.get(i) for i in range(len(chunks))]
     print(f"  ✅ {sum(1 for r in ordered if r)} / {len(chunks)} total manim chunks generated")
