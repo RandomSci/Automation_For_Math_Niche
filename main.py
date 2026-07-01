@@ -28,8 +28,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 current_job = {"status": "idle", "progress": 0, "output": None, "error": None, "started_at": None}
 
-OUTPUT_WIDTH  = 2160
-OUTPUT_HEIGHT = 3840
+OUTPUT_WIDTH  = 1920
+OUTPUT_HEIGHT = 1080
 
 ENCODE_PRESET = os.environ.get("FINANCE_ENCODE_PRESET", "medium")
 ENCODE_CRF    = os.environ.get("FINANCE_ENCODE_CRF", "15")
@@ -75,19 +75,18 @@ _GPT4O_LAST_CALL_TS = [0.0]
 _GPT4O_TPM_LIMIT = 30000
 _GPT4O_REMAINING_TOKENS = [_GPT4O_TPM_LIMIT]
 _GPT4O_FALLBACK_GAP_SECONDS = 1.5
-_GPT4O_CACHE_STATS = [0, 0]
-"""_GPT4O_CACHE_STATS holds [cached_tokens_total, prompt_tokens_total] for this run."""
+_GPT4O_CACHE_STATS = [0, 0]  # [cached_tokens_total, prompt_tokens_total]
 
+# Per-1M-token USD pricing, keyed by model string. Update if OpenAI changes rates.
 _MODEL_PRICING = {
     "gpt-5.5":      {"input": 5.00, "cached_input": 0.50, "output": 30.00},
     "gpt-4.1":      {"input": 2.00, "cached_input": 0.50, "output": 8.00},
     "gpt-4o":       {"input": 2.50, "cached_input": 1.25, "output": 10.00},
 }
-"""Per-1M-token USD pricing, keyed by model string. Update if OpenAI changes rates."""
 _DEFAULT_PRICING = {"input": 5.00, "cached_input": 0.50, "output": 30.00}
 
+# Tracks cost per model used this run: {model: {"input":, "cached":, "output":, "calls":}}
 _RUN_COST_TRACKER = {}
-"""Tracks cost per model used this run: {model: {"input":, "cached":, "output":, "calls":}}"""
 _RUN_COST_LOCK = threading.Lock()
 
 def _record_call_cost(model, usage):
@@ -498,7 +497,7 @@ class _Starfield:
 
 def _draw_nebula(frame, t, intensity, color):
     """Soft slow-moving glow blobs, rendered at low-res and upscaled for a
-    cheap painterly blur (full-res GaussianBlur on a 2160x3840 canvas every frame is
+    cheap painterly blur (full-res GaussianBlur on 1920x1080 every frame is
     too slow for 2500+ frames)."""
     h, w = frame.shape[:2]
     sw, sh = max(w // 3, 8), max(h // 3, 8)
@@ -875,8 +874,8 @@ def _build_intensity_curve(beats, total_duration, fps):
 
 
 def generate_procedural_background(beats: list, topic: str, total_duration: float,
-                                     output_path: str, width: int = 2160,
-                                     height: int = 3840, fps: int = 30) -> str:
+                                     output_path: str, width: int = 1920,
+                                     height: int = 1080, fps: int = 30) -> str:
     """Generate a fully procedural animated background video. No broll, no
     clip failures, no black fillers. One visual identity per topic, with
     intensity smoothly tracking the narration's emotional arc."""
@@ -1116,37 +1115,34 @@ def analyze_story_beats(transcript_text: str, whisper_segments: list,
         if t:
             timed_lines.append(f"[{s:.2f}s - {e:.2f}s] {t}")
 
-    system_prompt = f"""You are the producer for Math Unlocked Shorts -- a vertical, sub-45-second math channel built entirely around ONE mind-bending paradox or "wait, that can't be right" result per video. Style: fast, punchy, hook-first -- think "stop the scroll with a claim that sounds impossible" rather than a calm classroom explainer. The audience decides whether to keep watching in the first 1-2 seconds, so every beat has to either escalate the hook, deliver the twist, or land the payoff -- there is no room for a slow warm-up.
-Total audio duration: {total_duration:.1f} seconds. This is a SHORT -- the whole video is one idea, not a curriculum unit. Expect roughly 6-16 beats total, not 30+.
+    system_prompt = f"""You are the producer for a finance/numbers explainer channel. Style: clear, dynamic, data-forward -- think "explain this number visually" rather than dramatic horror-story captions. Audience wants to actually understand the number, not just feel a jump-scare.
+Total audio duration: {total_duration:.1f} seconds.
 
 You will receive a CHUNK of a transcript with EXACT timestamps from Whisper speech recognition.
 Each line is formatted as: [start - end] spoken words
 
-YOUR JOB: Segment this chunk's transcript into beats for fast-cut vertical video editing.
+YOUR JOB: Segment this chunk's transcript into beats for visual data-explainer editing.
 
 RULES:
 - Use the Whisper timestamps directly -- they are accurate. Copy start_time and end_time from the brackets.
 - Beat text MUST be copied VERBATIM from the transcript. Exact words, exact spelling. No paraphrasing.
-- Keep beats 2-10 words -- short, punchy phrases. A short-form video lives or dies on pacing; don't let a beat run long just because the sentence was long, split it if a natural cut point exists.
+- Keep beats 2-12 words -- natural spoken phrases or short clauses. Numbers/stats often need a slightly longer beat to land (e.g. "that's a four hundred percent increase").
 - A single Whisper segment can become 1-3 beats if it contains multiple natural phrases.
 - Cover the ENTIRE chunk -- every word must appear in some beat.
-- "pause" beats only for clear silence gaps (>0.5s) between segments -- these should be rare in a fast-paced short.
+- "pause" beats only for clear silence gaps (>0.5s) between segments.
 
 beat_type: "hook"|"setup"|"data_point"|"comparison"|"insight"|"warning"|"resolution"|"outro"
-- "hook": the opening claim that sounds impossible or wrong -- this is the single most important beat in the video
-- "data_point": beat states a specific number/stat/quantity
-- "comparison": beat contrasts two numbers or two things (X vs Y, before vs after, intuition vs reality)
-- "warning": beat flags a common misconception or the wrong intuitive answer, right before correcting it
-- "insight": the "aha" moment -- the beat where the paradox resolves and makes sense
-- "resolution": the clean statement of why the result is actually true
-- "outro": the CTA beat -- e.g. pointing to the full explanation on the main channel
+- "data_point": beat states a specific number/stat/dollar amount/percentage
+- "comparison": beat contrasts two numbers or two things (X vs Y, before vs after)
+- "warning": beat flags risk, loss, a downside, a mistake to avoid
+- "insight": beat draws a conclusion or "here's what that means" takeaway
 
 DATA EXTRACTION (critical -- this is what makes the visuals possible):
 If a beat states an actual quantity, extract it into structured fields so the renderer can animate it precisely instead of guessing from prose:
 - "has_data": true/false -- true only if this beat states a concrete number/stat/amount
 - "data_value": the numeric value as a plain number (e.g. 400000, 4.5, 23). No currency symbols, no commas, no words.
 - "data_unit": "percent"|"dollars"|"years"|"times"|"count"|"none" -- what the number represents
-- "data_label": a SHORT (1-4 word) label for what the number IS, verbatim-ish from the beat (e.g. "PROBABILITY OF A MATCH", "SUM TO INFINITY", "PEOPLE IN THE ROOM")
+- "data_label": a SHORT (1-4 word) label for what the number IS, verbatim-ish from the beat (e.g. "AVERAGE RETURN", "COMPOUND INTEREST", "MARKET CAP")
 - "data_direction": "up"|"down"|"neutral" -- only relevant for comparison/trend beats (does the number represent growth, loss, or neither)
 - "compare_value": for "comparison" beats only -- the second number being compared against (numeric, same rules as data_value), else null
 
@@ -1157,12 +1153,12 @@ Be CONSERVATIVE -- most beats should be "none". Only set when the beat is
 genuinely about that concept. Never force a match.
 
 VISUAL_HINT (critical -- this drives the entire animation quality):
-You are the visual director. For EVERY beat you must choose the best animation and describe it concretely. This is the most important field. This is a VERTICAL frame -- tall and narrow, not wide -- so favor visuals that read well stacked top-to-bottom (a single hero number, a vertical fill, a stacked comparison, a growing shape) over wide side-by-side layouts that need horizontal room this frame doesn't have.
+You are the visual director. For EVERY beat you must choose the best animation and describe it concretely. This is the most important field.
 
 visual_hint options:
 - "counter" — a number counting up or a single key statistic hero number
-- "bar_chart" — comparing 3+ values by category (use sparingly here -- narrow frame makes many bars cramped, 3-4 max)
-- "comparison" — exactly 2 values side by side, or stacked if that reads better vertically
+- "bar_chart" — comparing 3+ values by category  
+- "comparison" — exactly 2 values side by side
 - "icon_grid" — N of M items filled (populations, samples, percentages as dots)
 - "formula" — an equation or mathematical relationship
 - "timeline" — a sequence of steps or events in order
@@ -1172,26 +1168,27 @@ visual_hint options:
 - "attention_heatmap" — grid of values, token-to-token attention
 - "vector" — an arrow showing direction or transformation
 - "matrix" — a grid of numbers, transformation
-- "glow_reveal" — concept word/phrase reveal, use when audio carries the meaning -- excellent for the hook beat and the payoff beat
+- "glow_reveal" — concept word/phrase reveal, use when audio carries the meaning
 - "custom" — something none of the above captures; describe it in visual_note
 
-DEDUPLICATION LAW — you see ALL beats at once, so enforce this. A short has very few beats total, so the rule is stricter than a long-form video:
-- Never use the same visual_hint more than 2 times in the ENTIRE short (not just a window)
-- "glow_reveal" max 2 times per short -- reserve for the hook and the payoff, don't spend it early
+DEDUPLICATION LAW — you see ALL beats at once, so enforce this:
+- Never use the same visual_hint more than 2 times in any 8-beat window
+- "glow_reveal" max 3 times per full video
+- "counter" max 4 times per full video  
 - Never use "custom" for something an existing hint covers
 - Vary aggressively — if you just used "bar_chart", reach for "comparison" or "icon_grid" next
 
 visual_note: ONE concrete sentence describing exactly what to animate.
 - BAD: "show the concept visually"
-- BAD: "animate a chart"
-- GOOD: "big glowing '1 in 23' counting down from '1 in 365', gold text, centered"
-- GOOD: "icon grid 23 of 100 dots filled green on navy, label 'People In The Room' below"
-- GOOD: "custom: two circles overlapping more and more as a counter above ticks from 0 to 23, showing shared-birthday odds rising"
+- BAD: "animate a chart"  
+- GOOD: "bar chart with 5 income brackets <20k/20-40k/40-60k/60-80k/>80k, bar heights 13/22/18/24/23, gold color"
+- GOOD: "icon grid 20 of 100 dots filled green on navy, label 'Sample' below"
+- GOOD: "custom: two RoundedRectangles side by side labeled 'Before' and 'After', numbers animating from 0 to 847 and 0 to 1203"
 - For "custom": describe primitives (RoundedRectangle, Circle, Line, VGroup, Text), colors (BRAND_GOLD, BRAND_GREEN, BRAND_RED), and motion (FadeIn, Create, animate.set_value)
 
 Return ONLY valid JSON:
 {{
-  "topic": "paradox|probability|infinity|geometry|game_theory|default",
+  "topic": "markets|growth|warning|history|default",
   "music_mood": "driving|tense|optimistic|neutral|serious",
   "beats": [
     {{
@@ -1201,14 +1198,14 @@ Return ONLY valid JSON:
       "end_time": 2.5,
       "intensity": 8,
       "has_data": true,
-      "data_value": 23,
-      "data_unit": "count",
-      "data_label": "PEOPLE NEEDED",
+      "data_value": 400000,
+      "data_unit": "dollars",
+      "data_label": "RETIREMENT SAVINGS",
       "data_direction": "up",
       "compare_value": null,
       "visual_subject": "none|uptrend|downtrend|coin_stack|clock|percent|scale",
       "visual_hint": "counter|bar_chart|comparison|icon_grid|formula|timeline|scatter|histogram|neural_network|attention_heatmap|vector|matrix|glow_reveal|custom",
-      "visual_note": "one sentence describing exactly what to show — be specific and visual, e.g. 'big glowing 1 in 23 counter, gold' or 'icon grid 23 of 100 dots filled showing group size' or 'custom: two circles overlapping as odds climb'"
+      "visual_note": "one sentence describing exactly what to show — be specific and visual, e.g. 'bar chart with 5 income brackets, tallest bar highlighted gold' or 'icon grid 20 of 100 dots filled showing sample size' or 'custom: 3x3 grid of RoundedRectangles fading in numbers to show a matrix'"
     }}
   ]
 }}"""
@@ -1254,7 +1251,7 @@ Return ONLY valid JSON:
     first_result = results[0] if results else {}
     detected_tone = first_result.get("topic", "default")
     final_result = {
-        "topic": "math_shorts",
+        "topic": "finance",
         "detected_tone": detected_tone,
         "music_mood": first_result.get("music_mood", "neutral"),
         "beats": all_beats,
@@ -1381,7 +1378,7 @@ def generate_render_decisions(beats: list, topic: str) -> list:
     print(f"  🎨 Call 2: Scene compositions for {len(beats)} beats...")
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    system_prompt = f"""You are an elite short-form video editor for Math Unlocked Shorts, a vertical 9:16 channel built around one mind-bending math paradox per video. You compose every frame like a motion designer -- choosing position, size, color, animation, and timing for each visual element. You are not picking from preset templates. You are designing each scene to make a NUMBER or CONCEPT visually understandable at a glance, fast enough that a viewer scrolling a feed gets it before they swipe past.
+    system_prompt = f"""You are an elite short-form video editor for a finance/numbers explainer channel. You compose every frame like a motion designer -- choosing position, size, color, animation, and timing for each visual element. You are not picking from preset templates. You are designing each scene to make a NUMBER or CONCEPT visually understandable, not just dramatic.
 
 Channel: a finance/numbers explainer. Audience wants to actually grasp the number -- a stat, a comparison, a growth curve, a cost. The aesthetic is CLEAN and DATA-FORWARD -- like a sharp explainer video, not a horror-trailer caption stack. Still punchy and fast-paced, just clearer.
 
@@ -1516,7 +1513,7 @@ STAGGER ALL ELEMENTS: start_offset must be less than the beat's _duration_second
 - Beat >1.0s: up to 3 elements, offsets 0.0 / 0.35 / 0.7
 NEVER set start_offset >= _duration_seconds.
 
-=== POSITIONING GRID ({OUTPUT_WIDTH}x{OUTPUT_HEIGHT} canvas) ===
+=== POSITIONING GRID (1920x1080 canvas) ===
 Safe zone: x: 0.08-0.92, y: 0.12-0.88.
 
 Three vertical bands:
@@ -2078,7 +2075,7 @@ Some scripts count through a numbered list ("the first warning sign...", "warnin
 === THE OPENING BEAT IS CRITICAL -- THIS HAS FAILED BEFORE, TREAT IT SERIOUSLY ===
 If this is beat_index 0, a blank or text-only first 1-2 seconds has been a real, observed problem in actual output -- viewers see nothing but background for the opening moment, which reads as broken, not premium. This is not optional polish, it's a hard requirement: beat_index 0 MUST have a real, fully-formed visual active from t=0, not fading in from nothing, not a placeholder, not "just text." If the beat's content doesn't obviously suggest a number or chart, default to a simple, immediate dashboard-style element -- e.g. a glowing card outline, a single bold icon, a meter at a starting position -- anything that is unmistakably a real graphic on screen at t=0, not an empty frame waiting for content. Treat "the opening beat renders nothing" as a failed beat, the same severity as a crash.
 
-=== VERTICAL FRAME COMPOSITION ===
+=== 16:9 COMPOSITION ===
 Canvas is {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} (always compute from w/h, never hardcode). Keep all content within a safe margin of roughly 8% of w/h from every edge -- nothing should touch or crowd the frame edge. This means BOTH position AND size: before drawing any rectangle/card/bar, check that its full extent (its position PLUS its width/height) still fits inside that safe margin -- a shape positioned correctly but sized too large will still bleed off-frame, which has been an observed real bug (a card or bar extending past the bottom/side of the visible frame). When in doubt, compute the maximum allowed size first (e.g. max_height = h * 0.84 for a vertically-stacked element), then size your shape as a fraction of that maximum, never as a fixed pixel count that could exceed it.
 
 Favor ONE clear underlying idea per beat -- but a single idea rendered as a bare, undecorated shape (one flat rectangle, one plain circle, nothing else) reads as empty and unfinished, not clean. A good beat usually has 3-5 small details supporting its one idea, not 3-5 unrelated competing ideas. For example: a bar chart's "one idea" still includes the bar itself, a baseline/axis line, the value label, and a subtle highlight or motion on the bar -- that's one coherent composition with real detail, not clutter. A gauge's one idea includes the arc, the needle or fill, the number, and a small tick mark or two. Think of it as "one hero element, fully realized with supporting detail" rather than "one hero element floating alone." If your code only calls 1-2 drawing operations total, it is almost certainly too sparse -- add the supporting detail that makes the one idea feel complete and considered, not more competing ideas.
@@ -3669,7 +3666,7 @@ NICHE_TEMPLATES = {
 
 @app.get("/")
 def root():
-    return {"service": "Math Unlocked Shorts v1", "status": "running",
+    return {"service": "Finance Explainer v1", "status": "running",
             "openai_key": bool(OPENAI_API_KEY)}
 
 @app.post("/generate")
@@ -3686,9 +3683,9 @@ def process_video(niche: str = "finance"):
     global current_job
     try:
         current_job["progress"] = 5
-        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Math_Niche/main/Audio_Voice/shorts_narration.mp3"
-        audio_file  = "Audio_Voice/shorts_narration.mp3"
-        output_file = "shorts_output.mp4"
+        audio_url   = "https://raw.githubusercontent.com/RandomSci/Automation_For_Math_Niche/main/Audio_Voice/vaults_narration.mp3"
+        audio_file  = "Audio_Voice/vaults_narration.mp3"
+        output_file = "vaults_output.mp4"
         trans_file  = f"{os.path.splitext(audio_file)[0]}_transcription.json"
 
         print(f"\n📥 Downloading audio...")
@@ -3950,10 +3947,10 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             return False, f"references dunder attribute '{node.attr}'"
 
-        """Manim coordinate-system reverse transforms are a recurring crash source: GPT
-        often calls axes.p2c((x, y)) with a two-value tuple, but Manim expects a real 3D
-        point for point-to-coordinates conversion. For generated code, the safe direction
-        is always data -> point via c2p, or better, an fm_* helper."""
+        # Manim coordinate-system reverse transforms are a recurring crash source.
+        # GPT often calls axes.p2c((x, y)) with a two-value tuple, but Manim expects
+        # a real 3D point for point-to-coordinates conversion. For generated code,
+        # the safe direction is always data -> point via c2p, or better, an fm_* helper.
         if isinstance(node, ast.Attribute) and node.attr in {"p2c", "point_to_coords", "point_to_number", "normalized", "point_at_angle"}:
             return False, f"references unsafe coordinate reverse-transform '{node.attr}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
 
@@ -3964,9 +3961,9 @@ def manim_static_safety_check(code: str) -> tuple[bool, str]:
             if fn_name in {"p2c", "point_to_coords", "point_to_number", "normalized"}:
                 return False, f"calls unsafe coordinate reverse-transform '{fn_name}' -- use axes.c2p(x, y) or an fm_* chart helper instead"
 
-            """Real crash: Polygon([[x,y,z], [x,y,z], ...]) passes ONE nested list as the
-            first vertex. Manim Polygon expects Polygon([x,y,z], [x,y,z], ...). Reject it
-            before wasting a render."""
+            # Real crash: Polygon([[x,y,z], [x,y,z], ...]) passes ONE nested list
+            # as the first vertex. Manim Polygon expects Polygon([x,y,z], [x,y,z], ...).
+            # Reject it before wasting a render.
             if fn_name == "Polygon" and len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
                 return False, "Polygon received one nested list of vertices; use Polygon(*points) or avoid Polygon and use fm_icon/fm_card/fm_* helpers"
 
@@ -4161,7 +4158,7 @@ def _ffprobe_duration_seconds(path: str) -> float:
 
 
 def _lock_chunk_duration(raw_path: str, target_duration: float, out_path: str,
-                          w: int = 2160, h: int = 3840, fps: int = 30) -> tuple:
+                          w: int = 1920, h: int = 1080, fps: int = 30) -> tuple:
     """Forces a rendered Manim chunk onto an exact target duration,
     independent of whether the GPT-authored run_time/wait math inside
     the chunk was correct -- never trusts the chunk's own animation
@@ -4252,7 +4249,7 @@ def _chunk_fallback_subtitle(chunk: dict) -> str:
 
 
 def _make_safe_still_fallback(out_path: str, title: str, subtitle: str, duration: float,
-                              w: int = 2160, h: int = 3840, fps: int = 30) -> str:
+                              w: int = 1920, h: int = 1080, fps: int = 30) -> str:
     """Creates a non-blank exact-duration fallback video.
 
     This is the anti-void safety net. When a GPT-authored Manim chunk crashes,
@@ -4331,8 +4328,8 @@ def _make_safe_still_fallback(out_path: str, title: str, subtitle: str, duration
     return out_path
 
 
-def _make_chunk_fallback(out_path: str, chunk: dict, duration: float, w: int = 2160,
-                         h: int = 3840, fps: int = 30, reason: str = "") -> str:
+def _make_chunk_fallback(out_path: str, chunk: dict, duration: float, w: int = 1920,
+                         h: int = 1080, fps: int = 30, reason: str = "") -> str:
     return _make_safe_still_fallback(
         out_path,
         title="Key Idea",
@@ -4342,8 +4339,8 @@ def _make_chunk_fallback(out_path: str, chunk: dict, duration: float, w: int = 2
     )
 
 
-def _make_dashboard_filler(out_path: str, duration: float, w: int = 2160,
-                            h: int = 3840, fps: int = 30) -> str:
+def _make_dashboard_filler(out_path: str, duration: float, w: int = 1920,
+                            h: int = 1080, fps: int = 30) -> str:
     return _make_safe_still_fallback(
         out_path,
         title="Next Idea",
@@ -4354,7 +4351,7 @@ def _make_dashboard_filler(out_path: str, duration: float, w: int = 2160,
 
 
 def _make_held_frame_filler(prev_clip_path: str, out_path: str, duration: float,
-                             w: int = 2160, h: int = 3840, fps: int = 30) -> str:
+                             w: int = 1920, h: int = 1080, fps: int = 30) -> str:
     """Fills a short silence-gap chunk by freezing the previous content
     chunk's actual final frame for the gap's duration, instead of
     cutting to blank background. This is what real editors do for a
@@ -4429,8 +4426,8 @@ def _save_manim_failure_log(class_name: str, stderr_text: str, stdout_text: str)
 MANIM_CHUNK_SOURCE_DEBUG_DIR = "/tmp/finance_explainer_manim_sources"
 
 
-def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 2160,
-                        h: int = 3840, fps: int = 30) -> tuple:
+def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 1920,
+                        h: int = 1080, fps: int = 30) -> tuple:
     """Renders ONE Manim chunk to its own exact-duration MP4 clip via the
     real `manim` CLI as a subprocess (not an in-process exec, since
     Manim's render pipeline isn't a simple function call -- it writes
@@ -4496,14 +4493,8 @@ def render_manim_chunk(code: str, class_name: str, duration: float, w: int = 216
             f.write(boilerplate)
             f.write(code)
 
-        """-qh is Manim's high-quality preset; the actual pixel dimensions come from
-        config.pixel_width/pixel_height set in the boilerplate above, not from this
-        flag. -qk is only needed to hit Manim's 4K-tier internal defaults; for 4K
-        output Manim must be told to render 2160p. Checked against the larger of
-        w/h so this works for both landscape (w=3840,h=2160) and vertical
-        (w=2160,h=3840) 4K frames -- checking w and h against fixed landscape
-        thresholds directly would silently pick the wrong preset for vertical."""
-        quality_flag = "-qk" if max(int(w), int(h)) >= 3840 and min(int(w), int(h)) >= 2160 else "-qh"
+        # -qh forces 1080p. For 4K output, Manim must be told to render 2160p.
+        quality_flag = "-qk" if int(w) >= 3840 and int(h) >= 2160 else "-qh"
         cmd = [
             "manim", quality_flag, "--disable_caching",
             "--media_dir", work_dir,
@@ -4639,7 +4630,7 @@ The pattern: audio names the concept → you animate the physical thing that con
 === THE 3BLUE1BROWN STANDARD — CHARTS, DIAGRAMS, AND REAL MATH ARE THE DEFAULT, NOT ICONS AND NOT SENTENCES ===
 The visual language of this channel is the visual language of 3blue1brown: axes, plotted lines, bars, arcs, donuts, waterfalls, growing numbers, geometric proof-style diagrams, and actual mathematical notation. Almost nothing in a 3blue1brown video is a literal pictogram of an object, and almost nothing is a sentence of prose text either -- it is the STRUCTURE of the idea made visible (a curve bending, a bar growing, a region filling, a value ticking up, an equation transforming). That is the standard here. Default to a chart, graph, gauge, donut, waterfall, bar comparison, counter, or an actual formula for every beat that has a number, a trend, a proportion, a comparison, or a calculation -- which is the vast majority of beats on this channel.
 
-SHOW THE CALCULATION, NOT JUST THE RESULT, WHEN A BEAT IS ABOUT A CALCULATION: MathTex and Tex are BANNED on this channel -- they route through a LaTeX subprocess that crashes constantly on GPT-generated raw-string formulas (double-escaped backslashes, stray literal "$" signs) and every crash silently becomes a blank filler clip. When narration describes how a number is calculated (compound interest, a percentage of a percentage, tax taken off a total, an hourly rate times hours), do not just show the final number -- show the FORMULA, the same way 3blue1brown shows the equation before showing what it evaluates to, but build it with fm_formula(scene, "A = P x (1 + r)^n", duration=D) -- use "x" for multiplication and write exponents inline as "^n" rather than true superscripts. ALWAYS call fm_formula for this, NEVER type a raw `Text("...")` formula yourself: a hand-picked font_size on a formula string of unknown final length is exactly how text runs off the edges of the frame (this has happened on the long-form 16:9 channel -- a two-line calculation overflowed past the right edge because nothing was scaling it to fit -- and the vertical frame here has even less horizontal room, so the risk is worse, not better). fm_formula auto-shrinks to always fit inside the frame regardless of string length, so you never have to estimate whether your formula is "too long" -- it cannot overflow. For a calculation that simplifies to a result (e.g. "$250 x 12 x 5 = $15,000" then "-$5,000 = $10,000"), pass a LIST of strings -- `fm_formula(scene, ["$250 x 12 x 5 = $15,000", "-$5,000 = $10,000"], duration=D)` -- each becomes its own row, auto-scaled together as one group. Reach for this whenever a beat's content is fundamentally "X calculated from Y" rather than just "here is X."
+SHOW THE CALCULATION, NOT JUST THE RESULT, WHEN A BEAT IS ABOUT A CALCULATION: MathTex and Tex are BANNED on this channel -- they route through a LaTeX subprocess that crashes constantly on GPT-generated raw-string formulas (double-escaped backslashes, stray literal "$" signs) and every crash silently becomes a blank filler clip. When narration describes how a number is calculated (compound interest, a percentage of a percentage, tax taken off a total, an hourly rate times hours), do not just show the final number -- show the FORMULA, the same way 3blue1brown shows the equation before showing what it evaluates to, but build it with fm_formula(scene, "A = P x (1 + r)^n", duration=D) -- use "x" for multiplication and write exponents inline as "^n" rather than true superscripts. ALWAYS call fm_formula for this, NEVER type a raw `Text("...")` formula yourself: a hand-picked font_size on a formula string of unknown final length is exactly how text runs off the edges of the 16:9 frame (this has happened -- a two-line calculation overflowed past the right edge because nothing was scaling it to fit). fm_formula auto-shrinks to always fit inside the frame regardless of string length, so you never have to estimate whether your formula is "too long" -- it cannot overflow. For a calculation that simplifies to a result (e.g. "$250 x 12 x 5 = $15,000" then "-$5,000 = $10,000"), pass a LIST of strings -- `fm_formula(scene, ["$250 x 12 x 5 = $15,000", "-$5,000 = $10,000"], duration=D)` -- each becomes its own row, auto-scaled together as one group. Reach for this whenever a beat's content is fundamentally "X calculated from Y" rather than just "here is X."
 
 fm_icon (a literal pictogram: a house, a coin, a clock, a person) is a SMALL ACCENT, not a primary visual. Reach for it only to label or anchor a chart that's already doing the real work (a tiny house icon next to a "Rent" axis label), or for the rare beat that is genuinely about a single concrete object with no number or trend attached at all. If you notice you are about to make an icon the LARGEST or ONLY element in a chunk, stop -- ask whether this beat actually has a number, a comparison, a trend, a proportion, or a calculation hiding in it that a chart or formula would show instead. Nearly every finance beat does.
 When in doubt between an icon-based visual and a chart/formula-based visual for the same beat, choose the chart or formula.
@@ -4815,7 +4806,7 @@ NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called
 - `Sector()` ONLY accepts `radius=` (NOT `outer_radius=`, NOT `inner_radius=`). Sector.__init__ signature is `Sector(radius=1, **kwargs)` — it internally passes `outer_radius=radius` to AnnularSector. Passing `outer_radius=` yourself causes "got multiple values for keyword argument outer_radius" crash. CONFIRMED REAL FAILURE across 5 chunks in the same video. CORRECT: `Sector(radius=1.28, angle=TAU*pct, start_angle=PI/2, color=COLOR)`. WRONG: `Sector(outer_radius=1.28, ...)` or `Sector(outer_radius=1.28, inner_radius=0.0, ...)`. For pie/donut charts, strongly prefer fm_animate_donut or fm_animate_probability_bar — they are crash-tested. Only hand-roll a Sector if those functions genuinely cannot express the visual, and when you do: use `radius=` only, never `outer_radius=`.
 
 === FRAME, ASPECT RATIO, SAFE MARGINS ===
-Output is a VERTICAL 9:16 frame, 2160x3840 (4K), 30fps -- tall and narrow, not the usual wide landscape frame. Always read `config.frame_width` and `config.frame_height` at runtime instead of hardcoding numbers -- they are already configured correctly for this aspect ratio, and frame_width will be much smaller than frame_height here. Keep every object's resting position within roughly `config.frame_width * 0.42` of horizontal center and `config.frame_height * 0.42` of vertical center; anything closer to the true edge risks clipping on some players/crops. Because horizontal space is tight, favor compositions that stack vertically (one hero element, a number above a shape, a shape above a label) over wide side-by-side layouts -- if a beat's natural composition wants to spread wide, consider stacking it instead. ORIGIN is frame center.
+Output is 16:9, 1920x1080, 30fps. Always read `config.frame_width` and `config.frame_height` at runtime instead of hardcoding numbers -- they are already configured correctly for this aspect ratio. Keep every object's resting position within roughly `config.frame_width * 0.42` of horizontal center and `config.frame_height * 0.42` of vertical center; anything closer to the true edge risks clipping on some players/crops. ORIGIN is frame center.
 
 === BUILT-IN LIBRARY FUNCTIONS (always in scope, crash-proof, prefer these first) ===
 
@@ -5001,7 +4992,7 @@ Return your response as a JSON object: {"chunks": [{"chunk_index": 0, "class_nam
             concept = chunk.get("concept_title", "")
             concept_str = f", concept={concept!r}" if concept else ""
 
-            """Pull visual_hint and visual_note from beats, using the first non-empty one."""
+            # Pull visual_hint and visual_note from beats (use first non-empty one)
             visual_hint = ""
             visual_note = ""
             for b in chunk.get("beats", []):
@@ -5266,8 +5257,8 @@ def _render_or_fill_one_chunk(chunk_index: int, chunk: dict, item, w: int, h: in
     return chunk_index, clip_path, ""
 
 
-def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 2160,
-                             h: int = 3840, fps: int = 30, max_workers: int = None) -> list:
+def render_all_manim_chunks(chunks: list, chunk_code_list: list, w: int = 1920,
+                             h: int = 1080, fps: int = 30, max_workers: int = None) -> list:
     """Renders every CONTENT chunk's Manim code in parallel via a
     process pool, each chunk being its own independent `manim` CLI
     subprocess. Any content chunk that fails safety check, crashes,
