@@ -3763,6 +3763,7 @@ MANIM_FORBIDDEN_PATTERNS = [
     r'\bRectangle\b',
     r'\bDashedLine\b', r'\bDashedVMobject\b',
     r'\bEllipse\b',
+    r'Sector\s*\([^)]*outer_radius\s*=',
 ]
 MANIM_ALLOWED_IMPORT_MODULES = {"manim", "numpy", "math"}
 MANIM_FORBIDDEN_REPLACEMENT_HINTS = {
@@ -4802,7 +4803,7 @@ NEVER USE A LITERAL "?" AS A PLACEHOLDER VALUE: a real, confirmed failure called
 - fm_stacked_cards() is a FACTORY function — NO `duration` kwarg, NO `self`, returns a VGroup directly (not a tuple). Use: `cards = fm_stacked_cards(items); self.play(FadeIn(cards))`. For animated version use fm_animate_stacked_cards(self, items, duration=D).
 - Dot() and Circle() point= argument MUST be 3D: `Dot(point=[x, y, 0])` NOT `Dot(point=[x, y])` → ValueError shapes mismatch. Always include 0 as Z.
 - Polygon() vertices must be flat arrays as positional args: `Polygon([x1,y1,0], [x2,y2,0])`. NEVER wrap each vertex in extra list: `Polygon([[x1,y1,0]], [[x2,y2,0]])` → ValueError wrong shape.
-- `Sector()` takes `outer_radius=` and `inner_radius=` directly — NEVER pass both `radius=` and `outer_radius=` together, and never use `AnnularSector` directly for a simple pie slice. For a pie/donut chart, prefer fm_animate_donut or fm_animate_probability_bar over hand-rolling Sector — they are already crash-tested. If you must hand-build a pie slice: `Sector(outer_radius=1.28, angle=TAU*pct, start_angle=PI/2, color=COLOR)` — exactly one radius kwarg, never combine `radius=` with `outer_radius=` since Sector internally maps radius to outer_radius and passing both raises "got multiple values for keyword argument".
+- `Sector()` ONLY accepts `radius=` (NOT `outer_radius=`, NOT `inner_radius=`). Sector.__init__ signature is `Sector(radius=1, **kwargs)` — it internally passes `outer_radius=radius` to AnnularSector. Passing `outer_radius=` yourself causes "got multiple values for keyword argument outer_radius" crash. CONFIRMED REAL FAILURE across 5 chunks in the same video. CORRECT: `Sector(radius=1.28, angle=TAU*pct, start_angle=PI/2, color=COLOR)`. WRONG: `Sector(outer_radius=1.28, ...)` or `Sector(outer_radius=1.28, inner_radius=0.0, ...)`. For pie/donut charts, strongly prefer fm_animate_donut or fm_animate_probability_bar — they are crash-tested. Only hand-roll a Sector if those functions genuinely cannot express the visual, and when you do: use `radius=` only, never `outer_radius=`.
 
 === FRAME, ASPECT RATIO, SAFE MARGINS ===
 Output is 16:9, 1920x1080, 30fps. Always read `config.frame_width` and `config.frame_height` at runtime instead of hardcoding numbers -- they are already configured correctly for this aspect ratio. Keep every object's resting position within roughly `config.frame_width * 0.42` of horizontal center and `config.frame_height * 0.42` of vertical center; anything closer to the true edge risks clipping on some players/crops. ORIGIN is frame center.
