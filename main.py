@@ -1340,6 +1340,104 @@ If there is no list structure, return {{"has_list_structure": false, "sections":
     return cleaned
 
 
+def _format_chapter_timestamp(seconds: float, total_duration: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if total_duration >= 3600:
+        return f"{hours:d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def generate_youtube_chapters(transcript_text: str, whisper_segments: list,
+                               total_duration: float) -> dict:
+    if not OPENAI_API_KEY:
+        return {"chapters": [], "chapters_text": ""}
+
+    print(f"  📑  YouTube chapter scan...")
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    timed_lines = []
+    for seg in whisper_segments:
+        s = float(seg.get('start', 0))
+        e = float(seg.get('end', 0))
+        t = seg.get('text', '').strip()
+        if t:
+            timed_lines.append(f"[{s:.2f}s - {e:.2f}s] {t}")
+    timed_transcript = "\n".join(timed_lines)
+
+    system_prompt = f"""You are analyzing a math/finance explainer video's transcript to produce YouTube chapter markers.
+Total video duration: {total_duration:.1f} seconds.
+
+YOUR JOB: Break the ENTIRE video into 5 to 10 chapters that cover the full runtime from start to finish, no gaps. This applies to every video, whether it is a single continuous explanation, a list of items, or a comparison -- every video gets full chapter coverage, unlike a list-structure scan.
+
+Rules:
+- The first chapter MUST start at 0.0 seconds.
+- Each chapter title is a SHORT (3-7 word) label describing what happens in that segment, written for a YouTube chapter list, not a sentence. No numbers, no punctuation at the end.
+- Chapters must be in chronological order and cover the full video with no gaps -- each chapter's implicit end is the next chapter's start_time, and the last chapter runs to the end of the video.
+- Each chapter must be at least 10 seconds long. Do not create more chapters than the content naturally supports.
+- Use the exact timestamps shown in the transcript brackets, do not estimate.
+- Base chapters on actual shifts in what is being discussed (e.g. moving from the hook to the main misconception, to the explanation, to an example, to the takeaway), not arbitrary time slices.
+
+Return ONLY valid JSON:
+{{
+  "chapters": [
+    {{"start_time": 0.0, "title": "Why Averages Can Mislead You"}}
+  ]
+}}"""
+
+    try:
+        response = _call_with_retry(lambda: gpt4o_call(client,
+            model="gpt-4.1",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Timed transcript:\n{timed_transcript}"}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=1000,
+            timeout=60,
+        ), label="YouTube chapters")
+        result = json.loads(response.choices[0].message.content)
+        raw_chapters = result.get("chapters", [])
+    except Exception as e:
+        print(f"  ⚠ Chapter scan failed, skipping chapters: {e}")
+        return {"chapters": [], "chapters_text": ""}
+
+    cleaned = []
+    for ch in raw_chapters:
+        try:
+            title = str(ch["title"]).strip().rstrip(".:")
+            start = max(float(ch["start_time"]), 0.0)
+            if title and start < total_duration:
+                cleaned.append({"title": title, "start_time": start})
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    cleaned.sort(key=lambda c: c["start_time"])
+
+    deduped = []
+    for ch in cleaned:
+        if deduped and ch["start_time"] - deduped[-1]["start_time"] < 10.0:
+            continue
+        deduped.append(ch)
+
+    if deduped:
+        deduped[0]["start_time"] = 0.0
+
+    if len(deduped) < 3 or total_duration < 60:
+        print(f"  📑  Not enough valid chapters ({len(deduped)}), skipping")
+        return {"chapters": [], "chapters_text": ""}
+
+    for ch in deduped:
+        ch["timestamp"] = _format_chapter_timestamp(ch["start_time"], total_duration)
+
+    chapters_text = "\n".join(f"{ch['timestamp']} {ch['title']}" for ch in deduped)
+
+    print(f"  ✅ {len(deduped)} chapters generated")
+    return {"chapters": deduped, "chapters_text": chapters_text}
+
+
 def _ffmpeg_escape_text(text: str) -> str:
     text = text.replace("\\", "\\\\")
     text = text.replace("'", "'\\''")
@@ -3490,15 +3588,23 @@ class FinanceGenerator:
         print(f"\n[STEP 3] GPT Call 1: Story Beats...")
         try:
             topic_hint = list(self.broll_dirs.keys())[0] if self.broll_dirs else "finance"
-            with ThreadPoolExecutor(max_workers=2) as _outer_pool:
+            with ThreadPoolExecutor(max_workers=3) as _outer_pool:
                 _beats_future    = _outer_pool.submit(analyze_story_beats, full_text, whisper_segments, topic_hint, duration)
                 _sections_future = _outer_pool.submit(extract_section_outline, full_text, whisper_segments, duration)
+                _chapters_future = _outer_pool.submit(generate_youtube_chapters, full_text, whisper_segments, duration)
                 beats_result = _beats_future.result()
                 try:
                     sections = _sections_future.result()
                 except Exception as e:
                     print(f"  ⚠ Section outline failed, skipping navigation overlay: {e}")
                     sections = []
+                try:
+                    chapters_result = _chapters_future.result()
+                except Exception as e:
+                    print(f"  ⚠ Chapter generation failed, skipping YouTube chapters: {e}")
+                    chapters_result = {"chapters": [], "chapters_text": ""}
+            self.youtube_chapters = chapters_result.get("chapters", [])
+            self.youtube_chapters_text = chapters_result.get("chapters_text", "")
             topic = beats_result.get('topic', 'finance')
             beats = beats_result.get('beats', [])
 
@@ -3715,7 +3821,11 @@ def process_video(niche: str = "finance"):
 
         final = gen.output_path
         if success and final and os.path.exists(final):
-            current_job.update({"status": "completed", "progress": 100, "output": final})
+            current_job.update({
+                "status": "completed", "progress": 100, "output": final,
+                "chapters": getattr(gen, "youtube_chapters", []),
+                "chapters_text": getattr(gen, "youtube_chapters_text", ""),
+            })
             print(f"\n🎉 DONE: {final}")
         else:
             raise Exception("Pipeline failed or output missing")
